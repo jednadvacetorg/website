@@ -31,7 +31,7 @@ export default defineNuxtConfig({
 
   sitemap: {
     // People have no standalone routes; everything else is content-backed.
-    exclude: ['/_studio/**', '/debug/**'],
+    exclude: ['/_studio/**', '/debug/**', '/cntrsclc'],
   },
 
   hub: {
