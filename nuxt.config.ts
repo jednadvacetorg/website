@@ -18,10 +18,21 @@ export default defineNuxtConfig({
     '@nuxt/ui',
     '@nuxt/image',
     '@nuxthub/core',
+    '@nuxtjs/sitemap',
     '@vueuse/nuxt',
     './shared/contentRedirectsModule',
     'nuxt-studio'
   ],
+
+  site: {
+    url: 'https://jednadvacet.org',
+    name: 'Jednadvacet',
+  },
+
+  sitemap: {
+    // People have no standalone routes; everything else is content-backed.
+    exclude: ['/_studio/**', '/debug/**'],
+  },
 
   hub: {
     db: 'sqlite',

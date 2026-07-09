@@ -1,4 +1,5 @@
 import { defineContentConfig, defineCollection, z, property } from '@nuxt/content'
+import { defineSitemapSchema } from '@nuxtjs/sitemap/content'
 
 const exclude = ['README.md']
 
@@ -20,6 +21,7 @@ export default defineContentConfig({
         categories: z.array(z.string()).optional(),
         authors: z.array(z.string()).optional(),
         redirect_from: z.array(z.string()).optional(),
+        sitemap: defineSitemapSchema(),
       }).passthrough()
     }),
 
@@ -33,6 +35,7 @@ export default defineContentConfig({
       schema: z.object({
         seo: property(z.any().optional()).editor({ hidden: true }),
         navigation: property(z.any().optional()).editor({ hidden: true }),
+        sitemap: defineSitemapSchema(),
       }),
     }),
 
@@ -46,6 +49,7 @@ export default defineContentConfig({
       schema: z.object({
         seo: property(z.any().optional()).editor({ hidden: true }),
         navigation: property(z.any().optional()).editor({ hidden: true }),
+        sitemap: defineSitemapSchema(),
       }),
     }),
 
@@ -59,6 +63,7 @@ export default defineContentConfig({
       schema: z.object({
         seo: property(z.any().optional()).editor({ hidden: true }),
         navigation: property(z.any().optional()).editor({ hidden: true }),
+        sitemap: defineSitemapSchema(),
       }),
     }),
 
