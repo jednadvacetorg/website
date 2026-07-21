@@ -20,6 +20,7 @@ const config = useRuntimeConfig()
   </Head>
 
   <NuxtImg :src="article.thumbnail" :alt="article.title"
+    sizes="xs:100vw sm:100vw md:100vw lg:100vw xl:100vw xxl:100vw" width="1280" height="720" format="webp" :quality="80"
     class="mt-[calc(-1*var(--ui-header-height))] -mb-10 w-full aspect-video max-h-[60vh] object-cover" />
   <div class="bg-default rounded-t-4xl h-20 -mb-18 z-40 relative" />
 

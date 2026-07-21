@@ -62,7 +62,9 @@ const categoryDescription = computed(() => {
     <UBlogPosts v-if="articles?.length" orientation="vertical">
       <UBlogPost v-for="article in articles" :key="article.path" :title="article.title"
         :description="article.description"
-        :image="article.thumbnail || 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAD0lEQVR4AQEEAPv/AMzMzATMAmVMDHrmAAAAAElFTkSuQmCC'"
+        :image="article.thumbnail
+          ? { src: article.thumbnail, sizes: 'xs:100vw sm:320px', width: 480, height: 270, format: 'webp', loading: 'lazy' }
+          : 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAD0lEQVR4AQEEAPv/AMzMzATMAmVMDHrmAAAAAElFTkSuQmCC'"
         :date="article.published" :to="article.path" orientation="horizontal" variant="naked"
         :ui="{ root: 'overflow-visible', header: 'border border-gray-600/10', meta: 'flex-wrap' }">
         <template #badge>
