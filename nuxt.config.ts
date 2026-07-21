@@ -39,7 +39,9 @@ export default defineNuxtConfig({
   },
 
   image: {
-    provider: process.env.NUXT_IMAGE_PROVIDER || (process.env.NODE_ENV === 'production' ? 'cloudflare' : 'ipx'),
+    // PREVIEW_DEPLOY builds run on *.workers.dev, where the zone-scoped
+    // /cdn-cgi/image/ endpoint does not exist — serve original images there.
+    provider: process.env.NUXT_IMAGE_PROVIDER || (process.env.PREVIEW_DEPLOY ? 'none' : process.env.NODE_ENV === 'production' ? 'cloudflare' : 'ipx'),
     cloudflare: {
       baseURL: '/',
     },
