@@ -53,7 +53,8 @@ function submit() {
   <div class="flex flex-col items-center gap-8">
     <h2 class="text-3xl font-bold text-center">Aby ti neunikla další akce…</h2>
 
-    <p class="text-xl sm:text-2xl font-medium text-center leading-relaxed flex flex-wrap items-center justify-center gap-x-2 gap-y-3">
+    <!-- div, ne <p>: uvnitř jsou form komponenty (blokové elementy), <p> by prohlížeč předčasně uzavřel a rozbil hydrataci -->
+    <div class="text-xl sm:text-2xl font-medium text-center leading-relaxed flex flex-wrap items-center justify-center gap-x-2 gap-y-3">
       <span>Upozorni mě na akce</span>
 
       <span v-if="!isEverywhere">v</span>
@@ -95,7 +96,7 @@ function submit() {
       />
 
       <span>.</span>
-    </p>
+    </div>
 
     <UButton :disabled="!isValid" size="lg" @click="submit">
       Odebírat
