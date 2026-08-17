@@ -1,3 +1,13 @@
+export const useDataBlogArticles = (limit?: number) => {
+  return useAsyncData(`blog-articles-${limit ?? 'all'}`, () => {
+    let query = queryCollection('blogArticles')
+      .order('id', 'DESC')
+      .select('path', 'title', 'description', 'thumbnail', 'published', 'categories')
+    if (limit) query = query.limit(limit)
+    return query.all()
+  })
+}
+
 export const useDataBlogCategories = () => {
   return useAsyncData('blog-categories', () => {
     return queryCollection('blogCategories')

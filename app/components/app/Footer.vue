@@ -11,7 +11,7 @@ const footerLinks = [
 </script>
 
 <template>
-  <UFooter class="bg-default/75 backdrop-blur border-t border-gray-200 dark:border-gray-800 py-8">
+  <UFooter class="bg-default/75 backdrop-blur border-t border-gray-200 dark:border-gray-800 py-8 mt-16">
     <UContainer>
       <div class="flex flex-col items-center gap-10">
         <AppSocialMenu />
