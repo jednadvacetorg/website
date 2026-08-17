@@ -45,9 +45,15 @@ watchEffect(async () => {
   })
 })
 
-function copyAddress() {
-  if (donateAddress.value) navigator.clipboard.writeText(donateAddress.value)
+function copy(text: string | null) {
+  if (text) navigator.clipboard.writeText(text)
 }
+
+const poolConfig = [
+  { label: 'Pool URL', value: 'stratum+tcp://eu.stratum.braiins.com:3333' },
+  { label: 'Username', value: 'jednadvacet.tvoje_prezdivka' },
+  { label: 'Heslo', value: 'anything123' },
+]
 
 const showAllWorkers = ref(false)
 
@@ -135,7 +141,7 @@ const partners = [
       </p>
 
       <div class="flex flex-col sm:flex-row gap-8 items-start">
-        <div class="rounded-xl border border-gray-800 bg-gray-950 p-5 space-y-4 w-full sm:w-auto">
+        <div class="rounded-xl border border-gray-800 bg-gray-950 p-5 space-y-4 w-full sm:w-[28rem] shrink-0">
           <div class="flex items-center gap-2 text-sm text-gray-400">
             <UIcon name="i-lucide-piggy-bank" class="w-4 h-4 text-primary shrink-0" />
             <span>Aktuální zůstatek:</span>
@@ -158,7 +164,7 @@ const partners = [
             <span class="font-mono text-sm select-all break-all">
               {{ donateAddress ?? 'Načítání…' }}
             </span>
-            <UButton size="xs" variant="ghost" icon="i-lucide-copy" :disabled="!donateAddress" @click="copyAddress" />
+            <UButton size="xs" variant="ghost" icon="i-lucide-copy" :disabled="!donateAddress" @click="copy(donateAddress)" />
           </div>
 
           <UButton v-if="donateUri" :to="donateUri" size="md" color="primary" icon="i-lucide-wallet">
@@ -204,58 +210,67 @@ const partners = [
       </p>
 
       <div class="grid lg:grid-cols-2 gap-6 items-start">
-        <div class="rounded-xl border border-gray-800 bg-gray-950 p-5">
-          <h3 class="font-semibold mb-4">Nastavení pro BraiinsPool</h3>
-          <dl class="space-y-2 text-sm">
-            <div class="flex flex-col sm:flex-row sm:gap-2">
-              <dt class="text-gray-400 sm:w-24 shrink-0">Pool URL</dt>
-              <dd class="font-mono select-all break-all">stratum+tcp://eu.stratum.braiins.com:3333</dd>
-            </div>
-            <div class="flex flex-col sm:flex-row sm:gap-2">
-              <dt class="text-gray-400 sm:w-24 shrink-0">Username</dt>
-              <dd class="font-mono select-all">jednadvacet.tvoje_prezdivka</dd>
-            </div>
-            <div class="flex flex-col sm:flex-row sm:gap-2">
-              <dt class="text-gray-400 sm:w-24 shrink-0">Heslo</dt>
-              <dd class="font-mono select-all">anything123</dd>
+        <div class="rounded-xl border border-gray-800 bg-gray-950 overflow-hidden">
+          <h3 class="font-semibold flex items-center gap-2 px-5 py-4 border-b border-gray-800 bg-gray-900/60">
+            <UIcon name="i-lucide-settings-2" class="w-4 h-4 text-primary shrink-0" />
+            Nastavení pro BraiinsPool
+          </h3>
+          <dl class="divide-y divide-gray-800/70">
+            <div
+              v-for="row in poolConfig"
+              :key="row.label"
+              class="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4 px-5 py-3"
+            >
+              <dt class="text-xs uppercase tracking-wider text-gray-500 sm:w-24 shrink-0">{{ row.label }}</dt>
+              <dd class="flex items-center gap-2 min-w-0">
+                <code class="font-mono text-sm text-gray-100 bg-gray-900 border border-gray-800 rounded-md px-2 py-1 select-all break-all">
+                  {{ row.value }}
+                </code>
+                <UButton size="xs" variant="ghost" icon="i-lucide-copy" @click="copy(row.value)" />
+              </dd>
             </div>
           </dl>
         </div>
 
-        <div class="rounded-xl border border-gray-800 bg-gray-950 p-5">
-          <h3 class="font-semibold mb-4">⚒️ Těží bitcoin pro 21</h3>
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="text-left text-gray-400">
-                <th class="pb-2 font-normal">Jméno</th>
-                <th class="pb-2 font-normal">Hashrate</th>
-                <th class="pb-2 font-normal">Stav</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-if="!sortedWorkers.length">
-                <td colspan="3" class="py-1 text-gray-400">Načítání…</td>
-              </tr>
-              <tr v-for="w in visibleWorkers" :key="w.name" class="border-t border-gray-800">
-                <td class="py-1.5">{{ w.name }}</td>
-                <td class="py-1.5 font-mono">{{ w.hash_rate_24h_GH.toFixed(2) }} GH/s</td>
-                <td class="py-1.5">
-                  <UBadge :color="w.state === 'ok' ? 'success' : 'warning'" variant="subtle" size="sm">
-                    {{ w.state }}
-                  </UBadge>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <UButton
-            v-if="sortedWorkers.length > 3"
-            size="xs"
-            variant="ghost"
-            class="mt-3"
-            @click="showAllWorkers = !showAllWorkers"
-          >
-            {{ showAllWorkers ? '− Skrýt' : '+ Zobrazit více' }}
-          </UButton>
+        <div class="rounded-xl border border-gray-800 bg-gray-950 overflow-hidden">
+          <h3 class="font-semibold flex items-center gap-2 px-5 py-4 border-b border-gray-800 bg-gray-900/60">
+            <UIcon name="i-lucide-pickaxe" class="w-4 h-4 text-primary shrink-0" />
+            Těží bitcoin pro 21
+          </h3>
+          <div class="px-5 py-3">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-gray-400">
+                  <th class="pb-2 font-normal">Jméno</th>
+                  <th class="pb-2 font-normal">Hashrate</th>
+                  <th class="pb-2 font-normal">Stav</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-if="!sortedWorkers.length">
+                  <td colspan="3" class="py-1 text-gray-400">Načítání…</td>
+                </tr>
+                <tr v-for="w in visibleWorkers" :key="w.name" class="border-t border-gray-800">
+                  <td class="py-1.5">{{ w.name }}</td>
+                  <td class="py-1.5 font-mono">{{ w.hash_rate_24h_GH.toFixed(2) }} GH/s</td>
+                  <td class="py-1.5">
+                    <UBadge :color="w.state === 'ok' ? 'success' : 'warning'" variant="subtle" size="sm">
+                      {{ w.state }}
+                    </UBadge>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <UButton
+              v-if="sortedWorkers.length > 3"
+              size="xs"
+              variant="ghost"
+              class="mt-3"
+              @click="showAllWorkers = !showAllWorkers"
+            >
+              {{ showAllWorkers ? '− Skrýt' : '+ Zobrazit více' }}
+            </UButton>
+          </div>
         </div>
       </div>
     </section>
