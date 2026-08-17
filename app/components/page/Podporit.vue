@@ -140,8 +140,8 @@ const partners = [
         Příspěvky se snažíme použít nejlépe, jak to jde.
       </p>
 
-      <div class="flex flex-col sm:flex-row gap-8 items-center justify-center">
-        <div class="rounded-xl border border-gray-800 bg-gray-950 p-5 space-y-4 w-full sm:w-[28rem] shrink-0">
+      <div class="flex flex-col sm:flex-row gap-8 items-start">
+        <div class="flex flex-col items-center rounded-xl border border-gray-800 bg-gray-950 p-5 space-y-4 w-full sm:w-[28rem] shrink-0">
           <div class="flex items-center gap-2 text-sm text-gray-400">
             <UIcon name="i-lucide-piggy-bank" class="w-4 h-4 text-primary shrink-0" />
             <span>Aktuální zůstatek:</span>
