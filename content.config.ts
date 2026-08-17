@@ -50,6 +50,21 @@ export default defineContentConfig({
         seo: property(z.any().optional()).editor({ hidden: true }),
         navigation: property(z.any().optional()).editor({ hidden: true }),
         sitemap: defineSitemapSchema(),
+        map: z.object({
+          lat: z.number(),
+          lng: z.number(),
+          zoom: z.number(),
+        }).optional(),
+        region: z.string().optional(),
+        signal_group: z.string().optional(),
+        organizers: z.array(z.string()).optional(),
+        meetup_schedule: z.string().optional(),
+        recordings: z.array(z.object({
+          title: z.string(),
+          url: z.string(),
+          date: z.string().optional(),
+        })).optional(),
+        btcmap_community_id: z.string().optional(),
       }),
     }),
 

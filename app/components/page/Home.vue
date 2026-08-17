@@ -19,6 +19,7 @@ const gridColsClass: Record<number, string> = {
 const { data: blogCategories } = useDataBlogCategories()
 const { data: blogArticles } = await useDataBlogArticles(props.articleLimit ?? 8)
 const { data: communities } = await useDataCommunities()
+const { data: mapCommunities } = await useDataCommunitiesMap()
 
 const communityBadge = computed(() => {
   const n = communities.value?.length ?? 0
@@ -54,9 +55,8 @@ const communityBadge = computed(() => {
           </div>
         </div>
 
-        <!-- Visual placeholder -->
-        <div class="mt-16 rounded-2xl bg-gray-900 border border-gray-800 h-80 flex items-center justify-center text-gray-600 text-sm">
-          Mapa komunit
+        <div id="mapa" class="mt-16 rounded-2xl bg-gray-900 border border-gray-800 aspect-[3/2] sm:aspect-[16/9] overflow-hidden">
+          <CommunityMap :communities="mapCommunities ?? []" />
         </div>
       </UContainer>
     </section>
