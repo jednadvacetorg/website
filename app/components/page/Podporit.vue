@@ -1,4 +1,67 @@
 <script setup lang="ts">
+import QRCode from 'qrcode'
+
+type FinanceData = {
+  balance: number
+  unused_address: string
+  ln_address: string
+}
+
+type WorkersData = Record<string, {
+  hash_rate_24h_GH: number
+  state: string
+  last_share: number
+}>
+
+// Data se stahují až v prohlížeči (server: false) — stránka je prerendrovaná
+// a zdrojové JSONy zatím generuje cron na starém WordPressu.
+const { data: finance } = useFetch<FinanceData>('/api/finance', { server: false, lazy: true })
+const { data: workers } = useFetch<WorkersData>('/api/miners', { server: false, lazy: true })
+
+const donateMode = ref<'lightning' | 'onchain'>('lightning')
+
+const donateAddress = computed(() => {
+  if (donateMode.value === 'onchain') return finance.value?.unused_address ?? null
+  return finance.value?.ln_address ?? 'donate@jednadvacet.org'
+})
+
+const donateUri = computed(() => {
+  if (!donateAddress.value) return null
+  return donateMode.value === 'onchain'
+    ? `bitcoin:${donateAddress.value}`
+    : `lightning:${donateAddress.value}`
+})
+
+const qrCodeDataUrl = ref<string | null>(null)
+
+watchEffect(async () => {
+  if (!donateUri.value) {
+    qrCodeDataUrl.value = null
+    return
+  }
+  qrCodeDataUrl.value = await QRCode.toDataURL(donateUri.value, {
+    margin: 1,
+    width: 256,
+  })
+})
+
+function copyAddress() {
+  if (donateAddress.value) navigator.clipboard.writeText(donateAddress.value)
+}
+
+const showAllWorkers = ref(false)
+
+const sortedWorkers = computed(() => {
+  if (!workers.value) return []
+  return Object.entries(workers.value)
+    .map(([name, info]) => ({ name, ...info }))
+    .sort((a, b) => b.hash_rate_24h_GH - a.hash_rate_24h_GH)
+})
+
+const visibleWorkers = computed(() => {
+  return showAllWorkers.value ? sortedWorkers.value : sortedWorkers.value.slice(0, 3)
+})
+
 const affiliates = [
   {
     name: 'Trezor',
@@ -55,13 +118,9 @@ const partners = [
   { name: 'Twentyone World (EN)', url: 'https://twentyone.world' },
   { name: 'Einundzwanzig (DE)', url: 'https://einundzwanzig.space' },
   { name: 'BtcMap', url: 'https://btcmap.org' },
-  { name: 'Mempool', url: 'https://mempool.space' },
+  { name: 'Mempool', url: 'https://mempool.jednadvacet.org' },
   { name: 'Whitepaper', url: 'https://bitcoin.org/bitcoin.pdf' },
 ]
-
-function copyLightning() {
-  navigator.clipboard.writeText('donate@jednadvacet.org')
-}
 </script>
 
 <template>
@@ -71,17 +130,133 @@ function copyLightning() {
       <h2 class="text-3xl font-bold mb-3">Přispět Jednadvacítce</h2>
       <p class="text-gray-400 max-w-xl mb-8">
         Největší podporu dáte komunitě tak, že nám napíšete a přiložíte jakkoliv ruku k&nbsp;dílu.
-        Pokud chcete přispět finančně, uvítáme platbu přes Lightning Network.
+        Pokud chcete přispět finančně, uvítáme platbu onchain i&nbsp;přes Lightning Network.
+        Příspěvky se snažíme použít nejlépe, jak to jde.
       </p>
-      <div class="flex flex-wrap items-center gap-3">
-        <div class="inline-flex items-center gap-3 rounded-xl border border-gray-800 bg-gray-950 px-5 py-4">
-          <UIcon name="i-lucide-zap" class="w-5 h-5 text-primary shrink-0" />
-          <span class="font-mono text-sm select-all">donate@jednadvacet.org</span>
-          <UButton size="xs" variant="ghost" icon="i-lucide-copy" @click="copyLightning" />
+
+      <div class="flex flex-col sm:flex-row gap-8 items-start">
+        <div class="rounded-xl border border-gray-800 bg-gray-950 p-5 space-y-4 w-full sm:w-auto">
+          <div class="flex items-center gap-2 text-sm text-gray-400">
+            <UIcon name="i-lucide-piggy-bank" class="w-4 h-4 text-primary shrink-0" />
+            <span>Aktuální zůstatek:</span>
+            <span class="font-mono text-white">
+              {{ finance ? finance.balance.toLocaleString('cs-CZ') : '…' }}
+            </span>
+            <span>sats</span>
+          </div>
+
+          <UTabs
+            v-model="donateMode"
+            :items="[
+              { label: 'Lightning', value: 'lightning', icon: 'i-lucide-zap' },
+              { label: 'Onchain', value: 'onchain', icon: 'i-lucide-link' },
+            ]"
+            size="sm"
+          />
+
+          <div class="flex items-center gap-3">
+            <span class="font-mono text-sm select-all break-all">
+              {{ donateAddress ?? 'Načítání…' }}
+            </span>
+            <UButton size="xs" variant="ghost" icon="i-lucide-copy" :disabled="!donateAddress" @click="copyAddress" />
+          </div>
+
+          <UButton v-if="donateUri" :to="donateUri" size="md" color="primary" icon="i-lucide-wallet">
+            Zaplatit v peněžence
+          </UButton>
         </div>
-        <UButton to="lightning:donate@jednadvacet.org" size="md" color="primary" icon="i-lucide-wallet">
-          Zaplatit v peněžence
-        </UButton>
+
+        <div class="rounded-lg border border-gray-800 p-3 bg-white shrink-0">
+          <img v-if="qrCodeDataUrl" :src="qrCodeDataUrl" alt="QR kód pro příspěvek" class="h-40 w-40" />
+          <div v-else class="h-40 w-40 flex items-center justify-center text-sm text-gray-400">
+            QR se připravuje…
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Získej financování -->
+    <section id="financovani">
+      <h2 class="text-3xl font-bold mb-3">Získej peníze na svůj projekt</h2>
+      <p class="text-gray-400 max-w-xl mb-4">
+        Pokud chceš tvořit obsah, propagovat Jednadvacítku, případně dělat cokoliv,
+        co pomáhá bitcoinu v&nbsp;Česku, neboj se nás zeptat na příspěvek na tvoji činnost.
+      </p>
+      <p class="text-gray-400 max-w-xl">
+        Napiš nám, jak bys chtěl Jednadvacítce pomoci a co pro tebe můžeme udělat, na
+        <a href="mailto:info@jednadvacet.org" class="text-primary hover:underline">info@jednadvacet.org</a>.
+      </p>
+    </section>
+
+    <!-- Těžba -->
+    <section id="tezba">
+      <h2 class="text-3xl font-bold mb-3">Přispěj těžbou</h2>
+      <p class="text-gray-400 max-w-xl mb-8">
+        Pokud těžíš bitcoin, můžeš přesměrovat část svého výkonu na BraiinsPool a tím nás podpořit.
+        Pool nás vyplácí jednou denně, příspěvky chodí do naší lightning peněženky
+        a propisují se do zůstatku výše. Detailní návod najdeš
+        <a
+          href="https://x.com/_Honza_Dvorak/status/1891751852443660663"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-primary hover:underline"
+        >zde</a>.
+      </p>
+
+      <div class="grid lg:grid-cols-2 gap-6 items-start">
+        <div class="rounded-xl border border-gray-800 bg-gray-950 p-5">
+          <h3 class="font-semibold mb-4">Nastavení pro BraiinsPool</h3>
+          <dl class="space-y-2 text-sm">
+            <div class="flex flex-col sm:flex-row sm:gap-2">
+              <dt class="text-gray-400 sm:w-24 shrink-0">Pool URL</dt>
+              <dd class="font-mono select-all break-all">stratum+tcp://eu.stratum.braiins.com:3333</dd>
+            </div>
+            <div class="flex flex-col sm:flex-row sm:gap-2">
+              <dt class="text-gray-400 sm:w-24 shrink-0">Username</dt>
+              <dd class="font-mono select-all">jednadvacet.tvoje_prezdivka</dd>
+            </div>
+            <div class="flex flex-col sm:flex-row sm:gap-2">
+              <dt class="text-gray-400 sm:w-24 shrink-0">Heslo</dt>
+              <dd class="font-mono select-all">anything123</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div class="rounded-xl border border-gray-800 bg-gray-950 p-5">
+          <h3 class="font-semibold mb-4">⚒️ Těží bitcoin pro 21</h3>
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-gray-400">
+                <th class="pb-2 font-normal">Jméno</th>
+                <th class="pb-2 font-normal">Hashrate</th>
+                <th class="pb-2 font-normal">Stav</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="!sortedWorkers.length">
+                <td colspan="3" class="py-1 text-gray-400">Načítání…</td>
+              </tr>
+              <tr v-for="w in visibleWorkers" :key="w.name" class="border-t border-gray-800">
+                <td class="py-1.5">{{ w.name }}</td>
+                <td class="py-1.5 font-mono">{{ w.hash_rate_24h_GH.toFixed(2) }} GH/s</td>
+                <td class="py-1.5">
+                  <UBadge :color="w.state === 'ok' ? 'success' : 'warning'" variant="subtle" size="sm">
+                    {{ w.state }}
+                  </UBadge>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <UButton
+            v-if="sortedWorkers.length > 3"
+            size="xs"
+            variant="ghost"
+            class="mt-3"
+            @click="showAllWorkers = !showAllWorkers"
+          >
+            {{ showAllWorkers ? '− Skrýt' : '+ Zobrazit více' }}
+          </UButton>
+        </div>
       </div>
     </section>
 
