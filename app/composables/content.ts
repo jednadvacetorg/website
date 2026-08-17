@@ -18,7 +18,7 @@ export const useArticleCategories = (categoriesStems?: string[]) => {
 export const useDataCommunities = () => {
   return useAsyncData('communities', () => {
     return queryCollection('communities')
-      .select('path', 'title')
+      .select('path', 'title', 'region')
       .all()
   })
 }

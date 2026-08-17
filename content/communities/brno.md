@@ -1,5 +1,6 @@
 ---
 title: Brno
+region: Jihomoravský kraj
 map: # Najdi ideální souřadnice a zoom tak aby byly vidět všechny důležité body na mapě: https://labs.mapbox.com/location-helper/
   lat: 49.19263
   lng: 16.61104
