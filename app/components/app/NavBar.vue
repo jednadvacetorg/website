@@ -10,6 +10,8 @@
 
     <template #right>
       <AppSocialMenu class="max-lg:hidden" />
+      <USeparator orientation="vertical" class="h-5 max-lg:hidden" />
+      <UColorModeButton />
     </template>
 
     <template #body>
