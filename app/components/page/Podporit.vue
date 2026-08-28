@@ -84,19 +84,19 @@ const otherPartners = [
   <UContainer class="py-16 space-y-20">
     <!-- Přispět -->
     <section id="prispet">
-      <h2 class="text-3xl font-bold mb-3">Přispět Jednadvacítce</h2>
-      <p class="text-gray-400 max-w-xl mb-8">
+      <h2 class="text-3xl font-bold mb-3 text-center">Přispět Jednadvacítce</h2>
+      <p class="text-gray-500 dark:text-gray-400 max-w-xl mb-8 mx-auto text-center">
         Největší podporu dáte komunitě tak, že nám napíšete a přiložíte jakkoliv ruku k&nbsp;dílu.
         Pokud chcete přispět finančně, uvítáme platbu onchain i&nbsp;přes Lightning Network.
         Příspěvky se snažíme použít nejlépe, jak to jde.
       </p>
 
-      <div class="flex flex-col sm:flex-row gap-8 items-start">
-        <div class="flex flex-col items-center rounded-xl border border-gray-800 bg-gray-950 p-5 space-y-4 w-full sm:w-[28rem] shrink-0">
-          <div class="flex items-center gap-2 text-sm text-gray-400">
+      <div class="flex flex-col sm:flex-row gap-8 items-start justify-center">
+        <div class="flex flex-col items-center rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 p-5 space-y-4 w-full sm:w-[28rem] shrink-0">
+          <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
             <UIcon name="i-lucide-piggy-bank" class="w-4 h-4 text-primary shrink-0" />
             <span>Aktuální zůstatek:</span>
-            <span class="font-mono text-white">
+            <span class="font-mono text-gray-900 dark:text-white">
               {{ finance ? finance.balance.toLocaleString('cs-CZ') : '…' }}
             </span>
             <span>sats</span>
@@ -123,9 +123,9 @@ const otherPartners = [
           </UButton>
         </div>
 
-        <div class="rounded-lg border border-gray-800 p-3 bg-white shrink-0">
+        <div class="rounded-lg border border-gray-200 dark:border-gray-800 p-3 bg-white shrink-0">
           <img v-if="qrCodeDataUrl" :src="qrCodeDataUrl" alt="QR kód pro příspěvek" class="h-40 w-40" />
-          <div v-else class="h-40 w-40 flex items-center justify-center text-sm text-gray-400">
+          <div v-else class="h-40 w-40 flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
             QR se připravuje…
           </div>
         </div>
@@ -134,12 +134,12 @@ const otherPartners = [
 
     <!-- Získej financování -->
     <section id="financovani">
-      <h2 class="text-3xl font-bold mb-3">Získej peníze na svůj projekt</h2>
-      <p class="text-gray-400 max-w-xl mb-4">
+      <h2 class="text-3xl font-bold mb-3 text-center">Získej peníze na svůj projekt</h2>
+      <p class="text-gray-500 dark:text-gray-400 max-w-xl mb-4 mx-auto text-center">
         Pokud chceš tvořit obsah, propagovat Jednadvacítku, případně dělat cokoliv,
         co pomáhá bitcoinu v&nbsp;Česku, neboj se nás zeptat na příspěvek na tvoji činnost.
       </p>
-      <p class="text-gray-400 max-w-xl">
+      <p class="text-gray-500 dark:text-gray-400 max-w-xl mx-auto text-center">
         Napiš nám, jak bys chtěl Jednadvacítce pomoci a co pro tebe můžeme udělat, na
         <a href="mailto:info@jednadvacet.org" class="text-primary hover:underline">info@jednadvacet.org</a>.
       </p>
@@ -147,8 +147,8 @@ const otherPartners = [
 
     <!-- Těžba -->
     <section id="tezba">
-      <h2 class="text-3xl font-bold mb-3">Přispěj těžbou</h2>
-      <p class="text-gray-400 max-w-xl mb-8">
+      <h2 class="text-3xl font-bold mb-3 text-center">Přispěj těžbou</h2>
+      <p class="text-gray-500 dark:text-gray-400 max-w-xl mb-8 mx-auto text-center">
         Pokud těžíš bitcoin, můžeš přesměrovat část svého výkonu na BraiinsPool a tím nás podpořit.
         Pool nás vyplácí jednou denně, příspěvky chodí do naší lightning peněženky
         a propisují se do zůstatku výše. Detailní návod najdeš
@@ -161,12 +161,12 @@ const otherPartners = [
       </p>
 
       <div class="grid lg:grid-cols-2 gap-6 items-start">
-        <div class="rounded-xl border border-gray-800 bg-gray-950 overflow-hidden">
-          <h3 class="font-semibold flex items-center gap-2 px-5 py-4 border-b border-gray-800 bg-gray-900/60">
+        <div class="rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 overflow-hidden">
+          <h3 class="font-semibold flex items-center gap-2 px-5 py-4 border-b border-gray-200 dark:border-gray-800 bg-gray-100/60 dark:bg-gray-900/60">
             <UIcon name="i-lucide-settings-2" class="w-4 h-4 text-primary shrink-0" />
             Nastavení pro BraiinsPool
           </h3>
-          <dl class="divide-y divide-gray-800/70">
+          <dl class="divide-y divide-gray-200/70 dark:divide-gray-800/70">
             <div
               v-for="row in poolConfig"
               :key="row.label"
@@ -174,7 +174,7 @@ const otherPartners = [
             >
               <dt class="text-xs uppercase tracking-wider text-gray-500 sm:w-24 shrink-0">{{ row.label }}</dt>
               <dd class="flex items-center gap-2 min-w-0">
-                <code class="font-mono text-sm text-gray-100 bg-gray-900 border border-gray-800 rounded-md px-2 py-1 select-all break-all">
+                <code class="font-mono text-sm text-gray-900 dark:text-gray-100 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-800 rounded-md px-2 py-1 select-all break-all">
                   {{ row.value }}
                 </code>
                 <UButton size="xs" variant="ghost" icon="i-lucide-copy" @click="copy(row.value)" />
@@ -183,15 +183,15 @@ const otherPartners = [
           </dl>
         </div>
 
-        <div class="rounded-xl border border-gray-800 bg-gray-950 overflow-hidden">
-          <h3 class="font-semibold flex items-center gap-2 px-5 py-4 border-b border-gray-800 bg-gray-900/60">
+        <div class="rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-gray-950 overflow-hidden">
+          <h3 class="font-semibold flex items-center gap-2 px-5 py-4 border-b border-gray-200 dark:border-gray-800 bg-gray-100/60 dark:bg-gray-900/60">
             <UIcon name="i-lucide-pickaxe" class="w-4 h-4 text-primary shrink-0" />
             Těží bitcoin pro 21
           </h3>
           <div class="px-5 py-3">
             <table class="w-full text-sm">
               <thead>
-                <tr class="text-left text-gray-400">
+                <tr class="text-left text-gray-500 dark:text-gray-400">
                   <th class="pb-2 font-normal">Jméno</th>
                   <th class="pb-2 font-normal">Hashrate</th>
                   <th class="pb-2 font-normal">Stav</th>
@@ -199,9 +199,9 @@ const otherPartners = [
               </thead>
               <tbody>
                 <tr v-if="!sortedWorkers.length">
-                  <td colspan="3" class="py-1 text-gray-400">Načítání…</td>
+                  <td colspan="3" class="py-1 text-gray-500 dark:text-gray-400">Načítání…</td>
                 </tr>
-                <tr v-for="w in visibleWorkers" :key="w.name" class="border-t border-gray-800">
+                <tr v-for="w in visibleWorkers" :key="w.name" class="border-t border-gray-200 dark:border-gray-800">
                   <td class="py-1.5">{{ w.name }}</td>
                   <td class="py-1.5 font-mono">{{ w.hash_rate_24h_GH.toFixed(2) }} GH/s</td>
                   <td class="py-1.5">
@@ -228,8 +228,8 @@ const otherPartners = [
 
     <!-- Affiliate -->
     <section id="affiliate">
-      <h2 class="text-3xl font-bold mb-3">Affiliate odkazy</h2>
-      <p class="text-gray-400 max-w-xl mb-8">
+      <h2 class="text-3xl font-bold mb-3 text-center">Affiliate odkazy</h2>
+      <p class="text-gray-500 dark:text-gray-400 max-w-xl mb-8 mx-auto text-center">
         Nákupem přes tyto odkazy podpoříš Jednadvacet — část provize putuje zpátky do komunity.
       </p>
       <PartnersList />
@@ -237,18 +237,18 @@ const otherPartners = [
 
     <!-- Další partneři -->
     <section id="partneri">
-      <h2 class="text-3xl font-bold mb-3">Další partneři</h2>
-      <p class="text-gray-400 max-w-xl mb-8">
+      <h2 class="text-3xl font-bold mb-3 text-center">Další partneři</h2>
+      <p class="text-gray-500 dark:text-gray-400 max-w-xl mb-8 mx-auto text-center">
         Projekty a organizace, se kterými spolupracujeme.
       </p>
-      <div class="flex flex-wrap gap-3">
+      <div class="flex flex-wrap gap-3 justify-center">
         <a
           v-for="p in otherPartners"
           :key="p.name"
           :href="p.url"
           target="_blank"
           rel="noopener noreferrer"
-          class="rounded-full border border-gray-800 hover:border-primary/50 hover:text-primary px-4 py-2 text-sm transition-colors"
+          class="rounded-full border border-gray-200 dark:border-gray-800 hover:border-primary/50 dark:hover:border-primary/50 hover:text-primary px-4 py-2 text-sm transition-colors"
         >
           {{ p.name }}
         </a>
