@@ -68,58 +68,7 @@ const visibleWorkers = computed(() => {
   return showAllWorkers.value ? sortedWorkers.value : sortedWorkers.value.slice(0, 3)
 })
 
-const affiliates = [
-  {
-    name: 'Trezor',
-    description: 'HW peněženka',
-    url: 'https://affil.trezor.io/aff_c?offer_id=137&aff_id=9775',
-    logo: '/logos/trezor.svg',
-  },
-  {
-    name: 'Stosuj',
-    description: 'DCA do bitcoinu',
-    url: 'https://stosuj.cz/?aff=jednadvacet',
-    logo: '/logos/stosuj.png',
-  },
-  {
-    name: '21Energy',
-    description: 'Domácí těžba',
-    url: 'https://21energy.com?sca_ref=8362575.HHRDEJ9MRFGkjM',
-    logo: '/logos/21energy.webp',
-  },
-  {
-    name: 'Veribi',
-    description: 'Bitcoin těžba',
-    url: 'https://app.veribi.com/signup?invite=9267',
-    logo: '/logos/veribi.png',
-  },
-  {
-    name: 'FixedFloat',
-    description: 'Směnárna do bitcoinu',
-    url: 'https://ff.io/?ref=8cw27hzb',
-    logo: '/logos/fixedfloat.png',
-  },
-  {
-    name: 'Firefish',
-    description: 'Půjčky na bitcoin',
-    url: 'http://firefish.io/?ref=jednadvacet',
-    logo: '/logos/firefish.png',
-  },
-  {
-    name: 'Účto všem',
-    description: 'Hledáš účetní?',
-    url: 'https://uctovsem.cz',
-    logo: '/logos/uctovsem.png',
-  },
-  {
-    name: 'BTC Prague',
-    description: 'Bitcoinová konference',
-    url: 'https://btcprg.me/JEDNADVACET',
-    logo: '/logos/btcprague.svg',
-  },
-]
-
-const partners = [
+const otherPartners = [
   { name: 'Dvadsaťjeden (SK)', url: 'https://dvadsatjeden.sk' },
   { name: 'Twentyone World (EN)', url: 'https://twentyone.world' },
   { name: 'Einundzwanzig (DE)', url: 'https://einundzwanzig.space' },
@@ -281,22 +230,7 @@ const partners = [
       <p class="text-gray-400 max-w-xl mb-8">
         Nákupem přes tyto odkazy podpoříš Jednadvacet — část provize putuje zpátky do komunity.
       </p>
-      <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <a
-          v-for="a in affiliates"
-          :key="a.name"
-          :href="a.url"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="group flex flex-col gap-3 rounded-xl border border-gray-800 hover:border-primary/50 bg-gray-950/50 hover:bg-gray-900 transition-colors p-5"
-        >
-          <img :src="a.logo" :alt="a.name" class="h-8 w-auto object-contain" />
-          <div>
-            <p class="font-semibold group-hover:text-primary transition-colors">{{ a.name }}</p>
-            <p class="text-sm text-gray-400">{{ a.description }}</p>
-          </div>
-        </a>
-      </div>
+      <PartnersList />
     </section>
 
     <!-- Další partneři -->
@@ -307,7 +241,7 @@ const partners = [
       </p>
       <div class="flex flex-wrap gap-3">
         <a
-          v-for="p in partners"
+          v-for="p in otherPartners"
           :key="p.name"
           :href="p.url"
           target="_blank"

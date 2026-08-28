@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
+import { partners } from '~~/content/data/partners'
 
 const { data: blogCategories } = await useDataBlogCategories()
 
@@ -26,14 +27,7 @@ const items = computed<NavigationMenuItem[]>(() => [
     label: 'Podpořit a partneři',
     to: '/podporit',
     children: [
-      { label: 'Trezor', description: 'HW peněženka', to: 'https://affil.trezor.io/aff_c?offer_id=137&aff_id=9775', target: '_blank' },
-      { label: 'Stosuj', description: 'DCA do bitcoinu', to: 'https://stosuj.cz/?aff=jednadvacet', target: '_blank' },
-      { label: '21Energy', description: 'Domácí těžba', to: 'https://21energy.com?sca_ref=8362575.HHRDEJ9MRFGkjM', target: '_blank' },
-      { label: 'Veribi', description: 'Bitcoin těžba', to: 'https://app.veribi.com/signup?invite=9267', target: '_blank' },
-      { label: 'FixedFloat', description: 'Směnárna do bitcoinu', to: 'https://ff.io/?ref=8cw27hzb', target: '_blank' },
-      { label: 'Firefish', description: 'Půjčky na bitcoin', to: 'http://firefish.io/?ref=jednadvacet', target: '_blank' },
-      { label: 'Účto všem', description: 'Hledáš účetní?', to: 'https://uctovsem.cz', target: '_blank' },
-      { label: 'BTC Prague', description: 'Bitcoinová konference', to: 'https://btcprg.me/JEDNADVACET', target: '_blank' },
+      ...partners.map(p => ({ label: p.name, description: p.caption, to: p.href, target: '_blank' as const })),
       { label: 'Další partneři', to: '/podporit#partneri' },
       { label: 'Přispět', to: '/podporit#prispet' },
     ],
