@@ -20,9 +20,11 @@ const { data: workers } = useFetch<WorkersData>('/api/miners', { server: false, 
 
 const donateMode = ref<'lightning' | 'onchain'>('lightning')
 
+// Lightning adresa je fixní — ln_address z finance.json vrací donate@lnbits.cz,
+// oficiální adresa je ale donate@jednadvacet.org (potvrzeno v PR #29).
 const donateAddress = computed(() => {
   if (donateMode.value === 'onchain') return finance.value?.unused_address ?? null
-  return finance.value?.ln_address ?? 'donate@jednadvacet.org'
+  return 'donate@jednadvacet.org'
 })
 
 const donateUri = computed(() => {
