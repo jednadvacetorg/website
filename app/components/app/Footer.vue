@@ -6,6 +6,7 @@ const footerLinks = [
   { label: 'Mapa', to: 'https://mapa.berubitcoin.cz/' },
   { label: 'Mempool', to: 'https://mempool.jednadvacet.org' },
   { label: 'Explorer', to: 'https://explorer.jednadvacet.org' },
+  { label: 'GitHub', to: 'https://github.com/jednadvacetorg' },
   { label: 'Grafika', to: 'https://github.com/Jednadvacetorg/jednadvacet-grafika' },
 ]
 </script>
