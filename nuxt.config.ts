@@ -1,5 +1,6 @@
 const isPreviewDeploy = Boolean(process.env.PREVIEW_DEPLOY)
 const communityMapsCron = '17 3 * * *'
+const communityMapsQueue = 'community-maps'
 
 const studioIconLibraries = ['bitcoin-icons', 'lucide', 'pinhead', 'simple-icons', 'streamline']
 
@@ -181,6 +182,26 @@ export default defineNuxtConfig({
                 id: '5e0aa50166db40ae8414c83614dbae4d',
               },
             ],
+        queues: isPreviewDeploy
+          ? undefined
+          : {
+              producers: [
+                {
+                  binding: 'COMMUNITY_MAPS_QUEUE',
+                  queue: communityMapsQueue,
+                },
+              ],
+              consumers: [
+                {
+                  queue: communityMapsQueue,
+                  max_batch_size: 1,
+                  max_batch_timeout: 5,
+                  max_retries: 3,
+                  retry_delay: 60,
+                  max_concurrency: 4,
+                },
+              ],
+            },
         triggers: isPreviewDeploy
           ? undefined
           : {

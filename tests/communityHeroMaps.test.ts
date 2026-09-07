@@ -5,6 +5,7 @@ import {
   buildMapboxStaticUrl,
   generateCommunityMaps,
   parseBeruBitcoinPlaces,
+  parseCommunityMapSource,
   selectPlacesForMap,
   type CommunityMapBlobStorage,
   type CommunityMapPlace,
@@ -17,6 +18,23 @@ const place = (id: number, longitude: number, latitude: number): CommunityMapPla
   acceptsLightning: true,
   acceptsOnchain: false,
   acceptsQerko: false,
+})
+
+test('queue payload is narrowed to a valid community map source', () => {
+  assert.deepEqual(parseCommunityMapSource({
+    slug: 'ceske-budejovice',
+    map: { lat: 48.9757, lng: 14.4803, zoom: 11 },
+    ignored: 'discard me',
+  }), {
+    slug: 'ceske-budejovice',
+    map: { lat: 48.9757, lng: 14.4803, zoom: 11 },
+  })
+})
+
+test('queue payload rejects malformed slugs, coordinates, and zoom', () => {
+  assert.throws(() => parseCommunityMapSource({ slug: '../brno', map: { lat: 49.19, lng: 16.61 } }), /slug/)
+  assert.throws(() => parseCommunityMapSource({ slug: 'brno', map: { lat: 90, lng: 16.61 } }), /coordinates/)
+  assert.throws(() => parseCommunityMapSource({ slug: 'brno', map: { lat: 49.19, lng: 16.61, zoom: 30 } }), /zoom/)
 })
 
 test('BeruBitcoin payload is narrowed to map-safe fields and sorted by ID', () => {

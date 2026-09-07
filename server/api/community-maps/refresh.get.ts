@@ -1,9 +1,14 @@
-import { createError, defineEventHandler, getQuery, setResponseHeader } from 'h3'
+import { createError, defineEventHandler, getQuery, setResponseHeader, setResponseStatus } from 'h3'
 
 import { isEventsAdminTokenValid } from '../../utils/eventsAdminAuth.ts'
-import type { generateCommunityMaps } from '../../utils/staticMap.ts'
 
-type CommunityMapResult = Awaited<ReturnType<typeof generateCommunityMaps>>
+interface CommunityMapEnqueueResult {
+  queued: number
+}
+
+interface CommunityMapQueue {
+  sendBatch: (messages: Array<{ body: unknown, contentType: 'json' }>) => Promise<unknown>
+}
 
 export default defineEventHandler(async (event) => {
   setResponseHeader(event, 'cache-control', 'no-store')
@@ -22,8 +27,12 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'Invalid community map refresh request' })
   }
 
-  const task = await runTask<CommunityMapResult>('community-maps', {
+  const platform = event.context._platform as { cloudflare?: { env?: Record<string, unknown> } } | undefined
+  const queue = platform?.cloudflare?.env?.COMMUNITY_MAPS_QUEUE as CommunityMapQueue | undefined
+  const task = await runTask<CommunityMapEnqueueResult>('community-maps', {
     payload: query.community ? { community: query.community } : {},
+    context: { communityMapsQueue: queue, contentEvent: event },
   })
+  setResponseStatus(event, 202)
   return { ok: true, ...task.result }
 })

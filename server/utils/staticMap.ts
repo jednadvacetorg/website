@@ -62,6 +62,28 @@ const assertFiniteNumber = (value: unknown, field: string): number => {
   return value
 }
 
+export const parseCommunityMapSource = (value: unknown): CommunityMapSource => {
+  if (!isRecord(value) || typeof value.slug !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value.slug)) {
+    throw new Error('Invalid community map source slug')
+  }
+  if (!isRecord(value.map)) throw new Error(`Invalid community map source for ${value.slug}`)
+
+  const lat = assertFiniteNumber(value.map.lat, `${value.slug}.map.lat`)
+  const lng = assertFiniteNumber(value.map.lng, `${value.slug}.map.lng`)
+  if (lat < 48 || lat > 52 || lng < 12 || lng > 19) {
+    throw new Error(`Out-of-range community map coordinates for ${value.slug}`)
+  }
+
+  const zoom = value.map.zoom === undefined
+    ? undefined
+    : assertFiniteNumber(value.map.zoom, `${value.slug}.map.zoom`)
+  if (zoom !== undefined && (zoom < 0 || zoom > 22)) {
+    throw new Error(`Out-of-range community map zoom for ${value.slug}`)
+  }
+
+  return { slug: value.slug, map: { lat, lng, ...(zoom === undefined ? {} : { zoom }) } }
+}
+
 const readResponseBytes = async (response: Response, maximumBytes: number): Promise<Uint8Array> => {
   const declaredLength = Number(response.headers.get('content-length'))
   if (Number.isFinite(declaredLength) && declaredLength > maximumBytes) {
@@ -313,8 +335,9 @@ export const generateCommunityMaps = async ({
   const trimmedToken = token.trim()
   if (!trimmedToken) throw new Error('Mapbox access token is not configured')
 
+  const sources = communities.map(parseCommunityMapSource)
   const places = await fetchPlaces(fetchImpl)
-  const requests = communities.flatMap(community => COMMUNITY_MAP_VARIANTS.map(variant => ({ community, variant })))
+  const requests = sources.flatMap(community => COMMUNITY_MAP_VARIANTS.map(variant => ({ community, variant })))
   const images = await runWithConcurrency(requests, 4, async ({ community, variant }) => {
     const zoom = community.map.zoom ?? DEFAULT_ZOOM
     const center = { latitude: community.map.lat, longitude: community.map.lng }
@@ -340,5 +363,5 @@ export const generateCommunityMaps = async ({
     },
   )))
 
-  return { generated: communities.length, images: requests.length }
+  return { generated: sources.length, images: requests.length }
 }
