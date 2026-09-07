@@ -9,11 +9,13 @@ organizers:
   - no-good-kid
 ---
 
-::u-page-c-t-a
+::u-page-section
+:::u-page-c-t-a
 ---
 description: Veřejné akce zatím nepořádáme, ale jezdíme společně na akce do Brna.
 links:
   - label: Akce v Brně
     to: /brno
 ---
+:::
 ::
