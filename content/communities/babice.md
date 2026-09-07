@@ -6,3 +6,6 @@ map:
   lng: 14.7156
 signal_group: https://signal.group/#CjQKINwZTxF65aLedvVEOD79HlC8VZBnVcZwoc5UgZCZTz4aEhD_n_6LQZYvFPosGx2sNjih
 ---
+
+::calendar{community="babice"}
+::

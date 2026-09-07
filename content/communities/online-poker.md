@@ -5,3 +5,6 @@ signal_group: https://signal.group/#CjQKIMwtDpye0Bcd5JCjYUPeGuxIFERHupvckfXq7DxF
 portal_meetup_id: 367
 hidden: true
 ---
+
+::calendar{community="online-poker"}
+::

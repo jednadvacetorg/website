@@ -6,3 +6,6 @@ map:
   lng: 14.6182
 signal_group: https://signal.group/#CjQKILctOTDrgdTQZnjIzHe-0vZrrCObLqhvysDAIqgONmyoEhCc877DiqyMSpxb0sqgrTpw
 ---
+
+::calendar{community="varnsdorf"}
+::

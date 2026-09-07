@@ -6,3 +6,6 @@ map:
   lng: 17.4637
 signal_group: https://signal.group/#CjQKILNXJmN0LjnTaM_TOtBs2UORLsDWzPVOHPLINqNpKSjkEhBPhsfyNnFweNFPw_AlJufU
 ---
+
+::calendar{community="bruntal"}
+::

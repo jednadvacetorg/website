@@ -6,3 +6,6 @@ map:
   lng: 15.0543
 signal_group: https://signal.group/#CjQKIKtzoUpECn8UMe75RVp5JarCLBHIRjks3CpZKWXVMPMDEhDPRKeK6Qx3BcNBol90npXl
 ---
+
+::calendar{community="liberec"}
+::
