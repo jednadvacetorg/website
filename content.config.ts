@@ -7,6 +7,7 @@ const commonSchema = {
   seo: property(z.any().optional()).editor({ hidden: true }),
   navigation: property(z.any().optional()).editor({ hidden: true }),
   sitemap: property(defineSitemapSchema({ z })).editor({ hidden: true }),
+  redirect_from: z.array(z.string()).optional(),
 }
 
 const exclude = ['README.md']
@@ -26,7 +27,6 @@ export default defineContentConfig({
         thumbnail: z.string(),
         categories: z.array(z.string()).optional(),
         authors: z.array(z.string()).optional(),
-        redirect_from: z.array(z.string()).optional(),
       }).passthrough()
     }),
 
