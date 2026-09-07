@@ -157,6 +157,24 @@ test('BeruBitcoin network failures log the runtime error detail', async (t) => {
   ])
 })
 
+test('BeruBitcoin redirects are rejected without writing images', async () => {
+  let redirect: RequestRedirect | undefined
+  let writes = 0
+
+  await assert.rejects(generateCommunityMaps({
+    token: 'secret-token',
+    communities: [{ slug: 'brno', map: { lat: 49.19, lng: 16.61 } }],
+    blob: { put: async () => { writes += 1 } },
+    fetchImpl: async (_input, init) => {
+      redirect = init?.redirect
+      return new Response(null, { status: 302, headers: { location: 'https://example.com/' } })
+    },
+  }), /BeruBitcoin places request failed with HTTP 302/)
+
+  assert.equal(redirect, 'manual')
+  assert.equal(writes, 0)
+})
+
 test('Mapbox network errors do not retain a token-bearing cause', async () => {
   const token = 'highly-sensitive-token'
   const fetchImpl = async (input: string | URL | Request) => {
@@ -178,6 +196,28 @@ test('Mapbox network errors do not retain a token-bearing cause', async () => {
       && error.cause === undefined
       && !String(error).includes(token),
   )
+})
+
+test('Mapbox redirects are rejected without writing images', async () => {
+  let mapboxRedirect: RequestRedirect | undefined
+  let writes = 0
+  const fetchImpl = async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).includes('berubitcoin')) {
+      return Response.json([{ id: 1, name: 'Place', lngLat: [16.61, 49.19], accepts: {} }])
+    }
+    mapboxRedirect = init?.redirect
+    return new Response(null, { status: 302, headers: { location: 'https://example.com/' } })
+  }
+
+  await assert.rejects(generateCommunityMaps({
+    token: 'secret-token',
+    communities: [{ slug: 'brno', map: { lat: 49.19, lng: 16.61 } }],
+    blob: { put: async () => { writes += 1 } },
+    fetchImpl,
+  }), /Mapbox image request failed for brno-sm with HTTP 302/)
+
+  assert.equal(mapboxRedirect, 'manual')
+  assert.equal(writes, 0)
 })
 
 for (const status of [401, 403, 404, 410, 422, 429]) {

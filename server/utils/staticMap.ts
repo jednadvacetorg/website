@@ -241,7 +241,7 @@ const fetchPlaces = async (fetchImpl: FetchLike): Promise<CommunityMapPlace[]> =
   try {
     response = await fetchImpl(BERUBITCOIN_URL, {
       headers: { accept: 'application/json' },
-      redirect: 'error',
+      redirect: 'manual',
       signal: AbortSignal.timeout(10_000),
     })
   } catch (error) {
@@ -271,7 +271,7 @@ const fetchPlaces = async (fetchImpl: FetchLike): Promise<CommunityMapPlace[]> =
 const fetchMapImage = async (fetchImpl: FetchLike, url: URL, slug: string): Promise<Uint8Array> => {
   let response: Response
   try {
-    response = await fetchImpl(url, { redirect: 'error', signal: AbortSignal.timeout(15_000) })
+    response = await fetchImpl(url, { redirect: 'manual', signal: AbortSignal.timeout(15_000) })
   } catch {
     throw new Error(`Mapbox image request failed for ${slug}`)
   }
