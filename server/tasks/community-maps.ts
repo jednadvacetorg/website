@@ -39,13 +39,21 @@ export default defineTask({
       if (!communities.length) throw new Error(`Community map source not found: ${requestedCommunity}`)
     }
 
-    return {
-      result: await generateCommunityMaps({
-        token: config.mapboxAccessToken,
-        style: config.mapboxStyle,
-        communities,
-        blob,
-      }),
+    try {
+      return {
+        result: await generateCommunityMaps({
+          token: config.mapboxAccessToken,
+          style: config.mapboxStyle,
+          communities,
+          blob,
+        }),
+      }
+    } catch (error) {
+      const detail = error instanceof Error
+        ? `${error.name}: ${error.message}`
+        : `non-Error rejection (${typeof error})`
+      console.error(`[community-maps] Generation failed: ${detail}`)
+      throw error
     }
   },
 })

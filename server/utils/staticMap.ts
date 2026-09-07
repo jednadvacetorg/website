@@ -245,6 +245,10 @@ const fetchPlaces = async (fetchImpl: FetchLike): Promise<CommunityMapPlace[]> =
       signal: AbortSignal.timeout(10_000),
     })
   } catch (error) {
+    const detail = error instanceof Error
+      ? `${error.name}: ${error.message}`
+      : `non-Error rejection (${typeof error})`
+    console.error(`[community-maps] BeruBitcoin fetch failed: ${detail}`)
     throw new Error('BeruBitcoin places request failed', { cause: error })
   }
 

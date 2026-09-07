@@ -139,6 +139,24 @@ test('generation requires a token before making requests or writes', async () =>
   assert.equal(written, false)
 })
 
+test('BeruBitcoin network failures log the runtime error detail', async (t) => {
+  const logs: string[] = []
+  t.mock.method(console, 'error', (message: unknown) => logs.push(String(message)))
+
+  await assert.rejects(generateCommunityMaps({
+    token: 'secret-token',
+    communities: [],
+    blob: { put: async () => {} },
+    fetchImpl: async () => {
+      throw new TypeError('Network connection lost')
+    },
+  }), /BeruBitcoin places request failed/)
+
+  assert.deepEqual(logs, [
+    '[community-maps] BeruBitcoin fetch failed: TypeError: Network connection lost',
+  ])
+})
+
 test('Mapbox network errors do not retain a token-bearing cause', async () => {
   const token = 'highly-sensitive-token'
   const fetchImpl = async (input: string | URL | Request) => {
