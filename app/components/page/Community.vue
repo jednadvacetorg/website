@@ -41,7 +41,7 @@ const communityMapSrc = (variant: 'sm' | 'md' | 'lg') => import.meta.dev
           fetchpriority="high"
         >
       </picture>
-      <div aria-hidden="true" class="absolute inset-0 bg-linear-to-r from-black/85 via-black/65 to-black/50" />
+      <div aria-hidden="true" class="absolute inset-0 bg-linear-to-r from-black/75 to-black/30" />
     </template>
 
     <template #links>
@@ -57,11 +57,11 @@ const communityMapSrc = (variant: 'sm' | 'md' | 'lg') => import.meta.dev
     </template>
 
     <template v-if="community.map" #bottom>
-      <p class="absolute right-3 bottom-2 z-10 text-right text-xs text-white/50">
+      <p class="absolute right-3 bottom-2 z-10 text-right text-xs text-white opacity-50">
         ©
         <ULink class="text-white/60 underline" to="https://www.mapbox.com/about/maps/" target="_blank" rel="noopener noreferrer">Mapbox</ULink>,
         © <ULink class="text-white/60 underline" to="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</ULink>,
-        bitcoinová místa <ULink class="text-white/60 underline" to="https://btcmap.org" target="_blank" rel="noopener noreferrer">BTC Map</ULink>.
+        <ULink class="text-white/60 underline" to="https://btcmap.org" target="_blank" rel="noopener noreferrer">BTC Map</ULink>.
       </p>
     </template>
   </UPageHero>

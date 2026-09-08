@@ -6,11 +6,12 @@ const { community } = defineProps<{ community: string }>()
 const { $counterscale } = useNuxtApp()
 
 const endpoint = computed(() => `/api/events?community=${encodeURIComponent(community)}`)
-const { data, status, refresh } = await useFetch<PortalEvent[]>(endpoint, {
+const { data, error, status, refresh } = await useFetch<PortalEvent[]>(endpoint, {
   key: endpoint,
 })
 
 const events = computed(() => projectCalendarEvents(data.value ?? []))
+const isMissingPortalMeetup = computed(() => status.value === 'error' && error.value?.statusCode === 404)
 const allTagsValue = '__all_tags__'
 const pageSize = 8
 const selectedTags = ref<string[]>([allTagsValue])
@@ -85,18 +86,18 @@ useHead(() => ({
     <template #body>
       <div class="min-w-0" aria-live="polite">
       <template v-if="status === 'pending' && !data">
-        <p role="status" class="text-sm text-muted">Načítáme nadcházející události…</p>
+        <p role="status" class="text-sm text-muted">Načítání událostí…</p>
       </template>
       <UAlert
-        v-else-if="status === 'error' || !data"
+        v-else-if="status === 'error' && !isMissingPortalMeetup"
         role="alert"
         color="neutral"
         variant="subtle"
         title="Kalendář se nyní nepodařilo načíst. Zkuste stránku obnovit později."
       />
-      <div v-else-if="data.length === 0" role="status">
-        <h3 class="text-xl font-semibold leading-tight">Žádné nadcházející události</h3>
-        <p class="mt-2 text-sm text-muted">Nyní nejsou naplánované žádné nadcházející události.</p>
+      <div v-else-if="isMissingPortalMeetup || data?.length === 0" role="status" class="text-center p-10">
+        <h3 class="text-xl font-semibold leading-tight">Žádné naplánované události</h3>
+        <p class="mt-2 text-sm text-muted">Nyní nejsou naplánované žádné budoucí události.</p>
       </div>
       <div v-else-if="filteredEvents.length === 0" role="status">
         <h3 class="text-xl font-semibold leading-tight">Žádné odpovídající události</h3>
@@ -183,15 +184,24 @@ useHead(() => ({
     </template>
 
     <template #footer>
-      <div class="flex w-full flex-wrap items-center justify-center gap-3 text-right">
-        <span>Nenech si ujít žádnou akci</span>
-        <UModal v-model:open="isSubscriptionOpen" title="Sledovat události" scrollable>
-          <UButton>Sledovat události</UButton>
+      <div class="flex w-full flex-col items-center gap-3 text-center">
+        <div class="my-5 flex flex-wrap items-center justify-center gap-3">
+          <span>Nenech si ujít žádnou akci</span>
+          <UModal v-model:open="isSubscriptionOpen" title="Sledovat události" scrollable>
+            <UButton>Sledovat události</UButton>
 
-          <template #body>
-            <SubscriptionGuide v-if="isSubscriptionOpen" :initial-community="community" />
-          </template>
-        </UModal>
+            <template #body>
+              <SubscriptionGuide v-if="isSubscriptionOpen" :initial-community="community" />
+            </template>
+          </UModal>
+        </div>
+        <div class="flex items-center justify-center gap-3 text-xl text-muted" aria-label="Možnosti sledování událostí">
+          <UIcon name="i-simple-icons-googlecalendar" role="img" aria-label="Google Calendar" title="Google Calendar" />
+          <UIcon name="i-simple-icons-apple" role="img" aria-label="Apple Kalendář" title="Apple Kalendář" />
+          <UIcon name="i-simple-icons-microsoftoutlook" role="img" aria-label="Outlook" title="Outlook" />
+          <UIcon name="i-lucide-mail" role="img" aria-label="E-mail" title="E-mail" />
+          <UIcon name="i-lucide-smartphone" role="img" aria-label="Mobil" title="Mobil" />
+        </div>
       </div>
     </template>
   </UPageCard>
