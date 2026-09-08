@@ -38,6 +38,11 @@ export default defineNuxtConfig({
         '~~/shared/blogArticlesTransformer',
       ],
     },
+    renderer: {
+      alias: {
+        table: 'ProseScrollableTable',
+      },
+    },
   },
 
   css: ['~/assets/css/main.css'],

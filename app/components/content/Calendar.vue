@@ -64,7 +64,13 @@ useHead(() => ({
     as="section"
     aria-labelledby="calendar-title"
     class="my-8 min-w-0"
-    :ui="{ header: 'w-full', body: 'w-full', footer: 'w-full' }"
+    :ui="{
+      container: 'min-w-0',
+      wrapper: 'min-w-0',
+      header: 'w-full',
+      body: 'w-full min-w-0',
+      footer: 'w-full',
+    }"
   >
     <template #header>
       <div class="flex w-full flex-wrap items-center justify-between gap-3">
