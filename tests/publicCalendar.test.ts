@@ -6,12 +6,14 @@ import {
   getPublicCalendarFeed,
   parsePublicCalendarScope,
   PublicCalendarError,
+  type PublicCalendarCommunity,
   type PublicCalendarDependencies,
 } from '../server/routes/ical/[slug].get.ts'
 import type { PortalCalendarEvent, PortalCommunity, PortalStorage } from '../server/utils/portalEvents.ts'
 
 const brno: PortalCommunity = { id: 'brno', path: '/brno', title: 'Brno', portalMeetupId: 360 }
 const online: PortalCommunity = { id: 'online-poker', path: '/online-poker', title: 'Online poker', portalMeetupId: 367 }
+const pribram: PublicCalendarCommunity = { id: 'pribram', path: '/pribram', title: 'Příbram' }
 const now = new Date('2026-08-30T12:00:00.000Z')
 
 const portalEvent = (id: number, portalLink: string, title: string) => ({
@@ -32,19 +34,24 @@ const meetupRows = [
   { id: 367, portalLink: 'portal:online' },
 ]
 
-const dependencies = (options: { events?: unknown[], fail?: boolean } = {}): PublicCalendarDependencies => {
+const dependencies = (options: {
+  communities?: readonly PublicCalendarCommunity[]
+  events?: unknown[]
+  meetups?: unknown[]
+  fail?: boolean
+} = {}): PublicCalendarDependencies => {
   const values = new Map<string, unknown>()
   const storage: PortalStorage = {
     getItem: async key => values.get(key),
     setItem: async (key, value) => { values.set(key, value) },
   }
   return {
-    communities: async () => [brno, online],
+    communities: async () => options.communities ?? [brno, online],
     storage,
     fetch: async (url) => {
       if (options.fail) throw new Error('Portal transport detail')
       return url.endsWith('/meetups')
-        ? meetupRows
+        ? options.meetups ?? meetupRows
         : options.events ?? [
             portalEvent(1, 'portal:brno', 'Brněnský meetup'),
             portalEvent(2, 'portal:online', 'Online meetup'),
@@ -53,6 +60,37 @@ const dependencies = (options: { events?: unknown[], fail?: boolean } = {}): Pub
     now,
   }
 }
+
+test('an unconfigured community keeps a valid empty feed that starts returning events after Portal is connected', async () => {
+  const emptyResponse = await getPublicCalendarFeed('pribram', dependencies({
+    communities: [pribram],
+    fail: true,
+  }))
+  const emptyCalendar = ICAL.Component.fromString(await emptyResponse.text())
+  assert.equal(emptyResponse.status, 200)
+  assert.equal(emptyCalendar.getFirstPropertyValue('x-wr-calname'), 'Jednadvacet - Příbram')
+  assert.deepEqual(emptyCalendar.getAllSubcomponents('vevent'), [])
+
+  const connectedResponse = await getPublicCalendarFeed('pribram', dependencies({
+    communities: [{ ...pribram, portalMeetupId: 500 }],
+    events: [portalEvent(3, 'portal:pribram', 'Příbramský meetup')],
+    meetups: [{ id: 500, portalLink: 'portal:pribram' }],
+  }))
+  const connectedCalendar = ICAL.Component.fromString(await connectedResponse.text())
+  assert.deepEqual(connectedCalendar.getAllSubcomponents('vevent').map(event =>
+    event.getFirstPropertyValue('summary')), ['Příbramský meetup'])
+})
+
+test('a mixed scope includes unconfigured communities while fetching events only for configured ones', async () => {
+  const response = await getPublicCalendarFeed('brno,pribram', dependencies({
+    communities: [brno, pribram],
+    events: [portalEvent(1, 'portal:brno', 'Brněnský meetup')],
+  }))
+  const calendar = ICAL.Component.fromString(await response.text())
+  assert.equal(calendar.getFirstPropertyValue('x-wr-calname'), 'Jednadvacet - Brno, Příbram')
+  assert.deepEqual(calendar.getAllSubcomponents('vevent').map(event =>
+    event.getFirstPropertyValue('summary')), ['Brno - Brněnský meetup'])
+})
 
 test('configured scope returns one generated inline calendar with stable event metadata', async () => {
   const response = await getPublicCalendarFeed('brno', dependencies())

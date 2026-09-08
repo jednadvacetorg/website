@@ -23,7 +23,6 @@ const email = computed({
 
 const { data: communities, status, refresh } = await useAsyncData('subscription-guide-communities', () => {
   return queryCollection('communities')
-    .where('portal_meetup_id', 'IS NOT NULL')
     .select('path', 'title')
     .all()
 })

@@ -1,8 +1,7 @@
 import ICAL from 'ical.js'
-import { createError, defineEventHandler, getHeader, getQuery, getRouterParam } from 'h3'
+import { createError, defineEventHandler, getHeader, getQuery, getRouterParam, type H3Event } from 'h3'
 import {
   getPortalCalendarEvents,
-  getPortalCommunities,
   type PortalCalendarEvent,
   type PortalCommunity,
   type PortalFetch,
@@ -13,8 +12,12 @@ import { projectCalendarEvent } from '../../utils/calendarEventProjection.ts'
 const publicSlugPattern = /^[a-z0-9][a-z0-9-]*$/
 const maxSelectedCommunities = 100
 
+export type PublicCalendarCommunity = Omit<PortalCommunity, 'portalMeetupId'> & {
+  portalMeetupId?: number
+}
+
 export interface PublicCalendarDependencies {
-  communities: () => Promise<readonly PortalCommunity[]>
+  communities: () => Promise<readonly PublicCalendarCommunity[]>
   storage: PortalStorage
   fetch: PortalFetch
   now?: Date
@@ -106,13 +109,17 @@ export const getPublicCalendarFeed = async (
 
   let events: PortalCalendarEvent[]
   try {
-    events = await getPortalCalendarEvents(
-      requested,
-      communities,
-      dependencies.storage,
-      dependencies.fetch,
-      dependencies.now,
-    )
+    const configured = selected.filter((community): community is PortalCommunity =>
+      community.portalMeetupId !== undefined)
+    events = configured.length === 0
+      ? []
+      : await getPortalCalendarEvents(
+          configured.map(community => community.id),
+          configured,
+          dependencies.storage,
+          dependencies.fetch,
+          dependencies.now,
+        )
   } catch {
     throw new PublicCalendarError(503, 'Kalendář je nyní nedostupný.')
   }
@@ -132,12 +139,31 @@ export const getPublicCalendarFeed = async (
   })
 }
 
+const getPublicCalendarCommunities = async (event: H3Event): Promise<PublicCalendarCommunity[]> => {
+  const { queryCollection } = await import('@nuxt/content/server')
+  const communities = await queryCollection(event, 'communities').all()
+  return communities.map((community) => {
+    const portalMeetupId = community.portal_meetup_id === undefined || community.portal_meetup_id === null
+      ? undefined
+      : Number(community.portal_meetup_id)
+    if (portalMeetupId !== undefined && (!Number.isSafeInteger(portalMeetupId) || portalMeetupId < 0)) {
+      throw new Error(`Community ${community.path} has an invalid Portal meetup ID`)
+    }
+    return {
+      id: community.path.replace(/^\/+/, ''),
+      path: community.path,
+      title: community.title,
+      ...(portalMeetupId !== undefined ? { portalMeetupId } : {}),
+    }
+  })
+}
+
 export default defineEventHandler(async (event) => {
   try {
     const scope = getRouterParam(event, 'slug')
     parsePublicCalendarScope(scope, getQuery(event))
     return await getPublicCalendarFeed(scope, {
-      communities: () => getPortalCommunities(event),
+      communities: () => getPublicCalendarCommunities(event),
       storage: useStorage('portalEvents'),
       fetch: $fetch,
     }, getHeader(event, 'sec-fetch-dest') === 'document')
