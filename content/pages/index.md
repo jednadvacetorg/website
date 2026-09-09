@@ -35,7 +35,3 @@ title: Co říkají lidé z komunit
     ::::
   :::
 ::
-
-# TODO
-- rozcestník na články
-- CTA socky
