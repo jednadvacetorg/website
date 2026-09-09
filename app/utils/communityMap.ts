@@ -1,11 +1,18 @@
 export const COMMUNITY_MAP_WIDTH = 1200
-export const COMMUNITY_MAP_HEIGHT = 700
 export const COMMUNITY_MAP_BOUNDS = {
   minLng: 11.25,
   maxLng: 19.75,
   minLat: 47.8,
   maxLat: 51.8,
 } as const
+
+const mercator = (latitude: number) => Math.log(Math.tan(Math.PI / 4 + latitude * Math.PI / 360))
+const longitudeSpanRadians = (COMMUNITY_MAP_BOUNDS.maxLng - COMMUNITY_MAP_BOUNDS.minLng) * Math.PI / 180
+const northing = mercator(COMMUNITY_MAP_BOUNDS.maxLat)
+
+export const COMMUNITY_MAP_HEIGHT = COMMUNITY_MAP_WIDTH
+  * (northing - mercator(COMMUNITY_MAP_BOUNDS.minLat))
+  / longitudeSpanRadians
 
 export interface CommunityMapTransform {
   scale: number
@@ -15,7 +22,7 @@ export interface CommunityMapTransform {
 
 export const projectCommunityCoordinate = (lng: number, lat: number) => ({
   x: (lng - COMMUNITY_MAP_BOUNDS.minLng) / (COMMUNITY_MAP_BOUNDS.maxLng - COMMUNITY_MAP_BOUNDS.minLng) * COMMUNITY_MAP_WIDTH,
-  y: (COMMUNITY_MAP_BOUNDS.maxLat - lat) / (COMMUNITY_MAP_BOUNDS.maxLat - COMMUNITY_MAP_BOUNDS.minLat) * COMMUNITY_MAP_HEIGHT,
+  y: COMMUNITY_MAP_WIDTH * (northing - mercator(lat)) / longitudeSpanRadians,
 })
 
 export const clampCommunityMapTransform = (transform: CommunityMapTransform): CommunityMapTransform => {
