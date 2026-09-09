@@ -28,7 +28,6 @@ const blogItems = computed<NavigationMenuItem[]>(() => [
 ])
 
 const cityItems = computed<NavigationMenuItem[]>(() => [
-  { label: 'Prioritní města', type: 'label' },
   ...communities.value.prioritized.map(community => ({
     label: community.title,
     to: community.path,
@@ -101,9 +100,6 @@ const cityLinkClass = 'block rounded-md px-3 py-2 text-sm text-highlighted hover
     <template #cities-content>
       <div class="w-[32rem] max-w-[90vw] max-h-[calc(100vh-8rem)] overflow-y-auto p-5">
         <section>
-          <h2 class="mb-1 px-3 text-sm font-semibold text-muted">
-            Prioritní města
-          </h2>
           <ul class="grid grid-cols-3 gap-1">
             <li v-for="community in communities.prioritized" :key="community.path">
               <ULink :to="community.path" :class="cityLinkClass">
