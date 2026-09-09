@@ -85,5 +85,6 @@ useHead({ title: 'Najdi svou bitcoinovou komunitu' })
 <style scoped>
 .homepage-discovery {
   background-color: #111827;
+  --ui-text-inverted: #fff;
 }
 </style>
