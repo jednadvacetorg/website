@@ -72,8 +72,8 @@ useHead({ title: 'Najdi svou bitcoinovou komunitu' })
       </template>
 
       <template #title>
-        <div class="mb-1 text-primary">{{ activeContent.accent }}</div>
-        <div class="">{{ activeContent.heading }}</div>
+        <div class="mb-1 text-primary font-bold">{{ activeContent.accent }}</div>
+        <div class="font-bold">{{ activeContent.heading }}</div>
       </template>
 
     </UPageHero>
