@@ -1,4 +1,7 @@
+import { navigationItems } from './shared/data/navigation'
+
 const isPreviewDeploy = Boolean(process.env.PREVIEW_DEPLOY)
+const isDevelopment = process.env.NODE_ENV === 'development'
 const communityMapsCron = '17 3 * * *'
 const communityMapsQueue = 'community-maps'
 
@@ -102,12 +105,18 @@ export default defineNuxtConfig({
   },
 
   icon: {
-    // Bundle statically discovered icons so production never fetches Iconify data.
-    provider: 'none',
+    collections: studioIconLibraries,
+    provider: isDevelopment ? 'server' : 'none',
+    fallbackToApi: false,
+    serverBundle: { collections: studioIconLibraries },
     clientBundle: {
+      icons: navigationItems.flatMap(item =>
+        item.children?.flatMap(child => child.icon ? [child.icon] : []) ?? [],
+      ),
       scan: {
-        globInclude: ['app/**/*.{vue,ts}', 'content/**/*.{md,yml,yaml}', 'shared/data/navigation.ts'],
+        globInclude: ['app/**/*.{vue,ts}', 'content/**/*.{md,yml,yaml}'],
         globExclude: ['node_modules'],
+        additionalCollections: studioIconLibraries,
       },
       sizeLimitKb: 256,
     },

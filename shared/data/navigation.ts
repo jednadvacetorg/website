@@ -5,7 +5,7 @@ export const supportNavigationItems = [
   { label: 'Přispět', to: '/podporit#prispet' },
 ] satisfies NavigationMenuItem[]
 
-export const navigationItems = [
+export const navigationItems: NavigationMenuItem[] = [
   {
     label: 'Města',
     value: 'cities',
@@ -33,55 +33,55 @@ export const navigationItems = [
       {
         label: 'Monument',
         description: 'Postavme Satoshimu sochu v Praze.',
-        icon: 'i-lucide-pyramid',
+        icon: 'lucide:pyramid',
         to: 'https://satoshi.jednadvacet.org/',
         target: '_blank',
       },
       {
         label: 'Bitcoinová liga',
         description: 'Celoroční pubkvíz po celém Česku a Slovensku.',
-        icon: 'i-lucide-trophy',
+        icon: 'lucide:trophy',
         to: '/liga',
       },
       {
         label: 'Bitcoin je mrtvý',
         description: 'Již 15 let sledujeme Bitcoin umírat',
-        icon: 'i-streamline-christian-cross-2',
+        icon: 'streamline:christian-cross-2',
         to: 'https://mrtvy.jednadvacet.org',
         target: '_blank',
       },
       {
         label: 'BeruBitcoin.cz',
         description: 'Již 15 let sledujeme Bitcoin umírat',
-        icon: 'i-lucide:beer',
+        icon: 'lucide:beer',
         to: 'https://www.berubitcoin.cz',
         target: '_blank',
       },
       {
         label: 'BeruBitcoin.cz',
         description: 'Již 15 let sledujeme Bitcoin umírat',
-        icon: 'i-pinhead-martini-glass-and-wine-bottle',
+        icon: 'pinhead:martini-glass-and-wine-bottle',
         to: 'https://www.berubitcoin.cz',
         target: '_blank',
       },
       {
         label: 'med-O-mat',
         description: 'Inovativní automat na med pro moderní včelaře',
-        icon: 'i-pinhead-bee',
+        icon: 'pinhead:bee',
         to: 'https://www.med-o-mat.cz',
         target: '_blank',
       },
       {
         label: 'Payky',
         description: 'Jednoduchá a soukromá pokladní aplikace pro obchodníky',
-        icon: 'i-streamline-shopping-cart-1-remix',
+        icon: 'streamline:shopping-cart-1-remix',
         to: 'https://payky.me/',
         target: '_blank',
       },
       {
         label: 'Linky',
         description: 'Jednoduchá a soukromá mobilní peněženka s chatem',
-        icon: 'i-streamline-chat-bubble-typing-oval-remix',
+        icon: 'streamline:chat-bubble-typing-oval-remix',
         to: 'https://linky.fit',
         target: '_blank',
       },
@@ -97,4 +97,4 @@ export const navigationItems = [
       },
     ],
   },
-] satisfies NavigationMenuItem[]
+]
