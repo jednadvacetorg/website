@@ -3,6 +3,8 @@ title: Najdi svou bitcoinovou komunitu
 redirect_from:
   - /bitcoin
   - /bitcoin.pdf
+  - /lokalni-komunity/
+  - /newsletter/
 ---
 
 :homepage-hero

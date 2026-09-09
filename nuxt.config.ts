@@ -225,7 +225,10 @@ export default defineNuxtConfig({
 
   routeRules: {
     '/cntrsclc': { proxy: { to: 'https://analytics.jednadvacet.org/collect' } }, // Mask tracker collect URL to avoid blockers.
-    '/author/**': { redirect: { to: '/lide', statusCode: 301 } },
+    '/author/**': { redirect: { to: '/lide', statusCode: 302 } },
+    '/blog/page/**': { redirect: { to: '/blog', statusCode: 302 } },
+    '/category/**': { redirect: { to: '/blog', statusCode: 302 } },
+    '/tag/**': { redirect: { to: '/blog', statusCode: 302 } },
   },
 
   studio: {

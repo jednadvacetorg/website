@@ -5,8 +5,6 @@ map:
   lat: 48.7531
   lng: 16.8825
 signal_group: https://signal.group/#CjQKIGjVTsMBNjUQwW7bPj5VREjME8VtH5hOn3dFT9QoYxxgEhD7bSJ3sU3vcOaNKTzyHAQC
-organizers:
-  - no-good-kid
 ---
 
 ::u-page-section

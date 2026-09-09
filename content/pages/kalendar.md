@@ -1,5 +1,8 @@
 ---
 title: Kalendář
+redirect_from:
+  - /calendar/**
+  - /events/
 ---
 
 ::u-page-section

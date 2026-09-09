@@ -1,5 +1,9 @@
 ---
 title: BTC Liga
+redirect_from:
+  - /kviz/
+  - /kviz-liga/
+  - /kviz-olomouc/
 ---
 
 ::liga-hero

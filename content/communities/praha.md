@@ -7,6 +7,8 @@ map:
   lng: 14.4378
 signal_group: https://signal.group/#CjQKIBUtV3CVWFw8ZPGHABDTmHt6eSF-uPTIIvp-XCO5peClEhDchciJTqDpSIMbb9Gc68b7
 portal_meetup_id: 365
+redirect_from:
+  - /praha-2/
 organizers:
   - filipzavoral
 ---

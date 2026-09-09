@@ -1,9 +1,10 @@
 ---
 title: Podpořit
 redirect_from:
-  - /obchod/*
-  - /kategorie-produktu/*
-  - /kosik/*
+  - /obchod/**
+  - /kategorie-produktu/**
+  - /kosik/**
+  - /partneri/
 ---
 
 ::u-page-section
