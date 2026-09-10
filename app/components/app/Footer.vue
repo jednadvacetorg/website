@@ -25,13 +25,13 @@ const footerLinks = [
           >
             {{ link.label }}
           </NuxtLink>
-          <NuxtLink
+          <!-- <NuxtLink
             :to="`/_studio?redirect=${encodeURIComponent($route.path)}`"
             external
             class="hover:text-primary transition-colors"
           >
             <UIcon name="i-lucide-user" />
-        </NuxtLink>
+          </NuxtLink> -->
         </div>
       </div>
     </UContainer>
