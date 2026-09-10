@@ -1,165 +1,180 @@
----
-last_mapped_commit: 406253b1b73b8ef1369805abfcfd98a6f3adb0d1
----
-
+<!-- refreshed: 2026-09-10 -->
 # Codebase Structure
 
-<!-- refreshed: 2026-09-01 -->
-
-**Analysis Date:** 2026-09-01
+**Analysis Date:** 2026-09-10
 
 ## Directory Layout
 
 ```text
 /workspace/
-├── app/                     # Nuxt app shell, routes, layouts, components and client utilities
+├── app/                     # Nuxt app shell, pages, layouts, components and client utilities
+│   ├── components/          # App chrome, page renderers, MDC and reusable UI
+│   ├── composables/         # Shared content queries/projections
+│   ├── layouts/              # Default and wallpaper layouts
+│   ├── pages/                # File-based route adapters
+│   ├── plugins/              # Client-only Nuxt plugins
+│   ├── utils/                # Browser-safe pure projections
+│   └── assets/css/           # Global CSS entry
 ├── content/                 # Nuxt Content Markdown collections
-├── public/                  # Static images, logos and partner/blog media
-├── server/                  # Nitro API routes and server-only Portal adapter
-├── shared/                  # Build extensions, shared data and cross-boundary types
-├── scripts/                 # Node build guards
-├── tests/                   # Node test-runner tests for pure/server behavior
-├── .planning/codebase/      # Architecture and project maps
-├── .devcontainer/           # Development container definition
-├── .github/                 # Repository metadata
-├── content.config.ts        # Content collection schemas and sources
-├── nuxt.config.ts           # Nuxt, Nitro, modules and deployment configuration
-└── package.json             # npm scripts and dependencies
+│   ├── blog-articles/        # Date-prefixed articles
+│   ├── blog-categories/      # Blog category records
+│   ├── communities/          # Root-routed community records
+│   ├── pages/                # Root-routed general pages
+│   └── people/               # Author/organizer records
+├── public/                   # Static images, icons and public media
+├── server/                   # Nitro APIs, routes, middleware, tasks, plugins and utilities
+├── shared/                   # Build extensions, shared data and cross-boundary types
+├── scripts/                  # Node-only build validation
+├── tests/                    # Built-in Node test-runner tests
+├── .planning/codebase/       # Committed GSD repository maps
+├── .devcontainer/            # Development container definition/local state
+├── content.config.ts         # Collection schemas and content sources
+├── nuxt.config.ts            # Nuxt modules, Nitro, Cloudflare and runtime configuration
+├── package.json              # npm scripts and dependencies
+├── package-lock.json         # npm lockfile
+└── tsconfig.json             # References Nuxt-generated TypeScript projects
 ```
 
-Generated or local-only directories include `node_modules/`, `.nuxt/`, `.output/`, `.data/`, `.wrangler/`, and `.devcontainer/data/`; treat them as build/runtime state rather than source of truth. The ignored legacy path `old.jednadvacet.org/` is separate from the Nuxt application when present.
+Generated or local-only directories include `node_modules/`, `.nuxt/`, `.output/`, `.data/`, `.wrangler/` and `.devcontainer/data/`. Treat them as build/runtime state, not source of truth.
 
 ## Directory Purposes
 
 **`app/`:**
 - Purpose: Nuxt 4 application source.
-- Contains: `app/app.vue`, `app/pages/`, `app/layouts/`, `app/components/`, `app/composables/`, `app/utils/`, `app/plugins/`, `app/assets/` and `app/app.config.ts`.
-- Add route files under `app/pages/`, reusable UI under the nearest component subdirectory, pure browser-safe projections under `app/utils/`, and shared content queries in `app/composables/content.ts`.
+- Key files: `app/app.vue`, `app/pages/[...slug].vue`, `app/pages/blog/[[slug]].vue`, `app/pages/lide.vue`.
+- Add routes under `app/pages/`, global frame UI under `app/components/app/`, collection renderers under `app/components/page/`, and Markdown-facing features under `app/components/content/`.
+
+**`app/components/`:**
+- `app/components/app/`: navigation, logo, social menu and footer.
+- `app/components/page/`: `BlogArticle.vue`, `BlogCategory.vue` and `Community.vue`.
+- `app/components/content/`: `Calendar.vue`, `MinersTable.vue`, `SubscriptionGuide.vue` and the global `ProseScrollableTable` alias.
+- Direct children: reusable displays and feature blocks such as `CommunityMap.vue`, `PersonBlock.vue`, `PartnersList.vue`, `DonateBlock.vue`, `HomepageHero.vue` and `HomepageTopics.vue`.
+
+**`app/composables/` and `app/utils/`:**
+- Purpose: Reusable content queries and browser-safe pure projections.
+- Key files: `app/composables/content.ts`, `app/utils/calendar.ts`, `app/utils/communityMap.ts`.
+- Keep one-use view logic in its component; add a composable or utility when logic has a stable reusable boundary.
 
 **`content/`:**
-- Purpose: Filesystem content database consumed by Nuxt Content.
-- Contains: `content/pages/`, `content/blog-articles/`, `content/blog-categories/`, `content/communities/`, and `content/people/`.
-- Add frontmatter according to `content.config.ts`; use `YYYYMMDD.slug.md` for blog articles and preserve valid public route uniqueness.
+- Purpose: Filesystem-backed content database indexed by Nuxt Content.
+- Collections are declared in `content.config.ts`: `blogArticles`, `blogCategories`, `communities`, `pages` and `people`.
+- Blog files use `YYYYMMDD.slug.md`; page, community, category and people filenames provide their slug identifiers. Follow the schema and public-route rules in `content.config.ts`.
 
 **`server/`:**
-- Purpose: Nitro server-only behavior.
-- Contains: `server/api/events/index.get.ts`, `server/api/events/webhook.post.ts`, and `server/utils/portalEvents.ts`.
-- Add external integrations behind a server utility and expose narrow API handlers; do not send raw upstream Portal records to the browser.
+- Purpose: Nitro server-only behavior and external integration boundaries.
+- `server/api/`: H3 endpoints for events, miners, admin operations and development map serving.
+- `server/routes/`: generated public iCalendar route at `server/routes/ical/[slug].get.ts`.
+- `server/middleware/`: request-level compatibility behavior such as `server/middleware/rss-feed.ts`.
+- `server/utils/`: pure/injectable integration logic for Portal, Google Calendar, miners, maps, auth and projections.
+- `server/tasks/` and `server/plugins/`: scheduled/queued map orchestration.
 
 **`shared/`:**
-- Purpose: Code consumed by more than one build/runtime boundary.
-- Contains: `shared/data/contentRouteSources.ts`, `shared/data/partners.ts`, `shared/data/communityMapGeometry.json`, `shared/types/portalEvents.ts`, `shared/blogArticlesTransformer.ts`, and `shared/contentRedirectsModule.ts`.
-- Put a type here only when both server and client production code consume it; keep one-consumer helpers local.
-
-**`scripts/`:**
-- Purpose: Node-only build validation.
-- Key file: `scripts/validate-content-routes.ts`, which derives routes from content source files and rejects cross-collection collisions and root content under `/blog`.
-
-**`tests/`:**
-- Purpose: Node built-in test-runner coverage for pure projections, Portal behavior, webhook validation and route validation.
-- Key files: `tests/calendarProjection.test.ts`, `tests/portalEvents.test.ts`, `tests/portalWebhook.test.ts`, and `tests/validateContentRoutes.test.ts`.
+- Purpose: Code/data used across build, server and client boundaries.
+- `shared/data/`: navigation, partner data, map geometry and routed content source metadata.
+- `shared/types/`: cross-boundary `miners` and `portalEvents` contracts.
+- Root modules: `shared/blogArticlesTransformer.ts` and `shared/contentRedirectsModule.ts`.
+- Put a type here only when production code on both client and server consumes it.
 
 **`public/`:**
-- Purpose: Files served without content collection processing.
-- Contains: static assets under `public/images/`.
-- Reference assets with root-relative URLs; keep content media naming aligned with `README.md`.
+- Purpose: Files served directly without content processing.
+- Key locations: `public/images/app/`, `public/images/blog/`, `public/images/avatars/`, `public/images/partners/` and `public/icons/`.
+- Use root-relative URLs and preserve the media naming conventions documented in `README.md`.
+
+**`scripts/`:**
+- Purpose: Node-only build guards.
+- Key file: `scripts/validate-content-routes.ts`, which detects routed collection collisions and invalid root/blog paths before `nuxt build`.
+
+**`tests/`:**
+- Purpose: Focused tests for pure transformations and server integration behavior using Node's built-in test runner.
+- Key files: `tests/validateContentRoutes.test.ts`, `tests/portalEvents.test.ts`, `tests/publicCalendar.test.ts`, `tests/googleCalendar.test.ts`, `tests/miners.test.ts`, `tests/communityProjection.test.ts` and `tests/communityHeroMaps.test.ts`.
 
 ## Key File Locations
 
 **Entry Points:**
-- `app/app.vue`: Global Nuxt shell and head defaults.
-- `app/pages/[...slug].vue`: Generic pages/communities route.
-- `app/pages/blog/[[slug]].vue`: Blog index/category/article route.
-- `app/pages/lide.vue`: People listing route.
-- `server/api/events/index.get.ts`: Public calendar API.
-- `server/api/events/webhook.post.ts`: Portal webhook endpoint.
+- `app/app.vue`: browser shell and global head.
+- `app/pages/[...slug].vue`: root pages/communities.
+- `app/pages/blog/[[slug]].vue`: blog index/category/article routes.
+- `app/pages/lide.vue`: people listing.
+- `server/api/events/index.get.ts`: public event API.
+- `server/routes/ical/[slug].get.ts`: public calendar feed.
+- `server/api/community-maps/refresh.get.ts`: protected map queue trigger.
 
 **Configuration:**
-- `nuxt.config.ts`: Modules, Nitro Cloudflare preset, D1/KV bindings, route rules, storage and sitemap settings.
-- `content.config.ts`: Collection source directories, URL prefixes and schemas.
-- `app/app.config.ts`: Nuxt UI colors and prose theme settings.
-- `tsconfig.json`: References Nuxt-generated application, server, shared and node projects.
+- `nuxt.config.ts`: modules, Nitro preset, D1/KV/Queue/Blob bindings, route rules, image provider and runtime config.
+- `content.config.ts`: collection schemas, source directories and URL prefixes.
+- `app/app.config.ts`: Nuxt UI theme configuration.
+- `shared/data/navigation.ts`: fixed navigation and allowed icon references.
+- `tsconfig.json`: Nuxt-generated app/server/shared/node project references.
 
 **Core Logic:**
-- `server/utils/portalEvents.ts`: External event normalization and cache orchestration.
-- `app/composables/content.ts`: Content query helpers and community projection.
-- `app/utils/calendar.ts`: Calendar display and JSON-LD projection.
-- `shared/data/contentRouteSources.ts`: Shared public route mapping.
-- `shared/blogArticlesTransformer.ts`: Blog filename date extraction.
+- `server/utils/portalEvents.ts`: Portal normalization, cache lifecycle and event revisions/cancellations.
+- `server/utils/googleCalendar.ts`: OAuth, managed-event reconciliation and sync.
+- `server/utils/staticMap.ts`: map source validation and image generation.
+- `app/composables/content.ts`: content queries and community grouping.
+- `app/utils/calendar.ts`: browser calendar/JSON-LD projections.
+- `shared/data/contentRouteSources.ts`: routed collection contract.
 
 **Testing:**
-- `tests/`: Focused Node tests.
-- `scripts/validate-content-routes.ts`: Build-time route guard exercised by `tests/validateContentRoutes.test.ts`.
-
-## Component Organization
-
-**App/navigation:** `app/components/app/NavBar.vue`, `app/components/app/NavMenu.vue`, `app/components/app/SocialMenu.vue`, `app/components/app/Footer.vue`, and `app/components/app/Logo.vue`.
-
-**Page renderers:** `app/components/page/BlogArticle.vue`, `app/components/page/BlogCategory.vue`, and `app/components/page/Community.vue`.
-
-**Content/MDC components:** `app/components/HomepageHero.vue`, `app/components/content/Calendar.vue`, `app/components/PartnersList.vue`, and `app/components/DonateBlock.vue`.
-
-**Reusable display components:** `app/components/PersonBlock.vue`, `app/components/CategoriesBadges.vue`, `app/components/SocialLinks.vue`, and `app/components/CommunityMap.vue`.
-
-## Content Organization
-
-- `content/blog-articles/`: 26 Markdown articles at map time; filenames begin with `YYYYMMDD.` and route under `/blog`.
-- `content/blog-categories/`: 12 category documents routed under `/blog`.
-- `content/pages/`: 6 root page documents, including `content/pages/index.md` and `content/pages/kalendar.md`.
-- `content/communities/`: 51 community documents routed at root paths.
-- `content/people/`: 11 author/organizer records queried by `app/components/PersonBlock.vue` and `app/pages/lide.vue` without a standalone people catch-all route.
-- `content.config.ts`: Defines all five collections; only the four routed collections participate in `shared/data/contentRouteSources.ts` and route-collision validation.
+- `tests/`: pure projections, server adapters, auth/webhook behavior and route validation.
+- `package.json`: `npm test` invokes `node --experimental-strip-types --test tests/*.test.ts`.
 
 ## Naming Conventions
 
 **Files:**
 - Vue components use PascalCase, for example `app/components/CommunityMap.vue`.
-- Composables use camelCase filenames and `use*` exports, for example `app/composables/content.ts`.
-- Route files follow Nuxt conventions such as `app/pages/[...slug].vue` and `app/pages/blog/[[slug]].vue`.
-- Blog Markdown uses `YYYYMMDD.slug.md`; people, category, page and community Markdown uses lowercase slug names.
+- Composable modules use lowercase camelCase and export `use*` functions, for example `app/composables/content.ts`.
+- Pure utility modules use descriptive camelCase, for example `app/utils/calendar.ts` and `server/utils/portalEvents.ts`.
+- Nuxt route handlers use filesystem suffixes such as `index.get.ts`, `[slug].get.ts`, `webhook.post.ts` and `[[slug]].vue`.
+- Markdown slugs are lowercase; blog Markdown starts with `YYYYMMDD.`.
+- Tests use descriptive camelCase names ending in `.test.ts`.
 
 **Directories:**
-- Group UI by responsibility: `app/components/app/`, `app/components/page/`, and `app/components/content/`.
-- Keep shared generic display components directly under `app/components/`.
-- Mirror Nuxt conventions for `app/pages/`, `app/layouts/`, `app/plugins/`, and `server/api/`.
+- Group UI by responsibility: `app/components/app/`, `app/components/page/` and `app/components/content/`.
+- Mirror Nuxt conventions for `app/pages/`, `app/layouts/`, `app/plugins/`, `server/api/`, `server/routes/`, `server/tasks/` and `server/utils/`.
+- Keep shared constants/data in `shared/data/` and cross-boundary types in `shared/types/`.
 
 ## Where to Add New Code
 
-**New feature:**
-- Content-backed page: add Markdown under the relevant `content/` collection and render it through `app/pages/[...slug].vue`.
-- Blog feature: use `content/blog-articles/` or `content/blog-categories/` and extend `app/pages/blog/[[slug]].vue` or `app/components/page/` only when routing/rendering needs it.
-- External/server feature: add a narrow handler under `server/api/` and place normalization/cache logic in `server/utils/`.
+**New Feature:**
+- Content-backed page: add a Markdown record to the relevant `content/` collection; use `app/pages/[...slug].vue` or `app/pages/blog/[[slug]].vue` unless a new route shape is required.
+- Blog feature: add content under `content/blog-articles/` or `content/blog-categories/`; extend `app/components/page/` only when rendering needs collection-specific behavior.
+- External/server feature: add a narrow H3 handler under `server/api/` or `server/routes/`, with validation/normalization in `server/utils/`.
+- Scheduled or queued feature: place the task in `server/tasks/` and Cloudflare event hook in `server/plugins/`; configure bindings in `nuxt.config.ts`.
 
-**New component/module:**
-- MDC component: `app/components/content/` when it is content-specific; `app/components/` for a reusable display component; `app/components/app/` for global navigation/frame UI.
-- Pure transformation: `app/utils/` for client-safe logic, or `shared/` only when server and client both consume it.
+**New Component/Module:**
+- Global navigation/frame: `app/components/app/`.
+- Collection renderer: `app/components/page/`.
+- Markdown/MDC feature: `app/components/content/`.
+- Reusable display block: direct child of `app/components/`.
+- Pure browser transformation: `app/utils/`; cross-client/server transformation or type: `shared/`.
 
 **Utilities:**
-- Content query and projection helpers: `app/composables/content.ts`.
-- Calendar/map projections: `app/utils/calendar.ts` and `app/utils/communityMap.ts`.
-- Shared data/constants: `shared/data/`.
+- Content query/projection: `app/composables/content.ts`.
+- Calendar display: `app/utils/calendar.ts`; iCalendar/Google shared projection: `server/utils/calendarEventProjection.ts`.
+- Community map UI math: `app/utils/communityMap.ts`; external image pipeline: `server/utils/staticMap.ts`.
+- Shared navigation/content source/data: `shared/data/`.
 
 ## Special Directories
 
 **`.planning/codebase/`:**
 - Purpose: Committed GSD architecture, structure, quality, technology and concern maps.
-- Generated: No; refresh intentionally from repository state.
+- Generated: No; refresh intentionally from the live repository.
 - Committed: Yes.
 
-**`.nuxt/`, `.output/`, `.data/`, `node_modules/`:**
-- Purpose: Generated Nuxt output, deployment output, local storage and dependencies.
+**`.nuxt/`, `.output/`, `.data/`, `.wrangler/`, `node_modules/`:**
+- Purpose: Generated Nuxt output, deployment output, local storage, Wrangler state and dependencies.
 - Generated: Yes.
 - Committed: No.
 
 **`.devcontainer/`:**
-- Purpose: Reproducible development environment and local agent data location.
-- Generated: Definition committed; `.devcontainer/data/` is ignored local state.
+- Purpose: Reproducible development environment definition.
+- Generated: Definition is committed; `.devcontainer/data/` is local ignored state.
 
 **`public/`:**
 - Purpose: Static runtime assets.
-- Generated: No.
-- Committed: Yes, except ignored paths governed by `.gitignore`.
+- Generated: No for source media/icons; generated community-map objects are written to Blob/R2 rather than committed source.
+- Committed: Source assets are committed subject to ignore rules.
 
 ---
 
-*Structure analysis: 2026-09-01*
+*Structure analysis: 2026-09-10*
