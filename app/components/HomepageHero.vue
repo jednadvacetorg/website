@@ -49,6 +49,7 @@ useHead({ title: 'Najdi svou bitcoinovou komunitu' })
           alt=""
           width="1920"
           height="1440"
+          sizes="sm:100vw md:100vw lg:100vw xl:100vw 2xl:100vw"
           preload
           class="absolute inset-0 w-full h-full object-cover object-[30%] -z-20"
           aria-hidden="true"

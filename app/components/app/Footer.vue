@@ -8,6 +8,7 @@ const footerLinks = [
   { label: 'Explorer', to: 'https://explorer.jednadvacet.org' },
   { label: 'GitHub', to: 'https://github.com/jednadvacetorg' },
   { label: 'Grafika', to: 'https://github.com/Jednadvacetorg/jednadvacet-grafika' },
+  { label: 'Starý e-shop', to: 'https://old.jednadvacet.org/obchod/' },
 ]
 </script>
 

@@ -5,6 +5,7 @@
       alt=""
       width="2000"
       height="1500"
+      sizes="sm:100vw md:100vw lg:100vw xl:100vw 2xl:100vw"
       preload
       class="absolute inset-0 z-0 size-full object-cover object-center opacity-70"
       aria-hidden="true"
