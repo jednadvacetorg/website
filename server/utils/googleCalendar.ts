@@ -30,7 +30,21 @@ interface ManagedGoogleEvent {
 }
 
 /** Represents a safe integration failure without retaining Google response bodies. */
-export class GoogleCalendarError extends Error {}
+export class GoogleCalendarError extends Error {
+  readonly status?: number
+  readonly reason?: string
+
+  constructor(
+    message: string,
+    status?: number,
+    reason?: string,
+  ) {
+    super(message)
+    this.name = 'GoogleCalendarError'
+    this.status = status
+    this.reason = reason
+  }
+}
 
 /** Validates private runtime configuration before any Google side effect. */
 export const getGoogleCalendarConfig = (runtimeConfig: Record<string, unknown>): GoogleCalendarConfig => {
@@ -57,6 +71,21 @@ const responseJson = async (response: Response): Promise<unknown> => {
   }
 }
 
+const googleErrorReason = async (response: Response) => {
+  try {
+    const payload = await response.json()
+    if (!isRecord(payload) || !isRecord(payload.error) || !Array.isArray(payload.error.errors)) return undefined
+    const error = payload.error.errors.find(isRecord)
+    return typeof error?.reason === 'string' ? error.reason : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const rejectedResponse = async (response: Response, operation: string): Promise<never> => {
+  throw new GoogleCalendarError(operation, response.status, await googleErrorReason(response))
+}
+
 const accessToken = async (config: GoogleCalendarConfig, fetcher: GoogleFetch) => {
   const body = new URLSearchParams({
     client_id: config.clientId,
@@ -75,7 +104,7 @@ const accessToken = async (config: GoogleCalendarConfig, fetcher: GoogleFetch) =
   } catch {
     throw new GoogleCalendarError('Google OAuth is unavailable')
   }
-  if (!response.ok) throw new GoogleCalendarError('Google OAuth rejected the refresh token')
+  if (!response.ok) await rejectedResponse(response, 'Google OAuth rejected the refresh token')
   const payload = await responseJson(response)
   if (!isRecord(payload) || typeof payload.access_token !== 'string' || !payload.access_token) {
     throw new GoogleCalendarError('Google OAuth returned no access token')
@@ -166,7 +195,7 @@ const upsertWithToken = async (
       body: JSON.stringify(body),
     })
     if (updated.ok) return 'updated'
-    if (updated.status !== 404) throw new GoogleCalendarError('Google Calendar rejected an event update')
+    if (updated.status !== 404) await rejectedResponse(updated, 'Google Calendar rejected an event update')
   }
 
   const inserted = await googleRequest(fetcher, token, config, '/events', {
@@ -180,8 +209,9 @@ const upsertWithToken = async (
       body: JSON.stringify(body),
     })
     if (updated.ok) return 'updated'
+    await rejectedResponse(updated, 'Google Calendar rejected an event update after an insert conflict')
   }
-  throw new GoogleCalendarError('Google Calendar rejected an event insert')
+  return rejectedResponse(inserted, 'Google Calendar rejected an event insert')
 }
 
 const deleteWithToken = async (
@@ -193,7 +223,7 @@ const deleteWithToken = async (
   const id = await googleCalendarEventId(portalEventId)
   const response = await googleRequest(fetcher, token, config, `/events/${id}`, { method: 'DELETE' })
   if (!response.ok && response.status !== 404 && response.status !== 410) {
-    throw new GoogleCalendarError('Google Calendar rejected an event deletion')
+    await rejectedResponse(response, 'Google Calendar rejected an event deletion')
   }
   return response.status !== 404 && response.status !== 410
 }
@@ -213,7 +243,7 @@ const listManagedEvents = async (
     })
     if (pageToken) query.set('pageToken', pageToken)
     const response = await googleRequest(fetcher, token, config, `/events?${query}`)
-    if (!response.ok) throw new GoogleCalendarError('Google Calendar rejected the managed event list')
+    if (!response.ok) await rejectedResponse(response, 'Google Calendar rejected the managed event list')
     const payload = await responseJson(response)
     if (!isRecord(payload) || !Array.isArray(payload.items)) {
       throw new GoogleCalendarError('Google Calendar returned an invalid event list')

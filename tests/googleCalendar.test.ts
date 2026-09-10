@@ -3,6 +3,7 @@ import test from 'node:test'
 import {
   deleteGoogleCalendarEvent,
   getGoogleCalendarConfig,
+  GoogleCalendarError,
   googleCalendarEventId,
   reconcileGoogleCalendar,
   syncGoogleCalendarEvent,
@@ -83,6 +84,50 @@ test('webhook upsert refreshes OAuth and creates a prefixed event with shared IC
   assert.equal(body.extendedProperties.private.jednadvacetEventId, '42')
   assert.equal(body.extendedProperties.private.jednadvacetSequence, '10')
   assert.equal(body.reminders.useDefault, false)
+})
+
+test('Google rejections retain only the status and documented reason', async () => {
+  const fetcher: GoogleFetch = async (url) => {
+    if (url === 'https://oauth2.googleapis.com/token') return tokenResponse()
+    return Response.json({
+      error: {
+        code: 403,
+        message: 'Request had insufficient authentication scopes.',
+        errors: [{ reason: 'insufficientPermissions', message: 'Sensitive upstream detail' }],
+      },
+    }, { status: 403 })
+  }
+
+  await assert.rejects(
+    syncGoogleCalendarEvent(portalEvent('42'), config, fetcher),
+    (error: unknown) => {
+      assert.ok(error instanceof GoogleCalendarError)
+      assert.equal(error.message, 'Google Calendar rejected an event update')
+      assert.equal(error.status, 403)
+      assert.equal(error.reason, 'insufficientPermissions')
+      assert.doesNotMatch(error.message, /Sensitive upstream detail/)
+      return true
+    },
+  )
+})
+
+test('Google insert rejections identify the failed fallback operation', async () => {
+  const fetcher: GoogleFetch = async (url, init) => {
+    if (url === 'https://oauth2.googleapis.com/token') return tokenResponse()
+    if (init?.method === 'PUT') return new Response(null, { status: 404 })
+    return Response.json({ error: { errors: [{ reason: 'forbidden' }] } }, { status: 403 })
+  }
+
+  await assert.rejects(
+    syncGoogleCalendarEvent(portalEvent('42'), config, fetcher),
+    (error: unknown) => {
+      assert.ok(error instanceof GoogleCalendarError)
+      assert.equal(error.message, 'Google Calendar rejected an event insert')
+      assert.equal(error.status, 403)
+      assert.equal(error.reason, 'forbidden')
+      return true
+    },
+  )
 })
 
 test('deleting an already absent Google event is idempotent', async () => {

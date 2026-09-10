@@ -9,6 +9,7 @@ import {
 import {
   deleteGoogleCalendarEvent,
   getGoogleCalendarConfig,
+  GoogleCalendarError,
   syncGoogleCalendarEvent,
 } from '../../utils/googleCalendar.ts'
 
@@ -136,7 +137,13 @@ export default defineEventHandler(async (event) => {
           if (calendarEvent) await syncGoogleCalendarEvent(calendarEvent, googleConfig)
         }
       } catch (error) {
-        console.error('Google Calendar webhook synchronization failed', error)
+        console.error('Google Calendar webhook synchronization failed', {
+          eventName,
+          eventId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          ...(error instanceof GoogleCalendarError && error.status !== undefined ? { status: error.status } : {}),
+          ...(error instanceof GoogleCalendarError && error.reason ? { reason: error.reason } : {}),
+        })
         throw createError({ statusCode: 502, statusMessage: 'Google Calendar synchronization failed' })
       }
     }
