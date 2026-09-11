@@ -31,7 +31,7 @@ title: Co říkají lidé z komunit
 
     ::::u-page-card{description="„Návody jak zacházet s Bitcoinem psané IT lidmi pro IT lidi mi přišly nesrozumitelné. Pak jsem zašla na sraz, kde mi během chvilky ukázali lidi z komunity mobilní peněženku, poslali mi pár stovek, za které jsem pak zaplatila útratu u baru. Dnes externě pracuji pro Trezor.“"}
     #footer
-    :u-user{size="3xl" name="Zuzana Ledvinková" description="Praha" :avatar='{ "src": "/images/avatars/zuzanaledvinkova.jpg" }'}
+    :u-user{size="3xl" name="Zana" description="Praha" :avatar='{ "src": "/images/avatars/zana.jpg" }'}
     ::::
   :::
 ::
