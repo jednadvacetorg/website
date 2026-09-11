@@ -52,15 +52,8 @@ export const navigationItems: NavigationMenuItem[] = [
       },
       {
         label: 'BeruBitcoin.cz',
-        description: 'Již 15 let sledujeme Bitcoin umírat',
+        description: 'Konzultace zdarma pro podnikatele kteří chtějí brát bitcoin.',
         icon: 'lucide:beer',
-        to: 'https://www.berubitcoin.cz',
-        target: '_blank',
-      },
-      {
-        label: 'BeruBitcoin.cz',
-        description: 'Již 15 let sledujeme Bitcoin umírat',
-        icon: 'pinhead:martini-glass-and-wine-bottle',
         to: 'https://www.berubitcoin.cz',
         target: '_blank',
       },
