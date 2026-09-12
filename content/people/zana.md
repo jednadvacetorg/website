@@ -3,7 +3,6 @@ title: Zana
 avatar: /images/avatars/zana.jpg
 description: "Mladá autorka, která se teprve hledá. Ztracená mezi řádky, formami i žánry střídá ve svojí tvorbě hudební a odborné články, eseje nebo třeba videoherní překlady. Zájmy jsou široké, času je málo, ale nezastavujeme a jedeme pořád dál. "
 links:
-  - https://substack.com/@zanatxt
   - https://www.instagram.com/zana_txt
 ---
 

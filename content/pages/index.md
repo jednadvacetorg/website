@@ -66,9 +66,9 @@ redirect_from:
       ---
       avatar: null
       description: Praha
-      name: Zuzana Ledvinková
+      name: Zana
       size: 3xl
-      src: /images/avatars/zuzanaledvinkova.jpg
+      src: /images/avatars/zana.jpg
       ---
       :::::
     ::::
