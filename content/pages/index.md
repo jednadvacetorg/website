@@ -5,6 +5,8 @@ redirect_from:
   - /bitcoin.pdf
   - /lokalni-komunity/
   - /newsletter/
+  - /promo
+  - /qr
 ---
 
 :homepage-hero
