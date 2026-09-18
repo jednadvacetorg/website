@@ -6,6 +6,9 @@ const communityMapsCron = '17 3 * * *'
 const communityMapsQueue = 'community-maps'
 const portalEventsCron = '47 3 * * *'
 const portalEventsQueue = 'portal-events'
+const notificationMessagesCron = '13 * * * *'
+const notificationMessagesQueue = 'notification-messages'
+const notificationMessagesDeadLetterQueue = 'notification-messages-dlq'
 
 const studioIconLibraries = ['bitcoin-icons', 'lucide', 'pinhead', 'simple-icons', 'streamline']
 
@@ -79,6 +82,30 @@ export default defineNuxtConfig({
     eventsAdminToken: '',
     mapboxAccessToken: '',
     mapboxStyle: 'mapbox/dark-v10',
+    // Keep notification activation private and fail closed until Phases 6–7 provide both message types.
+    notificationCommunitySlugs: '',
+    notificationSuppressionHashKeys: '',
+    notificationCurrentSuppressionHashKeyVersion: '',
+    // Abuse state has a separate HMAC identity from suppression and outbox keys.
+    notificationAbuseHashKeys: '',
+    notificationCurrentAbuseHashKeyVersion: '',
+    notificationTurnstileSecret: '',
+    notificationTurnstileExpectedHostname: '',
+    notificationOutboxTransportKeys: '',
+    notificationCurrentOutboxTransportKeyVersion: '',
+    notificationConsentVersion: '',
+    notificationEmailSmsEnabled: false,
+    notificationEmailSmsFirstMessageReady: false,
+    notificationEmailSmsEventDeliveryReady: false,
+    notificationWebPushEnabled: false,
+    notificationWebPushFirstMessageReady: false,
+    notificationWebPushEventDeliveryReady: false,
+    // Private and inert outside an explicitly-owned development verification process.
+    notificationUiVerificationFixture: false,
+    public: {
+      // This is the only notification-abuse value intentionally exposed to browsers.
+      notificationTurnstileSiteKey: '',
+    },
   },
 
   sitemap: {
@@ -134,6 +161,7 @@ export default defineNuxtConfig({
       : {
           [communityMapsCron]: 'community-maps',
           [portalEventsCron]: 'portal-events',
+          [notificationMessagesCron]: 'notification-messages',
         },
     devStorage: {
       miners: {
@@ -230,6 +258,10 @@ export default defineNuxtConfig({
                   binding: 'PORTAL_EVENTS_QUEUE',
                   queue: portalEventsQueue,
                 },
+                {
+                  binding: 'NOTIFICATION_MESSAGES_QUEUE',
+                  queue: notificationMessagesQueue,
+                },
               ],
               consumers: [
                 {
@@ -250,12 +282,21 @@ export default defineNuxtConfig({
                   // No DLQ is provisioned yet; persistent valid failures are visible in logs
                   // but Cloudflare discards them after retries are exhausted.
                 },
+                {
+                  queue: notificationMessagesQueue,
+                  max_batch_size: 10,
+                  max_batch_timeout: 5,
+                  max_retries: 5,
+                  retry_delay: 60,
+                  max_concurrency: 1,
+                  dead_letter_queue: notificationMessagesDeadLetterQueue,
+                },
               ],
             },
         triggers: isPreviewDeploy
           ? undefined
           : {
-              crons: [communityMapsCron, portalEventsCron],
+              crons: [communityMapsCron, portalEventsCron, notificationMessagesCron],
             },
         observability: cloudflareObservability,
       }
