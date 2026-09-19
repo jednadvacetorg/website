@@ -23,7 +23,8 @@
 				"sdras.vue-vscode-snippets",
 				"sst-dev.opencode",
 				"usernamehw.errorlens",
-				"vue.volar"
+				"vue.volar",
+				"letmaik.git-tree-compare"
 			],
 			"settings": {
 				"launch": {
