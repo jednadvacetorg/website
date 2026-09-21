@@ -16,7 +16,8 @@ const schema = `
   CREATE TABLE notification_contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination TEXT NOT NULL, destination_hash TEXT NOT NULL, destination_hash_key_version TEXT NOT NULL, management_token_digest TEXT NOT NULL, capability_generation INTEGER NOT NULL, state TEXT NOT NULL, consent_at TEXT NOT NULL, consent_version TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(channel, destination));
   CREATE TABLE notification_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL, community_slug TEXT NOT NULL, frequency TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(contact_id, community_slug, frequency));
   CREATE TABLE notification_suppressions (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination_hash TEXT NOT NULL, destination_hash_key_version TEXT NOT NULL, reason TEXT NOT NULL, suppressed_at TEXT NOT NULL, UNIQUE(channel, destination_hash));
-  CREATE TABLE notification_outbox (id TEXT PRIMARY KEY, contact_id INTEGER NOT NULL, version INTEGER NOT NULL, expected_capability_generation INTEGER NOT NULL, status TEXT NOT NULL, claim_token TEXT, claim_expires_at TEXT, payload_ciphertext TEXT, payload_iv TEXT, transport_key_version TEXT, kind TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, terminal_at TEXT);
+   CREATE TABLE notification_outbox (id TEXT PRIMARY KEY, contact_id INTEGER NOT NULL, version INTEGER NOT NULL, expected_capability_generation INTEGER NOT NULL, status TEXT NOT NULL, claim_token TEXT, claim_expires_at TEXT, payload_ciphertext TEXT, payload_iv TEXT, transport_key_version TEXT, kind TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, terminal_at TEXT);
+   CREATE TABLE notification_management_capabilities (token_digest TEXT PRIMARY KEY, contact_id INTEGER NOT NULL, expected_capability_generation INTEGER NOT NULL, created_at TEXT NOT NULL, expires_at TEXT);
   CREATE TABLE notification_abuse_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, requester_hash TEXT NOT NULL, requester_hash_key_version TEXT NOT NULL, attempted_at TEXT NOT NULL, expires_at TEXT NOT NULL);
 `
 
@@ -424,6 +425,18 @@ test('management reads are non-destructive and only the newest rotated bearer re
   await requestNotificationManagementRecovery({ channel: 'email', contact: 'Alice@example.com' }, { database, config, crypto: sequencedCrypto })
   assert.deepEqual(await readNotificationManagement(tokenForByte(0), { database, config, crypto: sequencedCrypto }), { state: 'unavailable' })
   assert.equal((await readNotificationManagement(tokenForByte(3), { database, config, crypto: sequencedCrypto })).state, 'active')
+})
+
+test('a digest-only event alias resolves only for the matching current generation', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  const alias = tokenForByte(9)
+  const aliasDigest = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(alias))))).replace(/=+$/g, '').replace(/\+/g, '-').replace(/\//g, '_')
+  await database.prepare('INSERT INTO notification_management_capabilities (token_digest, contact_id, expected_capability_generation, created_at) VALUES (?, ?, ?, ?)').bind(aliasDigest, 1, 1, '2026-09-17T00:00:00.000Z').run()
+  assert.equal((await readNotificationManagement(alias, { database, config, crypto: predictableCrypto })).state, 'active')
+  await database.prepare('UPDATE notification_contacts SET capability_generation = capability_generation + 1').run()
+  assert.deepEqual(await readNotificationManagement(alias, { database, config, crypto: predictableCrypto }), { state: 'unavailable' })
+  assert.equal(query('SELECT token_digest FROM notification_management_capabilities').length, 1)
 })
 
 test('a stale bearer cannot update, remove, or stop subscriptions after recovery', async () => {

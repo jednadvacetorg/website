@@ -203,7 +203,13 @@ export const requestNotificationManagementRecovery = async (input: NotificationM
 
 const findContact = async (token: unknown, dependencies: NotificationDependencies) => {
   if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{20,}$/.test(token)) return null
-  return dependencies.database.prepare('SELECT id, channel, destination, destination_hash, destination_hash_key_version, management_token_digest, state, capability_generation FROM notification_contacts WHERE management_token_digest = ?').bind(await digest(token, dependencies.crypto ?? defaultCrypto())).first<ContactRow>()
+  const tokenDigest = await digest(token, dependencies.crypto ?? defaultCrypto())
+  const primary = await dependencies.database.prepare('SELECT id, channel, destination, destination_hash, destination_hash_key_version, management_token_digest, state, capability_generation FROM notification_contacts WHERE management_token_digest = ?').bind(tokenDigest).first<ContactRow>()
+  if (primary) return primary
+  // Event mail capabilities are digest-only aliases. Their expected generation must
+  // still match the current contact, so recovery, stop, and reactivation invalidate
+  // old links without adding a second management mutation path.
+  return dependencies.database.prepare('SELECT c.id, c.channel, c.destination, c.destination_hash, c.destination_hash_key_version, c.management_token_digest, c.state, c.capability_generation FROM notification_management_capabilities a JOIN notification_contacts c ON c.id = a.contact_id AND c.capability_generation = a.expected_capability_generation WHERE a.token_digest = ? AND (a.expires_at IS NULL OR a.expires_at > ?)').bind(tokenDigest, nowIso(dependencies)).first<ContactRow>()
 }
 const communitiesFor = async (contactId: number, dependencies: NotificationDependencies) => {
   const { results } = await dependencies.database.prepare('SELECT community_slug, frequency FROM notification_subscriptions WHERE contact_id = ? ORDER BY community_slug, frequency').bind(contactId).all<SubscriptionRow>()
