@@ -5,17 +5,16 @@ import { notificationUiVerificationFixtureEnabled } from '../../utils/notificati
 
 export interface NotificationReadiness {
   email: boolean
-  emailReasons: readonly string[]
   sms: boolean
   webPush: boolean
 }
 
-const unavailable: NotificationReadiness = { email: false, emailReasons: ['unavailable'], sms: false, webPush: false }
+const unavailable: NotificationReadiness = { email: false, sms: false, webPush: false }
 
 /** Projects private delivery configuration into the only public readiness contract. */
 export const projectNotificationReadiness = async (runtimeConfig: Record<string, unknown>, database?: NotificationDatabase): Promise<NotificationReadiness> => {
   try {
-    if (notificationUiVerificationFixtureEnabled(runtimeConfig)) return { email: true, emailReasons: [], sms: true, webPush: false }
+    if (notificationUiVerificationFixtureEnabled(runtimeConfig)) return { email: true, sms: true, webPush: false }
     const config = await notificationConfig(runtimeConfig)
     if (!database) return unavailable
     await assertOutboxTransportKeyRetention({ database, config })
@@ -27,7 +26,7 @@ export const projectNotificationReadiness = async (runtimeConfig: Record<string,
       && config.webPushEventDeliveryReady
 
     const emailReady = emailSmsReady && config.emailDeliveryReady
-    return { email: emailReady, emailReasons: emailReady ? [] : ['email-delivery-not-ready'], sms: emailSmsReady, webPush: webPushReady }
+    return { email: emailReady, sms: emailSmsReady, webPush: webPushReady }
   } catch {
     return unavailable
   }

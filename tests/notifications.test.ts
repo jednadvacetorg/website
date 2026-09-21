@@ -203,7 +203,7 @@ test('missing, malformed, short, and unknown-current private key material fails 
   for (const runtimeConfig of invalidConfigurations) await assert.rejects(notificationConfig(runtimeConfig))
 })
 
-test('public readiness fails closed when private configuration is incomplete and enables only complete channels', async () => {
+test('public readiness keeps email false until separate delivery evidence is complete', async () => {
   const runtimeConfig = {
     notificationCommunitySlugs: 'brno',
     notificationSuppressionHashKeys: JSON.stringify({ v1: key }),
@@ -224,7 +224,7 @@ test('public readiness fails closed when private configuration is incomplete and
   }
 
   const { database } = disposableDatabase()
-  assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: true, sms: true, webPush: false })
+  assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: true, webPush: false })
   assert.deepEqual(await projectNotificationReadiness({ ...runtimeConfig, notificationOutboxTransportKeys: '' }, database), { email: false, sms: false, webPush: false })
 })
 
@@ -241,7 +241,7 @@ test('public readiness rejects missing, malformed, and unretained D1 transport-k
   await database.batch(['pending', 'queued', 'claimed'].map((status, index) => database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(`outbox-${index}`, 1, 1, 1, status, 'ciphertext', 'iv', index === 1 ? 'retired' : 'v1', 'first-activation', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')))
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: false, webPush: false })
   await database.prepare('UPDATE notification_outbox SET transport_key_version = ?').bind('v1').run()
-  assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: true, sms: true, webPush: false })
+  assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: true, webPush: false })
   await database.prepare('UPDATE notification_outbox SET transport_key_version = NULL WHERE status = ?').bind('queued').run()
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: false, webPush: false })
 })

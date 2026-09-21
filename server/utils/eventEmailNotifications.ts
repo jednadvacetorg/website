@@ -41,7 +41,7 @@ const digest = async (value: string, cryptoApi: NotificationCrypto) => base64Url
 
 /** Atomically creates encrypted, generation-bound event mail work. Unique D1 identities make retries inert. */
 export const planEventEmailNotifications = async (events: PortalCalendarEvent[], dependencies: { database: NotificationDatabase, config: NotificationLifecycleConfig, now?: () => Date, crypto?: NotificationCrypto }) => {
-  if (!dependencies.config.emailSmsEnabled || !dependencies.config.emailSmsEventDeliveryReady) return { planned: 0 }
+  if (!dependencies.config.emailSmsEnabled || !dependencies.config.emailSmsEventDeliveryReady || !dependencies.config.emailDeliveryReady) return { planned: 0 }
   const cryptoApi = dependencies.crypto ?? defaultCrypto()
   const now = dependencies.now?.() ?? new Date()
   let planned = 0

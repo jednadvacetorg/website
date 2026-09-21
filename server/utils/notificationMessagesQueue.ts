@@ -166,10 +166,16 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
   if (!authorization) return { delivered: false, stale: true }
 
   try {
-    const result = await deliver(payload)
-    if (payload.kind === 'event-email' && result && 'attempted' in result) {
+    // A manual switch-off is terminal, not retryable backlog: nothing reaches Brevo.
+    if (payload.kind === 'event-email' && !dependencies.config.emailDeliveryReady) {
+      await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
+        .bind('failed', nowIso(dependencies), payload.deliveryId, 'pending').run()
+    } else {
+      const result = await deliver(payload)
+      if (payload.kind === 'event-email' && result && 'attempted' in result) {
       await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, provider_message_id = COALESCE(?, provider_message_id), submitted_at = ?, updated_at = ? WHERE id = ?')
         .bind(result.status, result.providerMessageId ?? null, nowIso(dependencies), nowIso(dependencies), payload.deliveryId).run()
+      }
     }
   } catch (error) {
     await releaseClaim(pointer, token, dependencies)
