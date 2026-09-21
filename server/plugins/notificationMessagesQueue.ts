@@ -1,4 +1,5 @@
 import { notificationConfig } from '../utils/notificationConfig.ts'
+import { sendBrevoEventEmail } from '../utils/brevoEmail.ts'
 import { consumeNotificationOutboxPointer, notificationMessagesQueueName, parseNotificationOutboxPointer, type NotificationDeliveryHook, type NotificationQueueDependencies } from '../utils/notificationMessagesQueue.ts'
 import type { NotificationDatabase } from '../utils/notifications.ts'
 
@@ -26,14 +27,32 @@ export default defineNitroPlugin((nitroApp) => {
     const database = event.context?.notificationDatabase
       ?? event.context?.cloudflare?.env?.DB as NotificationDatabase | undefined
     if (!database?.prepare || !database.batch) throw new Error('Notification database is not configured')
+    const runtime = useRuntimeConfig() as unknown as Record<string, unknown>
     const dependencies: NotificationQueueDependencies = {
       database,
-      config: await notificationConfig(useRuntimeConfig() as unknown as Record<string, unknown>),
+      config: await notificationConfig(runtime),
     }
     for (const message of event.batch.messages) {
       try {
-        await processNotificationQueueMessage(message, dependencies)
-        console.info('[notifications] Processed notification Queue pointer', { messageId: message.id })
+        const result = await processNotificationQueueMessage(message, dependencies, async payload => {
+          if (payload.kind !== 'event-email') throw new Error('Notification lifecycle delivery hook is not configured')
+          if (typeof runtime.brevoApiKey !== 'string' || typeof runtime.brevoSenderName !== 'string') throw new Error('Brevo delivery is not configured')
+          return sendBrevoEventEmail({
+            apiKey: runtime.brevoApiKey,
+            senderName: runtime.brevoSenderName,
+            senderEmail: 'noreply@b.jednadvacet.org',
+            sandbox: runtime.brevoSandbox === true,
+          }, {
+            deliveryId: payload.deliveryId,
+            recipient: payload.destination,
+            managementUrl: `https://jednadvacet.org/notifications/manage/${payload.managementCapability}`,
+            event: payload.event,
+            uid: payload.event.uid,
+            sequence: payload.event.sequence,
+            cancelled: payload.event.cancelled,
+          })
+        })
+        console.info('[notifications] Processed notification Queue pointer', { messageId: message.id, delivered: result.delivered })
       } catch (error) {
         console.error('[notifications] Queue processing failed', {
           messageId: message.id,
