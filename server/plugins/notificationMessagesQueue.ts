@@ -40,7 +40,7 @@ export default defineNitroPlugin((nitroApp) => {
           return sendBrevoEventEmail({
             apiKey: runtime.brevoApiKey,
             senderName: runtime.brevoSenderName,
-            senderEmail: 'noreply@b.jednadvacet.org',
+            senderEmail: 'noreply@jednadvacet.org',
             sandbox: runtime.brevoSandbox === true,
           }, {
             deliveryId: payload.deliveryId,

@@ -3,7 +3,7 @@ import type { CalendarEventProjection } from './calendarEventProjection.ts'
 export interface BrevoEmailConfig {
   apiKey: string
   senderName: string
-  senderEmail: 'noreply@b.jednadvacet.org'
+  senderEmail: 'noreply@jednadvacet.org'
   sandbox?: boolean
 }
 
@@ -48,7 +48,7 @@ export const eventIcs = (message: BrevoEventEmail) => {
     'BEGIN:VCALENDAR', 'PRODID:-//Jednadvacet.org//Email delivery//CS', 'VERSION:2.0', 'METHOD:PUBLISH',
     'BEGIN:VEVENT', `UID:${escapeIcs(message.uid)}`, `DTSTAMP:${icsDate(new Date().toISOString())}`,
     `DTSTART:${icsDate(message.event.start)}`, `DTEND:${icsDate(message.event.end)}`,
-    `SEQUENCE:${message.sequence}`, 'ORGANIZER:mailto:noreply@b.jednadvacet.org',
+    `SEQUENCE:${message.sequence}`, 'ORGANIZER:mailto:noreply@jednadvacet.org',
     `SUMMARY:${escapeIcs(message.event.title)}`,
     ...(message.event.location ? [`LOCATION:${escapeIcs(message.event.location)}`] : []),
     ...(message.event.description ? [`DESCRIPTION:${escapeIcs(message.event.description)}`] : []),
@@ -70,7 +70,7 @@ const boundedMessageId = (value: unknown) => typeof value === 'object' && value 
 
 /** Makes exactly one Worker-native transactional request and never returns provider response text. */
 export const sendBrevoEventEmail = async (config: BrevoEmailConfig, message: BrevoEventEmail, fetcher: typeof fetch = fetch): Promise<BrevoAttemptResult> => {
-  if (config.senderEmail !== 'noreply@b.jednadvacet.org' || !config.apiKey.trim() || !config.senderName.trim()) return { attempted: false, status: 'auth' }
+  if (config.senderEmail !== 'noreply@jednadvacet.org' || !config.apiKey.trim() || !config.senderName.trim()) return { attempted: false, status: 'auth' }
   const content = composeBrevoEventEmail(message)
   try {
     const response = await fetcher('https://api.brevo.com/v3/smtp/email', {

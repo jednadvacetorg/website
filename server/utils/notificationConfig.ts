@@ -62,7 +62,7 @@ const emailDelivery = (value: Record<string, unknown>) => {
     brevoApiKey && brevoApiKey.length >= 24
     && brevoCallbackSecret && brevoCallbackSecret.length >= 24
     && brevoSenderName && brevoSenderName.length <= 96
-    && value.brevoSenderEmail === 'noreply@b.jednadvacet.org'
+    && value.brevoSenderEmail === 'noreply@jednadvacet.org'
     && exactTrue(value.brevoSenderVerified)
     && exactTrue(value.brevoSpfVerified)
     && exactTrue(value.brevoDkimVerified)

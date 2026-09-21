@@ -14,3 +14,25 @@ test('email delivery configuration is disabled unless every private and operatio
   assert.equal(config.emailDeliveryReady, false)
   assert.equal(JSON.stringify(config).includes('undefined'), false)
 })
+
+test('email delivery accepts only the verified root-domain sender', async () => {
+  const ready = {
+    ...base,
+    brevoApiKey: 'a'.repeat(24),
+    brevoCallbackSecret: 'b'.repeat(24),
+    brevoSenderName: 'Jednadvacet.org',
+    brevoSenderEmail: 'noreply@jednadvacet.org',
+    brevoSenderVerified: true,
+    brevoSpfVerified: true,
+    brevoDkimVerified: true,
+    brevoDmarcVerified: true,
+    brevoCallbackVerified: true,
+    notificationProductionBindingsVerified: true,
+    notificationMigrationVerified: true,
+    brevoSandboxVerified: true,
+    brevoLiveCanaryVerified: true,
+    notificationEmailManualEnabled: true,
+  }
+  assert.equal((await notificationConfig(ready)).emailDeliveryReady, true)
+  assert.equal((await notificationConfig({ ...ready, brevoSenderEmail: 'noreply@b.jednadvacet.org' })).emailDeliveryReady, false)
+})

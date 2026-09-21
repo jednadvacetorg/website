@@ -31,7 +31,7 @@ test('composer preserves Czech UTF-8, stable revisions, and cancellation semanti
 
 test('adapter sends exactly one narrow transactional request', async () => {
   const requests: RequestInit[] = []
-  const result = await sendBrevoEventEmail({ apiKey: 'key', senderName: 'Jednadvacet.org', senderEmail: 'noreply@b.jednadvacet.org', sandbox: true }, message, async (_url, request) => {
+  const result = await sendBrevoEventEmail({ apiKey: 'key', senderName: 'Jednadvacet.org', senderEmail: 'noreply@jednadvacet.org', sandbox: true }, message, async (_url, request) => {
     requests.push(request)
     return new Response(JSON.stringify({ messageId: 'provider-id' }), { status: 201 })
   })
@@ -40,13 +40,15 @@ test('adapter sends exactly one narrow transactional request', async () => {
   assert.equal((requests[0]?.headers as Record<string, string>)['X-Sib-Sandbox'], 'drop')
   const payload = JSON.parse(requests[0]?.body as string) as Record<string, unknown>
   assert.deepEqual(Object.keys(payload).sort(), ['attachment', 'headers', 'htmlContent', 'sender', 'subject', 'textContent', 'to'])
+  assert.deepEqual(payload.sender, { name: 'Jednadvacet.org', email: 'noreply@jednadvacet.org' })
   assert.equal((payload.attachment as { name: string, content: string }[])[0]?.name, 'event.ics')
+  assert.match(eventIcs(message), /ORGANIZER:mailto:noreply@jednadvacet\.org/)
 })
 
 test('adapter classifies malformed success and every bounded error after one request', async () => {
   for (const status of [202, 400, 401, 429, 503]) {
     let calls = 0
-    const result = await sendBrevoEventEmail({ apiKey: 'key', senderName: 'Jednadvacet.org', senderEmail: 'noreply@b.jednadvacet.org' }, message, async () => {
+    const result = await sendBrevoEventEmail({ apiKey: 'key', senderName: 'Jednadvacet.org', senderEmail: 'noreply@jednadvacet.org' }, message, async () => {
       calls += 1
       return new Response(status === 202 ? '{}' : 'provider details that must not escape', { status })
     })
