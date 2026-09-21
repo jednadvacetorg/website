@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { composeBrevoEventEmail, sendBrevoEventEmail } from '../server/utils/brevoEmail.ts'
+import { composeBrevoEventEmail, eventIcs, sendBrevoEventEmail } from '../server/utils/brevoEmail.ts'
 
 const message = {
   deliveryId: 'opaque-delivery-id', recipient: 'operator@example.test', managementUrl: 'https://jednadvacet.org/notifications/manage/token', uid: 'event@jednadvacet.org', sequence: 2,
@@ -17,6 +17,18 @@ test('composer escapes HTML and creates a non-interactive PUBLISH attachment', (
   assert.doesNotMatch(composed.ics, /ATTENDEE/)
 })
 
+test('composer preserves Czech UTF-8, stable revisions, and cancellation semantics in a CRLF attachment', () => {
+  const initial = eventIcs({ ...message, event: { ...message.event, title: 'Žluťoučký kůň' } })
+  const cancelled = eventIcs({ ...message, sequence: 3, cancelled: true })
+
+  assert.match(initial, /UID:event@jednadvacet.org/)
+  assert.match(initial, /SEQUENCE:2/)
+  assert.match(cancelled, /SEQUENCE:3/)
+  assert.match(cancelled, /STATUS:CANCELLED/)
+  assert.equal(initial.split('\n').every(line => line.endsWith('\r') || line === ''), true)
+  assert.doesNotMatch(cancelled, /(?:METHOD:REQUEST|ATTENDEE)/)
+})
+
 test('adapter sends exactly one narrow transactional request', async () => {
   const requests: RequestInit[] = []
   const result = await sendBrevoEventEmail({ apiKey: 'key', senderName: 'Jednadvacet.org', senderEmail: 'noreply@b.jednadvacet.org', sandbox: true }, message, async (_url, request) => {
@@ -26,4 +38,19 @@ test('adapter sends exactly one narrow transactional request', async () => {
   assert.deepEqual(result, { attempted: true, status: 'submitted', httpStatus: 201, providerMessageId: 'provider-id' })
   assert.equal(requests.length, 1)
   assert.equal((requests[0]?.headers as Record<string, string>)['X-Sib-Sandbox'], 'drop')
+  const payload = JSON.parse(requests[0]?.body as string) as Record<string, unknown>
+  assert.deepEqual(Object.keys(payload).sort(), ['attachment', 'headers', 'htmlContent', 'sender', 'subject', 'textContent', 'to'])
+  assert.equal((payload.attachment as { name: string, content: string }[])[0]?.name, 'event.ics')
+})
+
+test('adapter classifies malformed success and every bounded error after one request', async () => {
+  for (const status of [202, 400, 401, 429, 503]) {
+    let calls = 0
+    const result = await sendBrevoEventEmail({ apiKey: 'key', senderName: 'Jednadvacet.org', senderEmail: 'noreply@b.jednadvacet.org' }, message, async () => {
+      calls += 1
+      return new Response(status === 202 ? '{}' : 'provider details that must not escape', { status })
+    })
+    assert.equal(calls, 1)
+    assert.equal(result.attempted, true)
+  }
 })

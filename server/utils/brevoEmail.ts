@@ -17,12 +17,31 @@ export interface BrevoEventEmail {
   cancelled?: boolean
 }
 
-export type BrevoAttemptResult = { attempted: true, status: 'submitted' | 'invalid-request' | 'auth' | 'rate-limited' | 'provider-5xx' | 'transport', httpStatus?: number, providerMessageId?: string }
+export type BrevoAttemptResult = { attempted: boolean, status: 'submitted' | 'invalid-request' | 'auth' | 'rate-limited' | 'provider-5xx' | 'transport', httpStatus?: number, providerMessageId?: string }
 
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!)
 const escapeIcs = (value: string) => value.replace(/\\/g, '\\\\').replace(/;/g, '\\;').replace(/,/g, '\\,').replace(/\r?\n/g, '\\n')
-const fold = (line: string): string => line.length <= 75 ? line : `${line.slice(0, 75)}\r\n ${fold(line.slice(75))}`
+/** Folds at UTF-8 byte boundaries so non-ASCII event text remains importable. */
+const fold = (line: string) => {
+  const chunks: string[] = []
+  let chunk = ''
+  let size = 0
+  for (const character of line) {
+    const characterSize = new TextEncoder().encode(character).length
+    if (size + characterSize > 75 && chunk) {
+      chunks.push(chunk)
+      chunk = ` ${character}`
+      size = characterSize + 1
+    } else {
+      chunk += character
+      size += characterSize
+    }
+  }
+  chunks.push(chunk)
+  return chunks.join('\r\n')
+}
 const icsDate = (date: string) => new Date(date).toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '')
+const base64Utf8 = (value: string) => btoa(String.fromCodePoint(...new TextEncoder().encode(value)))
 
 export const eventIcs = (message: BrevoEventEmail) => {
   const lines = [
@@ -51,12 +70,12 @@ const boundedMessageId = (value: unknown) => typeof value === 'object' && value 
 
 /** Makes exactly one Worker-native transactional request and never returns provider response text. */
 export const sendBrevoEventEmail = async (config: BrevoEmailConfig, message: BrevoEventEmail, fetcher: typeof fetch = fetch): Promise<BrevoAttemptResult> => {
-  if (config.senderEmail !== 'noreply@b.jednadvacet.org' || !config.apiKey.trim() || !config.senderName.trim()) return { attempted: false as never, status: 'auth' }
+  if (config.senderEmail !== 'noreply@b.jednadvacet.org' || !config.apiKey.trim() || !config.senderName.trim()) return { attempted: false, status: 'auth' }
   const content = composeBrevoEventEmail(message)
   try {
     const response = await fetcher('https://api.brevo.com/v3/smtp/email', {
       method: 'POST', headers: { 'api-key': config.apiKey, 'content-type': 'application/json', ...(config.sandbox ? { 'X-Sib-Sandbox': 'drop' } : {}) },
-      body: JSON.stringify({ sender: { name: config.senderName, email: config.senderEmail }, to: [{ email: message.recipient }], subject: content.subject, textContent: content.text, htmlContent: content.html, attachment: [{ name: 'event.ics', content: btoa(unescape(encodeURIComponent(content.ics))) }], headers: { 'X-Mailin-custom': message.deliveryId } }),
+      body: JSON.stringify({ sender: { name: config.senderName, email: config.senderEmail }, to: [{ email: message.recipient }], subject: content.subject, textContent: content.text, htmlContent: content.html, attachment: [{ name: 'event.ics', content: base64Utf8(content.ics) }], headers: { 'X-Mailin-custom': message.deliveryId } }),
     })
     let data: unknown
     try { data = await response.json() } catch { data = undefined }
