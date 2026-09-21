@@ -51,9 +51,36 @@ const requiredHostname = (value: unknown) => {
   if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname)) throw new NotificationConfigurationError()
   return hostname
 }
+const optionalPrivateText = (value: unknown) => typeof value === 'string' && value.trim() && value.length <= 4_096 ? value : undefined
+const exactTrue = (value: unknown) => value === true || value === 'true'
+
+const emailDelivery = (value: Record<string, unknown>) => {
+  const brevoApiKey = optionalPrivateText(value.brevoApiKey)
+  const brevoCallbackSecret = optionalPrivateText(value.brevoCallbackSecret)
+  const brevoSenderName = optionalPrivateText(value.brevoSenderName)
+  const complete = Boolean(
+    brevoApiKey && brevoApiKey.length >= 24
+    && brevoCallbackSecret && brevoCallbackSecret.length >= 24
+    && brevoSenderName && brevoSenderName.length <= 96
+    && value.brevoSenderEmail === 'noreply@b.jednadvacet.org'
+    && exactTrue(value.brevoSenderVerified)
+    && exactTrue(value.brevoSpfVerified)
+    && exactTrue(value.brevoDkimVerified)
+    && exactTrue(value.brevoDmarcVerified)
+    && exactTrue(value.brevoCallbackVerified)
+    && exactTrue(value.notificationProductionBindingsVerified)
+    && exactTrue(value.notificationMigrationVerified)
+    && exactTrue(value.brevoSandboxVerified)
+    && exactTrue(value.brevoLiveCanaryVerified)
+    && exactTrue(value.notificationEmailManualEnabled),
+  )
+  return { brevoApiKey, brevoCallbackSecret, brevoSenderName, ready: complete }
+}
 
 /** Loads only private runtime configuration into non-extractable Worker Web Crypto keys. */
-export const notificationConfig = async (value: Record<string, unknown>, cryptoApi = defaultCrypto()): Promise<NotificationLifecycleConfig> => ({
+export const notificationConfig = async (value: Record<string, unknown>, cryptoApi = defaultCrypto()): Promise<NotificationLifecycleConfig> => {
+  const email = emailDelivery(value)
+  return {
   communitySlugs: typeof value.notificationCommunitySlugs === 'string'
     ? value.notificationCommunitySlugs.split(',').map(slug => slug.trim()).filter(Boolean)
     : [],
@@ -71,7 +98,12 @@ export const notificationConfig = async (value: Record<string, unknown>, cryptoA
   emailSmsEnabled: asBoolean(value.notificationEmailSmsEnabled),
   emailSmsFirstMessageReady: asBoolean(value.notificationEmailSmsFirstMessageReady),
   emailSmsEventDeliveryReady: asBoolean(value.notificationEmailSmsEventDeliveryReady),
+  emailDeliveryReady: email.ready,
+  brevoApiKey: email.brevoApiKey,
+  brevoSenderName: email.brevoSenderName,
+  brevoCallbackSecret: email.brevoCallbackSecret,
   webPushEnabled: asBoolean(value.notificationWebPushEnabled),
   webPushFirstMessageReady: asBoolean(value.notificationWebPushFirstMessageReady),
   webPushEventDeliveryReady: asBoolean(value.notificationWebPushEventDeliveryReady),
-})
+  }
+}
