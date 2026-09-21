@@ -148,6 +148,7 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
     const row = await dependencies.database.prepare('SELECT payload_ciphertext, payload_iv, transport_key_version FROM notification_outbox WHERE id = ? AND version = ? AND status = ? AND claim_token = ?')
       .bind(pointer.outboxId, pointer.version, 'claimed', token).first<ClaimedOutboxRow>()
     if (!row || typeof row.payload_ciphertext !== 'string' || typeof row.payload_iv !== 'string' || typeof row.transport_key_version !== 'string') throw new Error('Notification outbox payload is unavailable')
+    // Durable version labels are root versions; this is the outbox HKDF purpose key.
     const key = dependencies.config.outboxTransportKeys[row.transport_key_version]
     if (!key) throw new Error('Notification outbox transport key is unavailable')
     const plaintext = await cryptoApi.subtle.decrypt({ name: 'AES-GCM', iv: asBufferSource(decodeBase64Url(row.payload_iv)) }, key, asBufferSource(decodeBase64Url(row.payload_ciphertext)))

@@ -194,6 +194,14 @@ const fullRehearsal = async () => {
     assert.deepEqual(database.prepare('SELECT hex(payload) AS content FROM content_sentinel WHERE id = 1').get(), sentinelBefore, 'migration altered Content sentinel data')
     assert.equal(database.prepare('SELECT hex(payload) AS portal FROM portal_sentinel WHERE id = 1').get()?.portal, Buffer.from('portal-owned sentinel\u0000value').toString('hex').toUpperCase(), 'migration altered Portal sentinel data')
     exerciseConstraints(database)
+    const rootVersionReferences = {
+      outbox: database.prepare("SELECT DISTINCT transport_key_version AS version FROM notification_outbox WHERE status IN ('pending', 'queued', 'claimed') AND payload_ciphertext IS NOT NULL AND payload_iv IS NOT NULL").all(),
+      destination: database.prepare('SELECT destination_hash_key_version AS version FROM notification_contacts UNION SELECT destination_hash_key_version AS version FROM notification_suppressions UNION SELECT destination_hash_key_version AS version FROM notification_event_deliveries').all(),
+      abuse: database.prepare('SELECT DISTINCT requester_hash_key_version AS version FROM notification_abuse_attempts WHERE expires_at > ?').all('2026-09-17T00:00:00.000Z'),
+    }
+    assert.deepEqual(rootVersionReferences.outbox, [{ version: 'v2' }], 'nonterminal outbox rows retain root-version references')
+    assert.ok(rootVersionReferences.destination.every(row => row.version === 'v1'), 'destination and delivery evidence retain root-version references')
+    assert.deepEqual(rootVersionReferences.abuse, [{ version: 'v1' }], 'unexpired abuse rows retain root-version references')
     const ledgerBefore = database.prepare('SELECT name FROM _hub_migrations ORDER BY id').all()
     await applyWithNuxtHubRunner(database, join(temporaryDirectory, 'hub'), migrations)
     assert.deepEqual(database.prepare('SELECT name FROM _hub_migrations ORDER BY id').all(), ledgerBefore, 'second migration apply was not a ledger no-op')
@@ -210,7 +218,7 @@ const fullRehearsal = async () => {
     assert.deepEqual(reconnected.prepare('SELECT id, transport_key_version FROM notification_outbox WHERE id = ?').get('outbox-retained'), { id: 'outbox-retained', transport_key_version: 'v2' }, 'retained outbox state did not survive reconnect')
     reconnected.close()
 
-    return { cleanup: 'pending', migrations: migrationHashes, objects: Object.keys(notificationTables), indexes: expectedIndexes, queryPlans, sentinels: 'preserved', constraints: 'fixed codes, foreign keys, uniqueness, and CAS enforced', reconnect: 'versioned state survived a fresh SQLite handle', temporaryDirectory }
+    return { cleanup: 'pending', migrations: migrationHashes, objects: Object.keys(notificationTables), indexes: expectedIndexes, queryPlans, rootVersionReferences, sentinels: 'preserved', constraints: 'fixed codes, foreign keys, uniqueness, and CAS enforced', reconnect: 'versioned state survived a fresh SQLite handle', temporaryDirectory }
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true })
   }

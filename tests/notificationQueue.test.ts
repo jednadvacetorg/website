@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import test from 'node:test'
 
 import { consumeNotificationOutboxPointer, parseNotificationOutboxPointer, publishPendingNotificationPointers } from '../server/utils/notificationMessagesQueue.ts'
+import { notificationConfig } from '../server/utils/notificationConfig.ts'
 import { activateNotificationChannel, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 
 const Database = createRequire(import.meta.url)('better-sqlite3') as new (filename: string) => {
@@ -13,7 +14,8 @@ const Database = createRequire(import.meta.url)('better-sqlite3') as new (filena
 const schema = `
   CREATE TABLE notification_contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination TEXT NOT NULL, destination_hash TEXT NOT NULL, destination_hash_key_version TEXT NOT NULL, management_token_digest TEXT NOT NULL, capability_generation INTEGER NOT NULL, state TEXT NOT NULL, consent_at TEXT NOT NULL, consent_version TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(channel, destination));
   CREATE TABLE notification_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL, community_slug TEXT NOT NULL, frequency TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(contact_id, community_slug, frequency));
-  CREATE TABLE notification_suppressions (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination_hash TEXT NOT NULL, destination_hash_key_version TEXT NOT NULL, reason TEXT NOT NULL, suppressed_at TEXT NOT NULL, UNIQUE(channel, destination_hash));
+   CREATE TABLE notification_suppressions (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination_hash TEXT NOT NULL, destination_hash_key_version TEXT NOT NULL, reason TEXT NOT NULL, suppressed_at TEXT NOT NULL, UNIQUE(channel, destination_hash));
+   CREATE TABLE notification_abuse_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, requester_hash TEXT NOT NULL, requester_hash_key_version TEXT NOT NULL, attempted_at TEXT NOT NULL, expires_at TEXT NOT NULL);
   CREATE TABLE notification_outbox (id TEXT PRIMARY KEY, contact_id INTEGER NOT NULL, version INTEGER NOT NULL, expected_capability_generation INTEGER NOT NULL, status TEXT NOT NULL, claim_token TEXT, claim_expires_at TEXT, payload_ciphertext TEXT, payload_iv TEXT, transport_key_version TEXT, kind TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, terminal_at TEXT);
 `
 
@@ -37,20 +39,12 @@ const disposableDatabase = (): { database: NotificationDatabase, query(sql: stri
 }
 
 const keyMaterial = new TextEncoder().encode('01234567890123456789012345678901')
-const config = {
-  communitySlugs: ['brno'],
-  suppressionHashKeys: { v1: await crypto.subtle.importKey('raw', keyMaterial, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']) },
-  currentSuppressionHashKeyVersion: 'v1',
-  outboxTransportKeys: { v1: await crypto.subtle.importKey('raw', keyMaterial, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']) },
-  currentOutboxTransportKeyVersion: 'v1',
-  consentVersion: '2026-09',
-  emailSmsEnabled: true,
-  emailSmsFirstMessageReady: true,
-  emailSmsEventDeliveryReady: true,
-  webPushEnabled: false,
-  webPushFirstMessageReady: false,
-  webPushEventDeliveryReady: false,
-}
+const root = btoa(String.fromCharCode(...keyMaterial)).replace(/=+$/g, '')
+const config = await notificationConfig({
+  notificationCommunitySlugs: 'brno', notificationRootKeys: JSON.stringify({ v1: root }), notificationCurrentKeyVersion: 'v1',
+  notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
+  notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
+})
 const predictableCrypto = { randomBytes: (length: number) => new Uint8Array(length), subtle: crypto.subtle }
 const input = { channel: 'email' as const, contact: 'alice@example.com', communitySlugs: ['brno'], frequencies: ['created'] as const, consentAt: '2026-09-17T00:00:00.000Z', consentVersion: '2026-09' }
 const pointerFor = (query: (sql: string) => Record<string, unknown>[]) => {
@@ -213,14 +207,10 @@ test('scheduled drain publishes bounded pointers and consumer failures remain re
   await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
   const runtimeConfig = {
     notificationCommunitySlugs: 'brno',
-    notificationSuppressionHashKeys: JSON.stringify({ v1: btoa(String.fromCharCode(...keyMaterial)).replace(/=+$/g, '') }),
-    notificationCurrentSuppressionHashKeyVersion: 'v1',
-    notificationAbuseHashKeys: JSON.stringify({ v1: btoa(String.fromCharCode(...keyMaterial)).replace(/=+$/g, '') }),
-    notificationCurrentAbuseHashKeyVersion: 'v1',
+    notificationRootKeys: JSON.stringify({ v1: root }),
+    notificationCurrentKeyVersion: 'v1',
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationOutboxTransportKeys: JSON.stringify({ v1: btoa(String.fromCharCode(...keyMaterial)).replace(/=+$/g, '') }),
-    notificationCurrentOutboxTransportKeyVersion: 'v1',
     notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true,
     notificationEmailSmsFirstMessageReady: true,

@@ -31,7 +31,7 @@ export const dueEventEmailReasons = (event: Pick<PortalCalendarEvent, 'event' | 
 interface ActiveRecipient { id: number, destination: string, destination_hash: string, destination_hash_key_version: string, capability_generation: number, frequency: EventEmailReason }
 
 const encrypt = async (value: unknown, config: NotificationLifecycleConfig, cryptoApi: NotificationCrypto) => {
-  const key = config.outboxTransportKeys[config.currentOutboxTransportKeyVersion]
+  const key = config.outboxTransportKeys[config.currentNotificationKeyVersion]
   if (!key) throw new Error('Notification transport key is unavailable')
   const iv = cryptoApi.randomBytes(12)
   const payload = await cryptoApi.subtle.encrypt({ name: 'AES-GCM', iv: buffer(iv) }, key, encoder.encode(JSON.stringify(value)))
@@ -64,7 +64,7 @@ export const planEventEmailNotifications = async (events: PortalCalendarEvent[],
         const writes = [
           dependencies.database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, destination_hash_key_version, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(contact_id, event_uid, event_revision, reason) DO NOTHING').bind(deliveryId, recipient.id, recipient.capability_generation, recipient.destination_hash, recipient.destination_hash_key_version, uid, item.sequence, reason, 'pending', timestamp, timestamp),
           dependencies.database.prepare('INSERT INTO notification_management_capabilities (token_digest, contact_id, expected_capability_generation, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(token_digest) DO NOTHING').bind(await digest(capability, cryptoApi), recipient.id, recipient.capability_generation, timestamp),
-          dependencies.database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING').bind(`event-${deliveryId}`, recipient.id, 1, recipient.capability_generation, 'pending', encrypted.ciphertext, encrypted.iv, dependencies.config.currentOutboxTransportKeyVersion, 'event-email', timestamp, timestamp),
+          dependencies.database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING').bind(`event-${deliveryId}`, recipient.id, 1, recipient.capability_generation, 'pending', encrypted.ciphertext, encrypted.iv, dependencies.config.currentNotificationKeyVersion, 'event-email', timestamp, timestamp),
         ]
         await dependencies.database.batch(writes)
         planned += 1
