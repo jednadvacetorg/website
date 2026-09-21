@@ -29,6 +29,11 @@ export interface NotificationLifecycleConfig {
   emailSmsEnabled: boolean
   emailSmsFirstMessageReady: boolean
   emailSmsEventDeliveryReady: boolean
+  /** Complete, private, deployment-bound authority for external event email. */
+  emailDeliveryReady: boolean
+  brevoApiKey?: string
+  brevoSenderName?: string
+  brevoCallbackSecret?: string
   webPushEnabled: boolean
   webPushFirstMessageReady: boolean
   webPushEventDeliveryReady: boolean
@@ -70,7 +75,7 @@ export const normalizeNotificationContact = (channel: NotificationChannel, value
 
 const isEnabled = (channel: NotificationChannel, config: NotificationLifecycleConfig) => channel === 'web-push'
   ? config.webPushEnabled && config.webPushFirstMessageReady && config.webPushEventDeliveryReady
-  : config.emailSmsEnabled && config.emailSmsFirstMessageReady && config.emailSmsEventDeliveryReady
+  : config.emailSmsEnabled && config.emailSmsFirstMessageReady && config.emailSmsEventDeliveryReady && (channel !== 'email' || config.emailDeliveryReady)
 const keyedHash = async (value: string, key: CryptoKey, cryptoApi: NotificationCrypto) => toBase64Url(new Uint8Array(await cryptoApi.subtle.sign('HMAC', key, encoder.encode(value))))
 const digest = async (value: string, cryptoApi: NotificationCrypto) => toBase64Url(new Uint8Array(await cryptoApi.subtle.digest('SHA-256', encoder.encode(value))))
 const encrypt = async (value: string, key: CryptoKey, cryptoApi: NotificationCrypto) => {
