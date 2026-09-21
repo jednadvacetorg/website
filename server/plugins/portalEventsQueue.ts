@@ -4,6 +4,9 @@ import {
   type PortalChangeSignal,
 } from '../utils/portalEvents.ts'
 import { getGoogleCalendarConfig, GoogleCalendarError, reconcileGoogleCalendar, syncGoogleCalendarChanges } from '../utils/googleCalendar.ts'
+import { planEventEmailNotifications } from '../utils/eventEmailNotifications.ts'
+import { notificationConfig } from '../utils/notificationConfig.ts'
+import type { NotificationDatabase } from '../utils/notifications.ts'
 import {
   parsePortalEventsQueueBatch,
   portalEventsQueueName,
@@ -12,7 +15,8 @@ import {
 } from '../utils/portalEventsQueue.ts'
 
 export default defineNitroPlugin((nitroApp) => {
-  nitroApp.hooks.hook('cloudflare:queue', async ({ batch }) => {
+  nitroApp.hooks.hook('cloudflare:queue', async queueEvent => {
+    const { batch } = queueEvent
     if (batch.queue !== portalEventsQueueName) return
 
     try {
@@ -46,6 +50,20 @@ export default defineNitroPlugin((nitroApp) => {
 
       const storage = useStorage('portalEvents')
       const result = await refreshPortalMeetups(selected, storage, $fetch, new Date(), changes)
+      const database = (queueEvent as unknown as { context?: { cloudflare?: { env?: { DB?: NotificationDatabase } } } }).context?.cloudflare?.env?.DB
+      if (database) {
+        try {
+          const planned = await planEventEmailNotifications(result.calendarEvents, {
+            database,
+            config: await notificationConfig(useRuntimeConfig() as unknown as Record<string, unknown>),
+          })
+          console.info(`[notifications] Planned ${planned.planned} event email deliveries after Portal refresh`)
+        } catch (error) {
+          // A disabled or incomplete private email configuration must not prevent Portal
+          // snapshots from becoming public state. No recipient or provider data is logged.
+          console.warn('[notifications] Event email planning is unavailable', { errorType: error instanceof Error ? error.name : typeof error })
+        }
+      }
       if (result.preservedCommunities.length > 0) {
         console.warn(`[portal-events] Preserved snapshots for removed meetups: ${result.preservedCommunities.join(', ')}`)
       }

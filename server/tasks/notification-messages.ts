@@ -1,10 +1,13 @@
 import { notificationConfig } from '../utils/notificationConfig.ts'
+import { planEventEmailNotifications } from '../utils/eventEmailNotifications.ts'
 import { publishPendingNotificationPointers, type NotificationMessagesQueue } from '../utils/notificationMessagesQueue.ts'
 import type { NotificationDatabase } from '../utils/notifications.ts'
+import { getPortalCalendarEvents, type PortalStorage } from '../utils/portalEvents.ts'
 
 interface NotificationMessagesTaskContext {
   notificationMessagesQueue?: NotificationMessagesQueue
   notificationDatabase?: NotificationDatabase
+  portalStorage?: PortalStorage
   cloudflare?: { env?: Record<string, unknown> }
 }
 
@@ -16,12 +19,19 @@ export const drainNotificationMessages = async (context: NotificationMessagesTas
   if (!queue?.send) throw new Error('Notification messages queue is not configured')
   if (!database?.prepare || !database.batch) throw new Error('Notification database is not configured')
 
+  const config = await notificationConfig(runtimeConfig)
+  // Read the validated snapshot before publishing pointers. Repeated hourly runs are
+  // harmless because the delivery ledger has a stable D1 dedupe identity.
+  const planned = await planEventEmailNotifications(
+    await getPortalCalendarEvents(config.communitySlugs, context.portalStorage ?? useStorage('portalEvents')),
+    { database, config },
+  )
   const result = await publishPendingNotificationPointers(queue, {
     database,
-    config: await notificationConfig(runtimeConfig),
+    config,
   })
-  console.info(`[notifications] Queued ${result.published} notification pointers`)
-  return result
+  console.info(`[notifications] Planned ${planned.planned} and queued ${result.published} notification pointers`)
+  return { ...result, planned: planned.planned }
 }
 
 export default defineTask({
@@ -31,6 +41,6 @@ export default defineTask({
   },
   async run(event) {
     const result = await drainNotificationMessages(event.context as NotificationMessagesTaskContext, useRuntimeConfig() as unknown as Record<string, unknown>)
-    return { result: { queued: result.published } }
+    return { result: { queued: result.published, planned: result.planned } }
   },
 })

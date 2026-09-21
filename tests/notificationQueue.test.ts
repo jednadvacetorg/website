@@ -238,7 +238,8 @@ test('scheduled drain publishes bounded pointers and consumer failures remain re
     const { drainNotificationMessages } = await import('../server/tasks/notification-messages.ts')
     const { processNotificationQueueMessage } = await import('../server/plugins/notificationMessagesQueue.ts')
     const sent: unknown[] = []
-    assert.deepEqual(await drainNotificationMessages({ notificationDatabase: database, notificationMessagesQueue: { send: async pointer => { sent.push(pointer) } } }, runtimeConfig), { published: 1 })
+    const portalStorage = { getItem: async () => ({ schemaVersion: 1, community: { id: 'brno', path: '/brno', title: 'Brno' }, events: [], cancellations: [], signals: {}, fetchedAt: '2026-09-17T00:00:00.000Z' }), setItem: async () => {}, getKeys: async () => [] }
+    assert.deepEqual(await drainNotificationMessages({ notificationDatabase: database, notificationMessagesQueue: { send: async pointer => { sent.push(pointer) } }, portalStorage }, runtimeConfig), { published: 1, planned: 0 })
     await assert.rejects(processNotificationQueueMessage({ id: 'opaque-message-id', body: sent[0] }, { database, config }))
     assert.deepEqual(query('SELECT status FROM notification_outbox'), [{ status: 'queued' }])
   } finally {
