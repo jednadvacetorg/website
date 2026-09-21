@@ -84,15 +84,11 @@ export default defineNuxtConfig({
     mapboxStyle: 'mapbox/dark-v10',
     // Keep notification activation private and fail closed until Phases 6–7 provide both message types.
     notificationCommunitySlugs: '',
-    notificationSuppressionHashKeys: '',
-    notificationCurrentSuppressionHashKeyVersion: '',
-    // Abuse state has a separate HMAC identity from suppression and outbox keys.
-    notificationAbuseHashKeys: '',
-    notificationCurrentAbuseHashKeyVersion: '',
+    // One root ring derives separated outbox, suppression, and abuse subkeys internally.
+    notificationRootKeys: '',
+    notificationCurrentKeyVersion: '',
     notificationTurnstileSecret: '',
     notificationTurnstileExpectedHostname: '',
-    notificationOutboxTransportKeys: '',
-    notificationCurrentOutboxTransportKeyVersion: '',
     notificationConsentVersion: '',
     notificationEmailSmsEnabled: false,
     notificationEmailSmsFirstMessageReady: false,

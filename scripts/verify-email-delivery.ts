@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 export type EmailVerificationMode = 'preflight' | 'sandbox' | 'callback' | 'live-canary' | 'readiness'
 
 const modes = new Set<EmailVerificationMode>(['preflight', 'sandbox', 'callback', 'live-canary', 'readiness'])
-const requiredSecrets = ['NUXT_BREVO_API_KEY', 'NUXT_BREVO_CALLBACK_SECRET', 'NUXT_NOTIFICATION_OUTBOX_TRANSPORT_KEYS', 'NUXT_NOTIFICATION_SUPPRESSION_HASH_KEYS']
+const requiredSecrets = ['NUXT_BREVO_API_KEY', 'NUXT_BREVO_CALLBACK_SECRET', 'NUXT_NOTIFICATION_ROOT_KEYS', 'NUXT_NOTIFICATION_CURRENT_KEY_VERSION']
 
 const required = (environment: NodeJS.ProcessEnv, name: string) => {
   const value = environment[name]
