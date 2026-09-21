@@ -4,7 +4,7 @@ Email delivery remains disabled until the verifier records current evidence for 
 
 ## Required production prerequisites
 
-An operator must authenticate the Cloudflare and Brevo CLIs to the intended production accounts. Brevo must verify `Jednadvacet.org <noreply@b.jednadvacet.org>` and the separate SPF, DKIM, and DMARC records for `b.jednadvacet.org`.
+An operator must authenticate the Cloudflare and Brevo CLIs to the intended production accounts. Brevo must verify `Jednadvacet.org <noreply@jednadvacet.org>` and the SPF, DKIM, and DMARC evidence for the `jednadvacet.org` sending domain. Do not use `noreply@b.jednadvacet.org`. Inbound mail remains deferred to a future dedicated receiving subdomain and is not configured or tested in this runbook.
 
 Store `NUXT_BREVO_API_KEY`, `NUXT_BREVO_CALLBACK_SECRET`, `NUXT_NOTIFICATION_OUTBOX_TRANSPORT_KEYS`, and `NUXT_NOTIFICATION_SUPPRESSION_HASH_KEYS` as Cloudflare Worker secrets. Configure Brevo to call the deployed HTTPS `/api/notifications/brevo-events` endpoint with the callback bearer; never place either secret in a URL, command line, log, or this document.
 
