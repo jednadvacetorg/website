@@ -27,9 +27,60 @@ CREATE TABLE `notification_contacts` (
 CREATE UNIQUE INDEX `notification_contacts_identity_unique` ON `notification_contacts` (`channel`,`destination`);--> statement-breakpoint
 CREATE UNIQUE INDEX `notification_contacts_token_digest_unique` ON `notification_contacts` (`management_token_digest`);--> statement-breakpoint
 CREATE INDEX `notification_contacts_destination_hash_idx` ON `notification_contacts` (`channel`,`destination_hash`);--> statement-breakpoint
+CREATE TABLE `notification_delivery_callbacks` (
+	`provider_event_id` text PRIMARY KEY NOT NULL,
+	`delivery_id` text NOT NULL,
+	`event` text NOT NULL,
+	`provider_message_id` text,
+	`received_at` text NOT NULL,
+	FOREIGN KEY (`delivery_id`) REFERENCES `notification_event_deliveries`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE INDEX `notification_delivery_callbacks_delivery_idx` ON `notification_delivery_callbacks` (`delivery_id`);--> statement-breakpoint
+CREATE TABLE `notification_event_deliveries` (
+	`id` text PRIMARY KEY NOT NULL,
+	`contact_id` integer,
+	`expected_capability_generation` integer NOT NULL,
+	`destination_hash` text NOT NULL,
+	`destination_hash_key_version` text NOT NULL,
+	`event_uid` text NOT NULL,
+	`event_revision` integer NOT NULL,
+	`reason` text NOT NULL,
+	`status` text NOT NULL,
+	`provider_message_id` text,
+	`created_at` text NOT NULL,
+	`updated_at` text NOT NULL,
+	`submitted_at` text,
+	FOREIGN KEY (`contact_id`) REFERENCES `notification_contacts`(`id`) ON UPDATE no action ON DELETE set null,
+	CONSTRAINT "notification_event_deliveries_status_check" CHECK("notification_event_deliveries"."status" IN ('pending', 'submitted', 'delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed', 'failed'))
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `notification_event_deliveries_dedupe_unique` ON `notification_event_deliveries` (`contact_id`,`event_uid`,`event_revision`,`reason`);--> statement-breakpoint
+CREATE INDEX `notification_event_deliveries_status_idx` ON `notification_event_deliveries` (`status`);--> statement-breakpoint
+CREATE TABLE `notification_event_state` (
+	`event_key` text PRIMARY KEY NOT NULL,
+	`uid` text NOT NULL,
+	`starts_at` text NOT NULL,
+	`ends_at` text NOT NULL,
+	`venue` text,
+	`cancelled` integer NOT NULL,
+	`notification_revision` integer NOT NULL,
+	`updated_at` text NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE `notification_management_capabilities` (
+	`token_digest` text PRIMARY KEY NOT NULL,
+	`contact_id` integer NOT NULL,
+	`expected_capability_generation` integer NOT NULL,
+	`created_at` text NOT NULL,
+	`expires_at` text,
+	FOREIGN KEY (`contact_id`) REFERENCES `notification_contacts`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE INDEX `notification_management_capabilities_contact_idx` ON `notification_management_capabilities` (`contact_id`,`expected_capability_generation`);--> statement-breakpoint
 CREATE TABLE `notification_outbox` (
 	`id` text PRIMARY KEY NOT NULL,
-	`contact_id` integer NOT NULL,
+	`contact_id` integer,
 	`version` integer NOT NULL,
 	`expected_capability_generation` integer NOT NULL,
 	`status` text NOT NULL,
@@ -43,7 +94,7 @@ CREATE TABLE `notification_outbox` (
 	`updated_at` text NOT NULL,
 	`terminal_at` text,
 	CONSTRAINT "notification_outbox_status_check" CHECK("notification_outbox"."status" IN ('pending', 'queued', 'claimed', 'consumed', 'invalidated')),
-	CONSTRAINT "notification_outbox_kind_check" CHECK("notification_outbox"."kind" IN ('first-activation', 'reactivation', 'management-recovery'))
+	CONSTRAINT "notification_outbox_kind_check" CHECK("notification_outbox"."kind" IN ('first-activation', 'reactivation', 'management-recovery', 'event-email'))
 );
 --> statement-breakpoint
 CREATE INDEX `notification_outbox_contact_status_idx` ON `notification_outbox` (`contact_id`,`status`);--> statement-breakpoint
