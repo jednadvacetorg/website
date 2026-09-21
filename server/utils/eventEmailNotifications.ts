@@ -51,16 +51,20 @@ export const planEventEmailNotifications = async (events: PortalCalendarEvent[],
       const { results } = await dependencies.database.prepare('SELECT c.id, c.destination, c.destination_hash, c.destination_hash_key_version, c.capability_generation, s.frequency FROM notification_contacts c JOIN notification_subscriptions s ON s.contact_id = c.id WHERE c.channel = ? AND c.state = ? AND s.community_slug = ? AND s.frequency = ? AND NOT EXISTS (SELECT 1 FROM notification_suppressions x WHERE x.channel = c.channel AND x.destination_hash = c.destination_hash AND x.destination_hash_key_version = c.destination_hash_key_version)')
         .bind('email', 'active', item.community.id, reason).all<ActiveRecipient>()
       for (const recipient of results) {
-        const deliveryId = base64Url(cryptoApi.randomBytes(24))
-        const capability = base64Url(cryptoApi.randomBytes(32))
         const projection = projectCalendarEvent(item)
         const uid = `${item.community.id}-${item.event.id}@jednadvacet.org`
+        // These opaque identifiers are deterministic per immutable delivery identity.
+        // Retried refreshes therefore cannot create an orphan outbox/alias after the
+        // ledger's unique insert has already won.
+        const identity = `${recipient.id}:${uid}:${item.sequence}:${reason}`
+        const deliveryId = await digest(`delivery:${identity}`, cryptoApi)
+        const capability = await digest(`capability:${identity}`, cryptoApi)
         const encrypted = await encrypt({ destination: recipient.destination, deliveryId, managementCapability: capability, event: { ...projection, uid, sequence: item.sequence, cancelled: item.cancelled }, reason, kind: 'event-email' }, dependencies.config, cryptoApi)
         const timestamp = now.toISOString()
         const writes = [
           dependencies.database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, destination_hash_key_version, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(contact_id, event_uid, event_revision, reason) DO NOTHING').bind(deliveryId, recipient.id, recipient.capability_generation, recipient.destination_hash, recipient.destination_hash_key_version, uid, item.sequence, reason, 'pending', timestamp, timestamp),
           dependencies.database.prepare('INSERT INTO notification_management_capabilities (token_digest, contact_id, expected_capability_generation, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(token_digest) DO NOTHING').bind(await digest(capability, cryptoApi), recipient.id, recipient.capability_generation, timestamp),
-          dependencies.database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(base64Url(cryptoApi.randomBytes(24)), recipient.id, 1, recipient.capability_generation, 'pending', encrypted.ciphertext, encrypted.iv, dependencies.config.currentOutboxTransportKeyVersion, 'event-email', timestamp, timestamp),
+          dependencies.database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING').bind(`event-${deliveryId}`, recipient.id, 1, recipient.capability_generation, 'pending', encrypted.ciphertext, encrypted.iv, dependencies.config.currentOutboxTransportKeyVersion, 'event-email', timestamp, timestamp),
         ]
         await dependencies.database.batch(writes)
         planned += 1
