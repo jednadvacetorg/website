@@ -23,7 +23,30 @@ const decodeBase64Url = (value: string) => {
   }
 }
 
-const parseKeyring = async (value: unknown, currentVersion: unknown, importKey: (material: Uint8Array) => Promise<CryptoKey>) => {
+const hkdfSalt = new TextEncoder().encode('jednadvacet.org/notifications/v1')
+const purposeLabels = {
+  outbox: 'outbox/aes-gcm-256',
+  suppression: 'suppression/hmac-sha-256',
+  abuse: 'abuse/hmac-sha-256',
+} as const
+
+const derivePurposeKeys = async (material: Uint8Array, subtle: SubtleCrypto) => {
+  const root = await subtle.importKey('raw', material as unknown as BufferSource, 'HKDF', false, ['deriveKey'])
+  const derive = <T extends KeyAlgorithm>(purpose: string, algorithm: T, usages: KeyUsage[]) => subtle.deriveKey(
+    { name: 'HKDF', hash: 'SHA-256', salt: hkdfSalt as unknown as BufferSource, info: new TextEncoder().encode(purpose) as unknown as BufferSource },
+    root,
+    algorithm,
+    false,
+    usages,
+  )
+  return {
+    outbox: await derive(purposeLabels.outbox, { name: 'AES-GCM', length: 256 }, ['encrypt', 'decrypt']),
+    suppression: await derive(purposeLabels.suppression, { name: 'HMAC', hash: 'SHA-256', length: 256 }, ['sign']),
+    abuse: await derive(purposeLabels.abuse, { name: 'HMAC', hash: 'SHA-256', length: 256 }, ['sign']),
+  }
+}
+
+const parseRootKeyring = async (value: unknown, currentVersion: unknown, subtle: SubtleCrypto) => {
   if (typeof value !== 'string' || typeof currentVersion !== 'string' || !versionPattern.test(currentVersion)) throw new NotificationConfigurationError()
   let parsed: unknown
   try {
@@ -32,12 +55,9 @@ const parseKeyring = async (value: unknown, currentVersion: unknown, importKey: 
     throw new NotificationConfigurationError()
   }
   if (!isRecord(parsed) || !Object.keys(parsed).length || !Object.entries(parsed).every(([version, key]) => versionPattern.test(version) && typeof key === 'string')) throw new NotificationConfigurationError()
-  const keyring = Object.fromEntries(await Promise.all(Object.entries(parsed).map(async ([version, key]) => [
-    version,
-    await importKey(decodeBase64Url(key as string)),
-  ]))) as Record<string, CryptoKey>
-  if (!keyring[currentVersion]) throw new NotificationConfigurationError()
-  return keyring
+  const derived = Object.fromEntries(await Promise.all(Object.entries(parsed).map(async ([version, key]) => [version, await derivePurposeKeys(decodeBase64Url(key as string), subtle)]))) as Record<string, Awaited<ReturnType<typeof derivePurposeKeys>>>
+  if (!derived[currentVersion]) throw new NotificationConfigurationError()
+  return derived
 }
 
 const asBoolean = (value: unknown) => value === true || value === 'true'
@@ -84,16 +104,19 @@ export const notificationConfig = async (value: Record<string, unknown>, cryptoA
   communitySlugs: typeof value.notificationCommunitySlugs === 'string'
     ? value.notificationCommunitySlugs.split(',').map(slug => slug.trim()).filter(Boolean)
     : [],
-  suppressionHashKeys: await parseKeyring(value.notificationSuppressionHashKeys, value.notificationCurrentSuppressionHashKeyVersion, material => cryptoApi.subtle.importKey('raw', material as unknown as BufferSource, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])),
-  currentSuppressionHashKeyVersion: value.notificationCurrentSuppressionHashKeyVersion as string,
-  abuseHashKeys: await parseKeyring(value.notificationAbuseHashKeys, value.notificationCurrentAbuseHashKeyVersion, material => cryptoApi.subtle.importKey('raw', material as unknown as BufferSource, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])),
-  currentAbuseHashKeyVersion: value.notificationCurrentAbuseHashKeyVersion as string,
+  ...await (async () => {
+    const rootKeys = await parseRootKeyring(value.notificationRootKeys, value.notificationCurrentKeyVersion, cryptoApi.subtle)
+    return {
+      outboxTransportKeys: Object.fromEntries(Object.entries(rootKeys).map(([version, keys]) => [version, keys.outbox])),
+      suppressionHashKeys: Object.fromEntries(Object.entries(rootKeys).map(([version, keys]) => [version, keys.suppression])),
+      abuseHashKeys: Object.fromEntries(Object.entries(rootKeys).map(([version, keys]) => [version, keys.abuse])),
+      currentNotificationKeyVersion: value.notificationCurrentKeyVersion as string,
+    }
+  })(),
   turnstile: {
     secret: requiredPrivateText(value.notificationTurnstileSecret),
     expectedHostname: requiredHostname(value.notificationTurnstileExpectedHostname),
   },
-  outboxTransportKeys: await parseKeyring(value.notificationOutboxTransportKeys, value.notificationCurrentOutboxTransportKeyVersion, material => cryptoApi.subtle.importKey('raw', material as unknown as BufferSource, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])),
-  currentOutboxTransportKeyVersion: value.notificationCurrentOutboxTransportKeyVersion as string,
   consentVersion: typeof value.notificationConsentVersion === 'string' ? value.notificationConsentVersion : '',
   emailSmsEnabled: asBoolean(value.notificationEmailSmsEnabled),
   emailSmsFirstMessageReady: asBoolean(value.notificationEmailSmsFirstMessageReady),

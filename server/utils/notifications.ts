@@ -19,12 +19,10 @@ export interface NotificationLifecycleConfig {
   communitySlugs: readonly string[]
   communityTitles?: Record<string, string>
   suppressionHashKeys: Record<string, CryptoKey>
-  currentSuppressionHashKeyVersion: string
   abuseHashKeys: Record<string, CryptoKey>
-  currentAbuseHashKeyVersion: string
+  currentNotificationKeyVersion: string
   turnstile: { secret: string, expectedHostname: string }
   outboxTransportKeys: Record<string, CryptoKey>
-  currentOutboxTransportKeyVersion: string
   consentVersion: string
   emailSmsEnabled: boolean
   emailSmsFirstMessageReady: boolean
@@ -97,7 +95,7 @@ export const validateNotificationActivation = (input: unknown, config: Notificat
   return { channel, contact: normalizeNotificationContact(channel, activation.contact), communitySlugs, selectedFrequencies, consentAt: activation.consentAt, consentVersion: activation.consentVersion }
 }
 const transportKey = (config: NotificationLifecycleConfig) => {
-  const key = config.outboxTransportKeys[config.currentOutboxTransportKeyVersion]
+  const key = config.outboxTransportKeys[config.currentNotificationKeyVersion]
   if (!key) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
   return key
 }
@@ -122,16 +120,37 @@ export const getReferencedSuppressionHashKeyVersions = async (database: Notifica
   return [...new Set(results.map(row => row.destination_hash_key_version as string))].sort()
 }
 export const assertSuppressionHashKeyRetention = async (dependencies: Pick<NotificationDependencies, 'database' | 'config'>) => {
-  if (!dependencies.config.suppressionHashKeys[dependencies.config.currentSuppressionHashKeyVersion]) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
+  if (!dependencies.config.suppressionHashKeys[dependencies.config.currentNotificationKeyVersion]) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
   const referencedVersions = await getReferencedSuppressionHashKeyVersions(dependencies.database)
   if (!referencedVersions.every(version => dependencies.config.suppressionHashKeys[version])) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
   return referencedVersions
+}
+export const getReferencedAbuseHashKeyVersions = async (database: NotificationDatabase, now = new Date().toISOString()) => {
+  const { results } = await database.prepare('SELECT DISTINCT requester_hash_key_version FROM notification_abuse_attempts WHERE expires_at > ?').bind(now).all<{ requester_hash_key_version: unknown }>()
+  if (!results.every(row => typeof row.requester_hash_key_version === 'string' && row.requester_hash_key_version)) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
+  return [...new Set(results.map(row => row.requester_hash_key_version as string))].sort()
+}
+/** Rejects writes/readiness when any durable purpose needs a retired root version. */
+export const assertNotificationRootKeyRetention = async (dependencies: Pick<NotificationDependencies, 'database' | 'config'>) => {
+  const { config } = dependencies
+  if (!config.outboxTransportKeys[config.currentNotificationKeyVersion]
+    || !config.suppressionHashKeys[config.currentNotificationKeyVersion]
+    || !config.abuseHashKeys[config.currentNotificationKeyVersion]) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
+  const [outbox, suppression, abuse] = await Promise.all([
+    getReferencedOutboxTransportKeyVersions(dependencies.database),
+    getReferencedSuppressionHashKeyVersions(dependencies.database),
+    getReferencedAbuseHashKeyVersions(dependencies.database),
+  ])
+  if (!outbox.every(version => config.outboxTransportKeys[version])
+    || !suppression.every(version => config.suppressionHashKeys[version])
+    || !abuse.every(version => config.abuseHashKeys[version])) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
+  return [...new Set([...outbox, ...suppression, ...abuse])].sort()
 }
 const outboxStatement = async (contact: Pick<ContactRow, 'id' | 'capability_generation' | 'destination'>, token: string, kind: 'first-activation' | 'reactivation' | 'management-recovery', dependencies: NotificationDependencies, now: string) => {
   const cryptoApi = dependencies.crypto ?? defaultCrypto()
   const encrypted = await encrypt(JSON.stringify({ destination: contact.destination, capability: token, kind }), transportKey(dependencies.config), cryptoApi)
   return dependencies.database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-    .bind(opaqueId(cryptoApi), contact.id, 1, contact.capability_generation, 'pending', encrypted.ciphertext, encrypted.iv, dependencies.config.currentOutboxTransportKeyVersion, kind, now, now)
+    .bind(opaqueId(cryptoApi), contact.id, 1, contact.capability_generation, 'pending', encrypted.ciphertext, encrypted.iv, dependencies.config.currentNotificationKeyVersion, kind, now, now)
 }
 const replaceSubmittedSubscriptions = (contactId: number, communities: string[], selectedFrequencies: NotificationFrequency[], database: NotificationDatabase, now: string) => [
   ...communities.map(community => database.prepare('DELETE FROM notification_subscriptions WHERE contact_id = ? AND community_slug = ?').bind(contactId, community)),
@@ -142,11 +161,10 @@ export const activateNotificationChannel = async (input: unknown, dependencies: 
   const { config, database } = dependencies
   const parsed = validateNotificationActivation(input, config)
   if (!isEnabled(parsed.channel, config)) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
-  await assertOutboxTransportKeyRetention(dependencies)
-  await assertSuppressionHashKeyRetention(dependencies)
+  await assertNotificationRootKeyRetention(dependencies)
   const cryptoApi = dependencies.crypto ?? defaultCrypto()
   const destinationHashes = await Promise.all(Object.entries(config.suppressionHashKeys).map(async ([version, key]) => ({ version, hash: await keyedHash(parsed.contact, key, cryptoApi) })))
-  const currentDestinationHash = destinationHashes.find(entry => entry.version === config.currentSuppressionHashKeyVersion)?.hash
+  const currentDestinationHash = destinationHashes.find(entry => entry.version === config.currentNotificationKeyVersion)?.hash
   if (!currentDestinationHash) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
   const now = nowIso(dependencies)
   const suppressionWhere = destinationHashes.map(() => '(destination_hash = ? AND destination_hash_key_version = ?)').join(' OR ')
@@ -172,9 +190,9 @@ export const activateNotificationChannel = async (input: unknown, dependencies: 
   const kind = suppression ? 'reactivation' : 'first-activation'
   const encrypted = await encrypt(JSON.stringify({ destination: parsed.contact, capability: token, kind }), transportKey(config), cryptoApi)
   await database.batch([
-    database.prepare('INSERT INTO notification_contacts (channel, destination, destination_hash, destination_hash_key_version, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(parsed.channel, parsed.contact, suppression?.destination_hash ?? currentDestinationHash, suppression?.destination_hash_key_version ?? config.currentSuppressionHashKeyVersion, tokenDigest, 1, suppression ? 'pending-reactivation' : 'active', parsed.consentAt, parsed.consentVersion, now, now),
+    database.prepare('INSERT INTO notification_contacts (channel, destination, destination_hash, destination_hash_key_version, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(parsed.channel, parsed.contact, suppression?.destination_hash ?? currentDestinationHash, suppression?.destination_hash_key_version ?? config.currentNotificationKeyVersion, tokenDigest, 1, suppression ? 'pending-reactivation' : 'active', parsed.consentAt, parsed.consentVersion, now, now),
     ...parsed.communitySlugs.flatMap(community => parsed.selectedFrequencies.map(frequency => database.prepare('INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) SELECT id, ?, ?, ?, ? FROM notification_contacts WHERE channel = ? AND destination = ?').bind(community, frequency, now, now, parsed.channel, parsed.contact))),
-    database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM notification_contacts WHERE channel = ? AND destination = ?').bind(opaqueId(cryptoApi), 1, 1, 'pending', encrypted.ciphertext, encrypted.iv, config.currentOutboxTransportKeyVersion, kind, now, now, parsed.channel, parsed.contact),
+    database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ?, ? FROM notification_contacts WHERE channel = ? AND destination = ?').bind(opaqueId(cryptoApi), 1, 1, 'pending', encrypted.ciphertext, encrypted.iv, config.currentNotificationKeyVersion, kind, now, now, parsed.channel, parsed.contact),
   ])
   return { state: suppression ? 'pending-reactivation' : 'active' }
 }
@@ -294,8 +312,7 @@ export const confirmNotificationReactivation = async (token: unknown, dependenci
 export const isDeliveryEligible = async ({ channel, contactFingerprint, communitySlug, frequency }: DeliveryEligibilityInput, dependencies: NotificationDependencies) => {
   if (!channels.has(channel) || !frequencies.has(frequency) || !dependencies.config.communitySlugs.includes(communitySlug) || !isEnabled(channel, dependencies.config)) return false
   try {
-    await assertOutboxTransportKeyRetention(dependencies)
-    await assertSuppressionHashKeyRetention(dependencies)
+    await assertNotificationRootKeyRetention(dependencies)
   } catch {
     return false
   }

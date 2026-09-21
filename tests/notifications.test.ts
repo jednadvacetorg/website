@@ -78,23 +78,12 @@ const pauseFirstBatch = (database: NotificationDatabase) => {
 }
 
 const key = btoa('01234567890123456789012345678901').replace(/=+$/g, '')
-const config = {
-  communitySlugs: ['brno', 'praha'],
-  suppressionHashKeys: { v1: await crypto.subtle.importKey('raw', new TextEncoder().encode('01234567890123456789012345678901'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']) },
-  currentSuppressionHashKeyVersion: 'v1',
-  abuseHashKeys: { v1: await crypto.subtle.importKey('raw', new TextEncoder().encode('12345678901234567890123456789012'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']) },
-  currentAbuseHashKeyVersion: 'v1',
-  turnstile: { secret: 'private-turnstile-secret', expectedHostname: 'jednadvacet.org' },
-  outboxTransportKeys: { v1: await crypto.subtle.importKey('raw', Uint8Array.from(atob(key), character => character.charCodeAt(0)), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']) },
-  currentOutboxTransportKeyVersion: 'v1',
-  consentVersion: '2026-09',
-  emailSmsEnabled: true,
-  emailSmsFirstMessageReady: true,
-  emailSmsEventDeliveryReady: true,
-  webPushEnabled: false,
-  webPushFirstMessageReady: false,
-  webPushEventDeliveryReady: false,
-}
+const config = await notificationConfig({
+  notificationCommunitySlugs: 'brno,praha', notificationRootKeys: JSON.stringify({ v1: key }), notificationCurrentKeyVersion: 'v1',
+  notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
+  notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
+  notificationWebPushEnabled: false, notificationWebPushFirstMessageReady: false, notificationWebPushEventDeliveryReady: false,
+})
 
 const predictableCrypto = { randomBytes: (length: number) => new Uint8Array(length), subtle: crypto.subtle }
 const tokenForByte = (byte: number) => btoa(String.fromCharCode(...new Uint8Array(32).fill(byte))).replace(/=+$/g, '').replace(/\+/g, '-').replace(/\//g, '_')
@@ -144,14 +133,10 @@ test('private purpose-specific keyrings import a Worker AES-GCM key for an activ
   const { database, query } = disposableDatabase()
   const runtimeConfig = await notificationConfig({
     notificationCommunitySlugs: 'brno,praha',
-    notificationSuppressionHashKeys: JSON.stringify({ v1: key }),
-    notificationCurrentSuppressionHashKeyVersion: 'v1',
-    notificationAbuseHashKeys: JSON.stringify({ v1: key }),
-    notificationCurrentAbuseHashKeyVersion: 'v1',
+    notificationRootKeys: JSON.stringify({ v1: key }),
+    notificationCurrentKeyVersion: 'v1',
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationOutboxTransportKeys: JSON.stringify({ v1: key }),
-    notificationCurrentOutboxTransportKeyVersion: 'v1',
     notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true,
     notificationEmailSmsFirstMessageReady: true,
@@ -177,14 +162,10 @@ test('private purpose-specific keyrings import a Worker AES-GCM key for an activ
 test('missing, malformed, short, and unknown-current private key material fails before activation', async () => {
   const validRuntimeConfig = {
     notificationCommunitySlugs: 'brno,praha',
-    notificationSuppressionHashKeys: JSON.stringify({ v1: key }),
-    notificationCurrentSuppressionHashKeyVersion: 'v1',
-    notificationAbuseHashKeys: JSON.stringify({ v1: key }),
-    notificationCurrentAbuseHashKeyVersion: 'v1',
+    notificationRootKeys: JSON.stringify({ v1: key }),
+    notificationCurrentKeyVersion: 'v1',
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationOutboxTransportKeys: JSON.stringify({ v1: key }),
-    notificationCurrentOutboxTransportKeyVersion: 'v1',
     notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true,
     notificationEmailSmsFirstMessageReady: true,
@@ -194,10 +175,10 @@ test('missing, malformed, short, and unknown-current private key material fails 
     notificationWebPushEventDeliveryReady: false,
   }
   const invalidConfigurations = [
-    { ...validRuntimeConfig, notificationOutboxTransportKeys: '' },
-    { ...validRuntimeConfig, notificationOutboxTransportKeys: '{' },
-    { ...validRuntimeConfig, notificationOutboxTransportKeys: JSON.stringify({ v1: 'short' }) },
-    { ...validRuntimeConfig, notificationCurrentOutboxTransportKeyVersion: 'v2' },
+    { ...validRuntimeConfig, notificationRootKeys: '' },
+    { ...validRuntimeConfig, notificationRootKeys: '{' },
+    { ...validRuntimeConfig, notificationRootKeys: JSON.stringify({ v1: 'short' }) },
+    { ...validRuntimeConfig, notificationCurrentKeyVersion: 'v2' },
   ]
 
   for (const runtimeConfig of invalidConfigurations) await assert.rejects(notificationConfig(runtimeConfig))
@@ -206,14 +187,10 @@ test('missing, malformed, short, and unknown-current private key material fails 
 test('public readiness keeps email false until separate delivery evidence is complete', async () => {
   const runtimeConfig = {
     notificationCommunitySlugs: 'brno',
-    notificationSuppressionHashKeys: JSON.stringify({ v1: key }),
-    notificationCurrentSuppressionHashKeyVersion: 'v1',
-    notificationAbuseHashKeys: JSON.stringify({ v1: key }),
-    notificationCurrentAbuseHashKeyVersion: 'v1',
+    notificationRootKeys: JSON.stringify({ v1: key }),
+    notificationCurrentKeyVersion: 'v1',
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationOutboxTransportKeys: JSON.stringify({ v1: key }),
-    notificationCurrentOutboxTransportKeyVersion: 'v1',
     notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true,
     notificationEmailSmsFirstMessageReady: true,
@@ -225,15 +202,14 @@ test('public readiness keeps email false until separate delivery evidence is com
 
   const { database } = disposableDatabase()
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: true, webPush: false })
-  assert.deepEqual(await projectNotificationReadiness({ ...runtimeConfig, notificationOutboxTransportKeys: '' }, database), { email: false, sms: false, webPush: false })
+  assert.deepEqual(await projectNotificationReadiness({ ...runtimeConfig, notificationRootKeys: '' }, database), { email: false, sms: false, webPush: false })
 })
 
 test('public readiness rejects missing, malformed, and unretained D1 transport-key references', async () => {
   const { database } = disposableDatabase()
   const runtimeConfig = {
-    notificationCommunitySlugs: 'brno', notificationSuppressionHashKeys: JSON.stringify({ v1: key }), notificationCurrentSuppressionHashKeyVersion: 'v1',
-    notificationAbuseHashKeys: JSON.stringify({ v1: key }), notificationCurrentAbuseHashKeyVersion: 'v1', notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationOutboxTransportKeys: JSON.stringify({ v1: key }), notificationCurrentOutboxTransportKeyVersion: 'v1', notificationConsentVersion: '2026-09',
+    notificationCommunitySlugs: 'brno', notificationRootKeys: JSON.stringify({ v1: key }), notificationCurrentKeyVersion: 'v1',
+    notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
     notificationWebPushEnabled: false, notificationWebPushFirstMessageReady: false, notificationWebPushEventDeliveryReady: false,
   }
@@ -258,12 +234,8 @@ test('the deterministic UI fixture is only enabled in opted-in development and a
 test('private abuse and Turnstile configuration imports a dedicated HMAC key without exposing private values', async () => {
   const runtimeConfig = await notificationConfig({
     notificationCommunitySlugs: 'brno,praha',
-    notificationSuppressionHashKeys: JSON.stringify({ v1: key }),
-    notificationCurrentSuppressionHashKeyVersion: 'v1',
-    notificationOutboxTransportKeys: JSON.stringify({ v1: key }),
-    notificationCurrentOutboxTransportKeyVersion: 'v1',
-    notificationAbuseHashKeys: JSON.stringify({ v1: key }),
-    notificationCurrentAbuseHashKeyVersion: 'v1',
+    notificationRootKeys: JSON.stringify({ v1: key }),
+    notificationCurrentKeyVersion: 'v1',
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
     notificationTurnstileSiteKey: 'public-turnstile-site-key',
@@ -277,17 +249,13 @@ test('private abuse and Turnstile configuration imports a dedicated HMAC key wit
   })
 
   assert.ok('abuseHashKeys' in runtimeConfig)
-  assert.equal(runtimeConfig.currentAbuseHashKeyVersion, 'v1')
+  assert.equal(runtimeConfig.currentNotificationKeyVersion, 'v1')
   assert.equal(runtimeConfig.turnstile.secret, 'private-turnstile-secret')
   assert.equal(runtimeConfig.turnstile.expectedHostname, 'jednadvacet.org')
   await assert.rejects(notificationConfig({
     notificationCommunitySlugs: 'brno',
-    notificationSuppressionHashKeys: JSON.stringify({ v1: key }),
-    notificationCurrentSuppressionHashKeyVersion: 'v1',
-    notificationOutboxTransportKeys: JSON.stringify({ v1: key }),
-    notificationCurrentOutboxTransportKeyVersion: 'v1',
-    notificationAbuseHashKeys: '{',
-    notificationCurrentAbuseHashKeyVersion: 'v1',
+    notificationRootKeys: '{',
+    notificationCurrentKeyVersion: 'v1',
     notificationConsentVersion: '2026-09',
   }))
 })
@@ -297,11 +265,15 @@ test('an outbox transport key remains mandatory while a nonterminal payload refe
   let randomCall = 0
   const uniqueCrypto = { randomBytes: (length: number) => new Uint8Array(length).fill(randomCall++), subtle: crypto.subtle }
   await activateNotificationChannel(input, { database, config, crypto: uniqueCrypto })
-  const v2 = await crypto.subtle.importKey('raw', new TextEncoder().encode('12345678901234567890123456789012'), { name: 'AES-GCM' }, false, ['encrypt', 'decrypt'])
+  const rotatedConfig = await notificationConfig({
+    notificationCommunitySlugs: 'brno,praha', notificationRootKeys: JSON.stringify({ v1: key, v2: btoa('12345678901234567890123456789012').replace(/=+$/g, '') }), notificationCurrentKeyVersion: 'v2',
+    notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09', notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
+  })
   const retiredV1 = {
-    ...config,
-    outboxTransportKeys: { v2 },
-    currentOutboxTransportKeyVersion: 'v2',
+    ...rotatedConfig,
+    outboxTransportKeys: { v2: rotatedConfig.outboxTransportKeys.v2! },
+    suppressionHashKeys: { v1: config.suppressionHashKeys.v1!, v2: rotatedConfig.suppressionHashKeys.v2! },
+    abuseHashKeys: { v1: config.abuseHashKeys.v1!, v2: rotatedConfig.abuseHashKeys.v2! },
   }
 
   await assert.rejects(
@@ -311,9 +283,7 @@ test('an outbox transport key remains mandatory while a nonterminal payload refe
   assert.deepEqual(query('SELECT transport_key_version FROM notification_outbox'), [{ transport_key_version: 'v1' }])
 
   const retainedKeyring = {
-    ...config,
-    outboxTransportKeys: { v1: config.outboxTransportKeys.v1, v2 },
-    currentOutboxTransportKeyVersion: 'v2',
+    ...rotatedConfig,
   }
   await activateNotificationChannel({ ...input, contact: 'Bob@example.com' }, { database, config: retainedKeyring, crypto: uniqueCrypto })
   assert.deepEqual(query('SELECT transport_key_version FROM notification_outbox ORDER BY transport_key_version'), [{ transport_key_version: 'v1' }, { transport_key_version: 'v2' }])
@@ -366,8 +336,10 @@ test('retained suppression key versions preserve the matched v1 suppression thro
   await activateNotificationChannel(input, { database, config, crypto: uniqueCrypto })
   await stopNotificationChannel(tokenForByte(0), { database, config, crypto: uniqueCrypto })
   const [v1Suppression] = query('SELECT destination_hash, destination_hash_key_version FROM notification_suppressions') as { destination_hash: string, destination_hash_key_version: string }[]
-  const v2 = await crypto.subtle.importKey('raw', new TextEncoder().encode('12345678901234567890123456789012'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
-  const rotated = { ...config, suppressionHashKeys: { v1: config.suppressionHashKeys.v1, v2 }, currentSuppressionHashKeyVersion: 'v2' }
+  const rotated = await notificationConfig({
+    notificationCommunitySlugs: 'brno,praha', notificationRootKeys: JSON.stringify({ v1: key, v2: btoa('12345678901234567890123456789012').replace(/=+$/g, '') }), notificationCurrentKeyVersion: 'v2',
+    notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09', notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
+  })
 
   assert.deepEqual(await activateNotificationChannel(input, { database, config: rotated, crypto: uniqueCrypto }), { state: 'pending-reactivation' })
   assert.deepEqual(query('SELECT state, destination_hash, destination_hash_key_version FROM notification_contacts'), [{ state: 'pending-reactivation', destination_hash: v1Suppression!.destination_hash, destination_hash_key_version: 'v1' }])
@@ -375,7 +347,7 @@ test('retained suppression key versions preserve the matched v1 suppression thro
   assert.equal((await confirmNotificationReactivation(tokenForByte(3), { database, config: rotated, crypto: uniqueCrypto })).state, 'active')
   assert.deepEqual(query('SELECT destination_hash_key_version FROM notification_suppressions'), [])
   assert.equal(await isDeliveryEligible({ channel: 'email', contactFingerprint: v1Suppression!.destination_hash, communitySlug: 'brno', frequency: 'created', now: new Date() }, { database, config: rotated }), true)
-  await assert.rejects(activateNotificationChannel({ ...input, contact: 'Bob@example.com' }, { database, config: { ...rotated, suppressionHashKeys: { v2 } }, crypto: uniqueCrypto }), { statusCode: 503 })
+  await assert.rejects(activateNotificationChannel({ ...input, contact: 'Bob@example.com' }, { database, config: { ...rotated, suppressionHashKeys: { v2: rotated.suppressionHashKeys.v2! } }, crypto: uniqueCrypto }), { statusCode: 503 })
 })
 
 test('shared abuse policy counts every attempt, preserves the minute gate, and expires keyed IP state', async () => {
