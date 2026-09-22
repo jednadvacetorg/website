@@ -1,6 +1,8 @@
 import { notificationConfig } from '../utils/notificationConfig.ts'
 import { sendBrevoEventEmail } from '../utils/brevoEmail.ts'
 import { sendBrevoEventSms, sendBrevoLifecycleSms } from '../utils/brevoSms.ts'
+import { sendWebPush } from '../utils/webPush.ts'
+import { parseWebPushSubscription } from '../utils/webPushSubscriptions.ts'
 import { consumeNotificationOutboxPointer, notificationMessagesQueueName, parseNotificationOutboxPointer, type NotificationDeliveryHook, type NotificationQueueDependencies } from '../utils/notificationMessagesQueue.ts'
 import type { NotificationDatabase } from '../utils/notifications.ts'
 
@@ -36,6 +38,18 @@ export default defineNitroPlugin((nitroApp) => {
     for (const message of event.batch.messages) {
       try {
         const result = await processNotificationQueueMessage(message, dependencies, async (payload, authorization) => {
+          if (authorization.channel === 'web-push' && (payload.kind === 'first-activation' || payload.kind === 'reactivation' || payload.kind === 'management-recovery')) {
+            if (!dependencies.config.webPushDelivery) throw new Error('Web Push delivery is not configured')
+            return sendWebPush(
+              parseWebPushSubscription(JSON.parse(payload.destination)),
+              {
+                title: 'Jednadvacet.org',
+                body: payload.kind === 'reactivation' ? 'Potvrď obnovení upozornění.' : 'Odběr upozornění je aktivní.',
+                url: `/notifications/manage/${payload.capability}`,
+              },
+              dependencies.config.webPushDelivery,
+            )
+          }
           if (authorization.channel === 'sms' && (payload.kind === 'first-activation' || payload.kind === 'reactivation' || payload.kind === 'management-recovery')) {
             if (typeof runtime.brevoApiKey !== 'string' || typeof runtime.brevoSenderName !== 'string') throw new Error('Brevo delivery is not configured')
             return sendBrevoLifecycleSms({ apiKey: runtime.brevoApiKey, sender: runtime.brevoSenderName }, { recipient: payload.destination, capability: payload.capability, kind: payload.kind })

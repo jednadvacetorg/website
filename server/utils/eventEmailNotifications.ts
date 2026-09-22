@@ -37,15 +37,26 @@ const encrypt = async (value: unknown, config: NotificationLifecycleConfig, cryp
 }
 const digest = async (value: string, cryptoApi: NotificationCrypto) => base64Url(new Uint8Array(await cryptoApi.subtle.digest('SHA-256', encoder.encode(value))))
 
-/** Atomically creates encrypted, generation-bound event mail work. Unique D1 identities make retries inert. */
+/** Atomically creates encrypted, generation-bound event email work. Unique D1 identities make retries inert. */
 export const planEventNotifications = async (events: PortalCalendarEvent[], dependencies: { database: NotificationDatabase, config: NotificationLifecycleConfig, now?: () => Date, crypto?: NotificationCrypto }) => {
-  if (!dependencies.config.emailSmsEnabled || !dependencies.config.emailSmsEventDeliveryReady || !dependencies.config.emailDeliveryReady) return { planned: 0 }
+  const emailPlanningEnabled = dependencies.config.emailSmsEnabled
+    && dependencies.config.emailSmsEventDeliveryReady
+    && dependencies.config.emailDeliveryReady
+  const smsPlanningEnabled = dependencies.config.smsEnabled
+    && dependencies.config.smsEventDeliveryReady
+    && dependencies.config.smsDeliveryReady
+  if (!emailPlanningEnabled && !smsPlanningEnabled) return { planned: 0 }
   const cryptoApi = dependencies.crypto ?? defaultCrypto()
   const now = dependencies.now?.() ?? new Date()
   let planned = 0
+  // The shipped D1 CHECK constraint excludes event-sms. Keep the independent
+  // SMS gate explicit, but never create invalid outbox rows until a reviewed
+  // forward migration proves the deployed schema accepts that kind.
+  const smsBlockedBySchema = smsPlanningEnabled && !dependencies.config.eventSmsOutboxSupported
   for (const item of events) {
     const reasons = [...new Set(EventEmailReasons(item, now))]
     for (const reason of reasons) {
+      if (!emailPlanningEnabled) continue
       const { results } = await dependencies.database.prepare('SELECT c.id, c.destination, c.destination_hash, c.capability_generation, s.frequency FROM notification_contacts c JOIN notification_subscriptions s ON s.contact_id = c.id WHERE c.channel = ? AND c.state = ? AND s.community_slug = ? AND s.frequency = ? AND NOT EXISTS (SELECT 1 FROM notification_suppressions x WHERE x.channel = c.channel AND x.destination_hash = c.destination_hash)')
         .bind('email', 'active', item.community.id, reason).all<ActiveRecipient>()
       for (const recipient of results) {
@@ -67,28 +78,9 @@ export const planEventNotifications = async (events: PortalCalendarEvent[], depe
         await dependencies.database.batch(writes)
         planned += 1
       }
-      if (dependencies.config.emailSmsEventDeliveryReady) {
-        const { results: smsRecipients } = await dependencies.database.prepare('SELECT c.id, c.destination, c.destination_hash, c.capability_generation, s.frequency, c.channel FROM notification_contacts c JOIN notification_subscriptions s ON s.contact_id = c.id WHERE c.channel = ? AND c.state = ? AND s.community_slug = ? AND s.frequency = ? AND NOT EXISTS (SELECT 1 FROM notification_suppressions x WHERE x.channel = c.channel AND x.destination_hash = c.destination_hash)')
-          .bind('sms', 'active', item.community.id, reason).all<ActiveRecipient>()
-        for (const recipient of smsRecipients) {
-          const projection = projectCalendarEvent(item)
-          const uid = `${item.community.id}-${item.event.id}@jednadvacet.org`
-          const identity = `${recipient.id}:${uid}:${item.sequence}:${reason}:sms`
-          const deliveryId = await digest(`delivery:${identity}`, cryptoApi)
-          const capability = await digest(`capability:${identity}`, cryptoApi)
-          const encrypted = await encrypt({ destination: recipient.destination, deliveryId, managementCapability: capability, event: { ...projection, uid, sequence: item.sequence, cancelled: item.cancelled }, reason, kind: 'event-sms' }, dependencies.config, cryptoApi)
-          const timestamp = now.toISOString()
-          await dependencies.database.batch([
-            dependencies.database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(contact_id, event_uid, event_revision, reason) DO NOTHING').bind(deliveryId, recipient.id, recipient.capability_generation, recipient.destination_hash, uid, item.sequence, reason, 'pending', timestamp, timestamp),
-            dependencies.database.prepare('INSERT INTO notification_management_capabilities (token_digest, contact_id, expected_capability_generation, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(token_digest) DO NOTHING').bind(await digest(capability, cryptoApi), recipient.id, recipient.capability_generation, timestamp),
-            dependencies.database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING').bind(`event-${deliveryId}`, recipient.id, 1, recipient.capability_generation, 'pending', encrypted.ciphertext, encrypted.iv, 'event-sms', timestamp, timestamp),
-          ])
-          planned += 1
-        }
-      }
     }
   }
-  return { planned }
+  return { planned, ...(smsBlockedBySchema ? { smsBlockedBySchema: true } : {}) }
 }
 
 const EventEmailReasons = (event: PortalCalendarEvent, now: Date): EventEmailReason[] => {

@@ -1,4 +1,5 @@
 import type { NotificationCrypto, NotificationLifecycleConfig } from './notifications.ts'
+import type { VapidConfiguration } from './webPush.ts'
 
 export class NotificationConfigurationError extends Error {
   constructor() {
@@ -55,6 +56,35 @@ const requiredHostname = (value: unknown) => {
 const optionalPrivateText = (value: unknown) => typeof value === 'string' && value.trim() && value.length <= 4_096 ? value : undefined
 const exactTrue = (value: unknown) => value === true || value === 'true'
 
+const optionalVapidConfiguration = async (value: Record<string, unknown>): Promise<VapidConfiguration | undefined> => {
+  const publicKey = typeof value.notificationVapidPublicKey === 'string' ? value.notificationVapidPublicKey : undefined
+  const privateKey = typeof value.notificationVapidPrivateKey === 'string' ? value.notificationVapidPrivateKey : undefined
+  const subject = typeof value.notificationVapidSubject === 'string' ? value.notificationVapidSubject : undefined
+  if (!publicKey || !privateKey || !subject || !/^(?:mailto:[^\s@]+@[^\s@]+|https:\/\/[^\s/]+(?:\/[^\s]*)?)$/.test(subject)) return undefined
+  try {
+    const decode = (encoded: string) => {
+      if (!/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error('VAPID key is malformed')
+      return Uint8Array.from(atob(encoded.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - encoded.length % 4) % 4)), character => character.charCodeAt(0))
+    }
+    const publicBytes = decode(publicKey)
+    const privateBytes = decode(privateKey)
+    if (publicBytes.length !== 65 || publicBytes[0] !== 4 || privateBytes.length !== 32) return undefined
+    const encode = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+    const imported = await crypto.subtle.importKey('jwk', {
+      kty: 'EC',
+      crv: 'P-256',
+      x: encode(publicBytes.slice(1, 33)),
+      y: encode(publicBytes.slice(33)),
+      d: encode(privateBytes),
+      ext: false,
+      key_ops: ['sign'],
+    }, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])
+    return { privateKey: imported, publicKey, subject }
+  } catch {
+    return undefined
+  }
+}
+
 const emailDelivery = (value: Record<string, unknown>) => {
   const brevoApiKey = optionalPrivateText(value.brevoApiKey)
   const brevoCallbackSecret = optionalPrivateText(value.brevoCallbackSecret)
@@ -78,9 +108,18 @@ const emailDelivery = (value: Record<string, unknown>) => {
   return { brevoApiKey, brevoCallbackSecret, brevoSenderName, ready: complete }
 }
 
+const smsDelivery = (value: Record<string, unknown>) => {
+  const apiKey = optionalPrivateText(value.brevoApiKey)
+  const sender = optionalPrivateText(value.brevoSenderName)
+  return Boolean(apiKey && apiKey.length >= 24
+    && sender && /^(?:[A-Za-z0-9]{1,11}|\d{1,15})$/.test(sender)
+    && exactTrue(value.notificationProductionBindingsVerified))
+}
+
 /** Loads only private runtime configuration into non-extractable Worker Web Crypto keys. */
 export const notificationConfig = async (value: Record<string, unknown>, cryptoApi = defaultCrypto()): Promise<NotificationLifecycleConfig> => {
   const email = emailDelivery(value)
+  const webPushDelivery = await optionalVapidConfiguration(value)
   return {
   communitySlugs: typeof value.notificationCommunitySlugs === 'string'
     ? value.notificationCommunitySlugs.split(',').map(slug => slug.trim()).filter(Boolean)
@@ -101,13 +140,20 @@ export const notificationConfig = async (value: Record<string, unknown>, cryptoA
   consentVersion: typeof value.notificationConsentVersion === 'string' ? value.notificationConsentVersion : '',
   emailSmsEnabled: asBoolean(value.notificationEmailSmsEnabled),
   emailSmsFirstMessageReady: asBoolean(value.notificationEmailSmsFirstMessageReady),
-  emailSmsEventDeliveryReady: asBoolean(value.notificationEmailSmsEventDeliveryReady),
+   emailSmsEventDeliveryReady: asBoolean(value.notificationEmailSmsEventDeliveryReady),
+   smsEnabled: asBoolean(value.notificationSmsEnabled),
+   smsFirstMessageReady: asBoolean(value.notificationSmsFirstMessageReady),
+   smsEventDeliveryReady: asBoolean(value.notificationSmsEventDeliveryReady),
+   smsDeliveryReady: smsDelivery(value),
+   eventSmsOutboxSupported: false,
   emailDeliveryReady: email.ready,
   brevoApiKey: email.brevoApiKey,
   brevoSenderName: email.brevoSenderName,
   brevoCallbackSecret: email.brevoCallbackSecret,
-  webPushEnabled: asBoolean(value.notificationWebPushEnabled),
-  webPushFirstMessageReady: asBoolean(value.notificationWebPushFirstMessageReady),
-  webPushEventDeliveryReady: asBoolean(value.notificationWebPushEventDeliveryReady),
-  }
+   webPushEnabled: asBoolean(value.notificationWebPushEnabled),
+   webPushFirstMessageReady: asBoolean(value.notificationWebPushFirstMessageReady),
+   webPushEventDeliveryReady: asBoolean(value.notificationWebPushEventDeliveryReady),
+   webPushDelivery,
+   webPushDeliveryReady: Boolean(webPushDelivery),
+   }
 }

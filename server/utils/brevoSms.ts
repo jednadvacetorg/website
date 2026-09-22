@@ -32,11 +32,26 @@ const providerMessageId = (value: unknown) => typeof value === 'object' && value
   ? value.messageId
   : undefined
 
+const gsm7Basic = new Set([..."@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"])
+const gsm7Extension = new Set(['^', '{', '}', '\\', '[', '~', ']', '|', '€'])
+
+/** Converts application-owned copy to GSM-7 and counts septets, including extension escapes. */
+export const gsm7OneSegment = (value: string) => {
+  let text = ''
+  let units = 0
+  for (const character of value.normalize('NFD').replace(/\p{Mark}/gu, '')) {
+    const normalized = gsm7Basic.has(character) || gsm7Extension.has(character) ? character : '?'
+    text += normalized
+    units += gsm7Extension.has(normalized) ? 2 : 1
+  }
+  if (units > 160) throw new Error('Notification SMS exceeds one GSM-7 segment')
+  return text
+}
+
 /** Creates one application-owned Czech transactional segment, or fails instead of sending multipart SMS. */
 export const composeBrevoEventSms = (message: BrevoSmsEvent) => {
   const text = `Jednadvacet: ${message.event.title}, ${pragueTime(message.event.start)}${message.event.url ? ` ${message.event.url}` : ''}`
-  if (new TextEncoder().encode(text).length > 160) throw new Error('Notification SMS exceeds one segment')
-  return text
+  return gsm7OneSegment(text)
 }
 
 /** First and recovery messages carry only the generation-bound management capability. */
@@ -45,8 +60,7 @@ export const composeBrevoLifecycleSms = (message: BrevoSmsLifecycle) => {
     ? 'Jednadvacet: pro obnovení upozornění potvrď nastavení: '
     : 'Jednadvacet: nastavení nebo zrušení upozornění: '
   const text = `${lead}https://jednadvacet.org/notifications/manage/${message.capability}`
-  if (new TextEncoder().encode(text).length > 160) throw new Error('Notification SMS exceeds one segment')
-  return text
+  return gsm7OneSegment(text)
 }
 
 /** Makes one Worker-native transactional SMS request and returns only a bounded opaque outcome. */

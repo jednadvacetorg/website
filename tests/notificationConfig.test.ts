@@ -49,3 +49,35 @@ test('email delivery accepts only the verified root-domain sender', async () => 
   assert.equal((await notificationConfig(ready)).emailDeliveryReady, true)
   assert.equal((await notificationConfig({ ...ready, brevoSenderEmail: 'noreply@b.jednadvacet.org' })).emailDeliveryReady, false)
 })
+
+test('Web Push VAPID configuration keeps the private key server-only and requires a matching public key shape', async () => {
+  const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const jwk = await crypto.subtle.exportKey('jwk', pair.privateKey)
+  const publicBytes = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey))
+  const encode = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+  const config = await notificationConfig({
+    ...base,
+    notificationVapidPrivateKey: jwk.d,
+    notificationVapidPublicKey: encode(publicBytes),
+    notificationVapidSubject: 'mailto:notifications@jednadvacet.org',
+  })
+  assert.equal(config.webPushDeliveryReady, true)
+  assert.equal(config.webPushDelivery?.privateKey.extractable, false)
+  assert.equal(config.webPushDelivery?.publicKey, encode(publicBytes))
+  assert.equal((await notificationConfig({ ...base, notificationVapidPrivateKey: 'bad' })).webPushDeliveryReady, false)
+})
+
+test('SMS provider readiness does not inherit email callback or DNS gates', async () => {
+  const config = await notificationConfig({
+    ...base,
+    brevoApiKey: 'a'.repeat(24),
+    brevoSenderName: 'Jednadvacet',
+    notificationProductionBindingsVerified: true,
+    notificationSmsEnabled: true,
+    notificationSmsFirstMessageReady: true,
+    notificationSmsEventDeliveryReady: true,
+  })
+  assert.equal(config.emailDeliveryReady, false)
+  assert.equal(config.smsDeliveryReady, true)
+  assert.equal(config.eventSmsOutboxSupported, false)
+})

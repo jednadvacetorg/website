@@ -92,6 +92,11 @@ export default defineNuxtConfig({
     notificationEmailSmsEnabled: false,
     notificationEmailSmsFirstMessageReady: false,
     notificationEmailSmsEventDeliveryReady: false,
+    // SMS has independent provider/readiness evidence; event work remains
+    // fail-closed until a separately reviewed D1 schema migration exists.
+    notificationSmsEnabled: false,
+    notificationSmsFirstMessageReady: false,
+    notificationSmsEventDeliveryReady: false,
     // All email evidence is private and defaults false: a deploy can never enable Brevo.
     brevoApiKey: '',
     brevoCallbackSecret: '',
@@ -110,11 +115,16 @@ export default defineNuxtConfig({
     notificationWebPushEnabled: false,
     notificationWebPushFirstMessageReady: false,
     notificationWebPushEventDeliveryReady: false,
+    // VAPID private material stays server-only; its matching public key is the
+    // sole Web Push value serialized to browsers.
+    notificationVapidPrivateKey: '',
+    notificationVapidSubject: '',
     // Private and inert outside an explicitly-owned development verification process.
     notificationUiVerificationFixture: false,
     public: {
       // This is the only notification-abuse value intentionally exposed to browsers.
       notificationTurnstileSiteKey: '',
+      notificationVapidPublicKey: '',
     },
   },
 

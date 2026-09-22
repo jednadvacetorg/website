@@ -17,15 +17,21 @@ export const projectNotificationReadiness = async (runtimeConfig: Record<string,
     if (notificationUiVerificationFixtureEnabled(runtimeConfig)) return { email: true, sms: true, webPush: false }
     const config = await notificationConfig(runtimeConfig)
     if (!database) return unavailable
-    const emailSmsReady = config.emailSmsEnabled
+    const emailReady = config.emailSmsEnabled
       && config.emailSmsFirstMessageReady
       && config.emailSmsEventDeliveryReady
+      && config.emailDeliveryReady
+    const smsReady = config.smsEnabled
+      && config.smsFirstMessageReady
+      && config.smsEventDeliveryReady
+      && config.smsDeliveryReady
+      && config.eventSmsOutboxSupported
     const webPushReady = config.webPushEnabled
       && config.webPushFirstMessageReady
       && config.webPushEventDeliveryReady
+      && config.webPushDeliveryReady
 
-    const emailReady = emailSmsReady && config.emailDeliveryReady
-    return { email: emailReady, sms: emailSmsReady, webPush: webPushReady }
+    return { email: emailReady, sms: smsReady, webPush: webPushReady }
   } catch {
     return unavailable
   }

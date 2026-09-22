@@ -1,6 +1,7 @@
 import type { NotificationCrypto, NotificationDatabase, NotificationLifecycleConfig } from './notifications.ts'
 import type { BrevoAttemptResult } from './brevoEmail.ts'
 import type { BrevoSmsAttemptResult } from './brevoSms.ts'
+import type { WebPushAttemptResult } from './webPush.ts'
 
 export const notificationMessagesQueueName = 'notification-messages'
 
@@ -44,7 +45,7 @@ export interface EventNotificationMessagePayload {
 
 export type NotificationMessagePayload = LifecycleNotificationMessagePayload | EventNotificationMessagePayload
 export interface NotificationDeliveryAuthorization { expected_capability_generation: number, channel: 'email' | 'sms' | 'web-push' }
-export type NotificationDeliveryHook = (payload: NotificationMessagePayload, authorization: NotificationDeliveryAuthorization) => Promise<void | BrevoAttemptResult | BrevoSmsAttemptResult>
+export type NotificationDeliveryHook = (payload: NotificationMessagePayload, authorization: NotificationDeliveryAuthorization) => Promise<void | BrevoAttemptResult | BrevoSmsAttemptResult | WebPushAttemptResult>
 
 interface PendingOutboxRow {
   id: unknown
@@ -57,6 +58,7 @@ interface ClaimedOutboxRow {
 }
 
 const allowedKinds = new Set<NotificationMessagePayload['kind']>(['first-activation', 'reactivation', 'management-recovery', 'event-email', 'event-sms'])
+const retryableProviderStatuses = new Set(['rate-limited', 'provider-5xx', 'transport'])
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 const leaseDurationMs = 5 * 60 * 1000
@@ -88,7 +90,7 @@ const parsePayload = (plaintext: string): NotificationMessagePayload => {
     throw new Error('Notification outbox payload is invalid')
   }
   if (value.kind === 'event-email' || value.kind === 'event-sms') {
-    if (Object.keys(value).length !== 7 || typeof value.deliveryId !== 'string' || !value.deliveryId || typeof value.managementCapability !== 'string' || !value.managementCapability || typeof value.reason !== 'string' || !['created', 'week-before', 'day-before', 'updated', 'cancelled'].includes(value.reason) || !isRecord(value.event) || typeof value.event.title !== 'string' || typeof value.event.start !== 'string' || typeof value.event.end !== 'string' || typeof value.event.uid !== 'string' || !Number.isSafeInteger(value.event.sequence)) throw new Error('Notification outbox payload is invalid')
+    if (Object.keys(value).length !== 6 || typeof value.deliveryId !== 'string' || !value.deliveryId || typeof value.managementCapability !== 'string' || !value.managementCapability || typeof value.reason !== 'string' || !['created', 'week-before', 'day-before', 'updated', 'cancelled'].includes(value.reason) || !isRecord(value.event) || typeof value.event.title !== 'string' || typeof value.event.start !== 'string' || typeof value.event.end !== 'string' || typeof value.event.uid !== 'string' || !Number.isSafeInteger(value.event.sequence)) throw new Error('Notification outbox payload is invalid')
     return value as unknown as EventNotificationMessagePayload
   }
   if (Object.keys(value).length !== 3 || typeof value.capability !== 'string' || !value.capability) throw new Error('Notification outbox payload is invalid')
@@ -172,8 +174,11 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
     } else {
       const result = await deliver(payload, authorization)
       if ((payload.kind === 'event-email' || payload.kind === 'event-sms') && result && 'attempted' in result) {
-      await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, provider_message_id = COALESCE(?, provider_message_id), submitted_at = ?, updated_at = ? WHERE id = ?')
-        .bind(result.status, result.providerMessageId ?? null, nowIso(dependencies), nowIso(dependencies), payload.deliveryId).run()
+        if (retryableProviderStatuses.has(result.status)) throw new Error('Notification provider delivery is retryable')
+        const status = result.status === 'submitted' ? 'submitted' : 'failed'
+        const providerMessageId = 'providerMessageId' in result ? result.providerMessageId : undefined
+        await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, provider_message_id = COALESCE(?, provider_message_id), submitted_at = ?, updated_at = ? WHERE id = ?')
+          .bind(status, providerMessageId ?? null, nowIso(dependencies), nowIso(dependencies), payload.deliveryId).run()
       }
     }
   } catch (error) {

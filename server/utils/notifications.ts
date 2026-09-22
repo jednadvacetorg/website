@@ -26,6 +26,12 @@ export interface NotificationLifecycleConfig {
   emailSmsEnabled: boolean
   emailSmsFirstMessageReady: boolean
   emailSmsEventDeliveryReady: boolean
+  smsEnabled: boolean
+  smsFirstMessageReady: boolean
+  smsEventDeliveryReady: boolean
+  smsDeliveryReady: boolean
+  /** False until a separately reviewed D1 migration adds event-sms to the outbox kind constraint. */
+  eventSmsOutboxSupported: false
   /** Complete, private, deployment-bound authority for external event email. */
   emailDeliveryReady: boolean
   brevoApiKey?: string
@@ -34,6 +40,9 @@ export interface NotificationLifecycleConfig {
   webPushEnabled: boolean
   webPushFirstMessageReady: boolean
   webPushEventDeliveryReady: boolean
+  /** Present only when the private VAPID material is valid and importable. */
+  webPushDelivery?: import('./webPush.ts').VapidConfiguration
+  webPushDeliveryReady: boolean
 }
 export interface NotificationDependencies { database: NotificationDatabase, config: NotificationLifecycleConfig, now?: () => Date, crypto?: NotificationCrypto }
 
@@ -69,8 +78,10 @@ export const normalizeNotificationContact = (channel: NotificationChannel, value
 }
 
 const isEnabled = (channel: NotificationChannel, config: NotificationLifecycleConfig) => channel === 'web-push'
-  ? config.webPushEnabled && config.webPushFirstMessageReady && config.webPushEventDeliveryReady
-  : config.emailSmsEnabled && config.emailSmsFirstMessageReady && config.emailSmsEventDeliveryReady
+  ? config.webPushEnabled && config.webPushFirstMessageReady && config.webPushEventDeliveryReady && config.webPushDeliveryReady
+  : channel === 'sms'
+    ? config.smsEnabled && config.smsFirstMessageReady && config.smsDeliveryReady
+    : config.emailSmsEnabled && config.emailSmsFirstMessageReady && config.emailSmsEventDeliveryReady
 const keyedHash = async (value: string, key: CryptoKey, cryptoApi: NotificationCrypto) => toBase64Url(new Uint8Array(await cryptoApi.subtle.sign('HMAC', key, encoder.encode(value))))
 const digest = async (value: string, cryptoApi: NotificationCrypto) => toBase64Url(new Uint8Array(await cryptoApi.subtle.digest('SHA-256', encoder.encode(value))))
 const encrypt = async (value: string, key: CryptoKey, cryptoApi: NotificationCrypto) => {

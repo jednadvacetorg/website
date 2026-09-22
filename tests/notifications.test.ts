@@ -197,7 +197,7 @@ test('public readiness keeps email false until separate delivery evidence is com
   }
 
   const { database } = disposableDatabase()
-  assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: true, webPush: false })
+  assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: false, webPush: false })
   assert.deepEqual(await projectNotificationReadiness({ ...runtimeConfig, notificationRootKey: '' }, database), { email: false, sms: false, webPush: false })
 })
 
@@ -210,7 +210,7 @@ test('public readiness rejects missing, malformed, and unretained D1 transport-k
     notificationWebPushEnabled: false, notificationWebPushFirstMessageReady: false, notificationWebPushEventDeliveryReady: false,
   }
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig), { email: false, sms: false, webPush: false })
-  assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: true, webPush: false })
+  assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: false, webPush: false })
 })
 
 test('the deterministic UI fixture is only enabled in opted-in development and accepts only reserved contacts', () => {
