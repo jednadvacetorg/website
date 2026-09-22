@@ -100,6 +100,27 @@ const withCallbackRoute = async (database: NotificationDatabase, run: (baseUrl: 
   }
 }
 
+const seedDelivery = (sqlite: Database.Database, status = 'pending') => {
+  sqlite.prepare('INSERT INTO notification_contacts (id, capability_generation) VALUES (?, ?)').run(1, 7)
+  sqlite.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, status, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run('delivery_123456789', 1, 7, 'hash_123456789', status, '2026-09-21T00:00:00.000Z')
+  sqlite.prepare('INSERT INTO notification_outbox (id, contact_id, expected_capability_generation, version, status, payload_ciphertext, payload_iv, claim_token, claim_expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('outbox_123456789', 1, 7, 1, 'claimed', 'ciphertext', 'iv', 'claim', '2026-09-21T01:00:00.000Z', '2026-09-21T00:00:00.000Z')
+}
+
+const callbackBody = (event: string, id = 'event_123456789') => JSON.stringify({
+  id,
+  event,
+  'X-Mailin-custom': 'delivery_123456789',
+  messageId: 'message_123456789',
+  email: 'not-authoritative@example.test',
+  date: '2026-09-21T10:00:00.000Z',
+})
+
+const postCallback = (baseUrl: string, body: string, authorization?: string) => fetch(`${baseUrl}/brevo`, {
+  method: 'POST',
+  headers: authorization ? { authorization } : undefined,
+  body,
+})
+
 test('Brevo callbacks retain only opaque correlation and fixed categories', () => {
   const callback = normalizeBrevoCallback({ id: 'event_123456789', event: 'hardBounce', 'X-Mailin-custom': 'delivery_123456789', messageId: 'message_123456789', email: 'must-not-be-used@example.test', date: '2026-09-21T10:00:00.000Z' })
   assert.deepEqual(callback, { id: 'event_123456789', deliveryId: 'delivery_123456789', kind: 'hard-bounce', providerMessageId: 'message_123456789', occurredAt: '2026-09-21T10:00:00.000Z' })
@@ -109,23 +130,10 @@ test('Brevo callbacks retain only opaque correlation and fixed categories', () =
 
 test('an authenticated hardBounce callback suppresses the matching delivery generation', async () => {
   const { sqlite, database } = createDatabase()
-  sqlite.prepare('INSERT INTO notification_contacts (id, capability_generation) VALUES (?, ?)').run(1, 7)
-  sqlite.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, status, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run('delivery_123456789', 1, 7, 'hash_123456789', 'pending', '2026-09-21T00:00:00.000Z')
-  sqlite.prepare('INSERT INTO notification_outbox (id, contact_id, expected_capability_generation, version, status, payload_ciphertext, payload_iv, claim_token, claim_expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('outbox_123456789', 1, 7, 1, 'claimed', 'ciphertext', 'iv', 'claim', '2026-09-21T01:00:00.000Z', '2026-09-21T00:00:00.000Z')
+  seedDelivery(sqlite)
 
   await withCallbackRoute(database, async baseUrl => {
-    const response = await fetch(`${baseUrl}/brevo`, {
-      method: 'POST',
-      headers: { authorization: 'Bearer callback-secret-for-tests' },
-      body: JSON.stringify({
-        id: 'event_123456789',
-        event: 'hardBounce',
-        'X-Mailin-custom': 'delivery_123456789',
-        messageId: 'message_123456789',
-        email: 'not-authoritative@example.test',
-        date: '2026-09-21T10:00:00.000Z',
-      }),
-    })
+    const response = await postCallback(baseUrl, callbackBody('hardBounce'), 'Bearer callback-secret-for-tests')
     assert.equal(response.status, 202)
   })
 
@@ -139,4 +147,73 @@ test('an authenticated hardBounce callback suppresses the matching delivery gene
     claim_token: null,
     claim_expires_at: null,
   })
+})
+
+test('the authenticated route maps each selected Brevo event and only suppresses terminal lifecycle events', async () => {
+  const cases = [
+    { event: 'delivered', status: 'delivered' },
+    { event: 'hardBounce', status: 'hard-bounce', reason: 'provider-bounce' },
+    { event: 'softBounce', status: 'soft-bounce' },
+    { event: 'blocked', status: 'blocked' },
+    { event: 'spam', status: 'complaint', reason: 'provider-complaint' },
+    { event: 'unsubscribed', status: 'unsubscribed', reason: 'provider-opt-out' },
+  ] as const
+
+  for (const item of cases) {
+    const { sqlite, database } = createDatabase()
+    seedDelivery(sqlite)
+    await withCallbackRoute(database, async baseUrl => {
+      const response = await postCallback(baseUrl, callbackBody(item.event), 'Bearer callback-secret-for-tests')
+      assert.equal(response.status, 202, item.event)
+    })
+
+    assert.equal(sqlite.prepare('SELECT status FROM notification_event_deliveries WHERE id = ?').get('delivery_123456789').status, item.status, item.event)
+    assert.deepEqual(sqlite.prepare('SELECT reason FROM notification_suppressions').all(), item.reason ? [{ reason: item.reason }] : [], item.event)
+    assert.deepEqual(sqlite.prepare('SELECT id FROM notification_contacts').get(), item.reason ? undefined : { id: 1 }, item.event)
+    assert.equal(sqlite.prepare('SELECT status FROM notification_outbox').get().status, item.reason ? 'invalidated' : 'claimed', item.event)
+  }
+})
+
+test('unrelated and obsolete provider events are acknowledged without lifecycle mutation', async () => {
+  for (const event of ['request', 'opened', 'click', 'complaint', 'hard-bounce', 'soft-bounce']) {
+    const { sqlite, database } = createDatabase()
+    seedDelivery(sqlite)
+    await withCallbackRoute(database, async baseUrl => {
+      const response = await postCallback(baseUrl, callbackBody(event), 'Bearer callback-secret-for-tests')
+      assert.equal(response.status, 202, event)
+    })
+
+    assert.deepEqual(sqlite.prepare('SELECT status, provider_message_id FROM notification_event_deliveries').get(), { status: 'pending', provider_message_id: null }, event)
+    assert.deepEqual(sqlite.prepare('SELECT * FROM notification_delivery_callbacks').all(), [], event)
+    assert.deepEqual(sqlite.prepare('SELECT * FROM notification_suppressions').all(), [], event)
+    assert.deepEqual(sqlite.prepare('SELECT id, capability_generation FROM notification_contacts').get(), { id: 1, capability_generation: 7 }, event)
+    assert.deepEqual(sqlite.prepare('SELECT status, version, payload_ciphertext FROM notification_outbox').get(), { status: 'claimed', version: 1, payload_ciphertext: 'ciphertext' }, event)
+  }
+
+  const { sqlite, database } = createDatabase()
+  seedDelivery(sqlite)
+  await withCallbackRoute(database, async baseUrl => {
+    const response = await postCallback(baseUrl, JSON.stringify({ event: 'hardBounce', id: 'not-opaque', 'X-Mailin-custom': 'delivery_123456789' }), 'Bearer callback-secret-for-tests')
+    assert.equal(response.status, 202)
+  })
+  assert.deepEqual(sqlite.prepare('SELECT status, provider_message_id FROM notification_event_deliveries').get(), { status: 'pending', provider_message_id: null })
+  assert.deepEqual(sqlite.prepare('SELECT * FROM notification_delivery_callbacks').all(), [])
+})
+
+test('only an exact callback bearer reaches route processing', async () => {
+  for (const authorization of [undefined, 'Basic callback-secret-for-tests', 'Bearer wrong-callback-secret']) {
+    const { sqlite, database } = createDatabase()
+    seedDelivery(sqlite)
+    await withCallbackRoute(database, async baseUrl => {
+      const response = await postCallback(baseUrl, callbackBody('hardBounce'), authorization)
+      assert.equal(response.status, 401, authorization ?? 'missing authorization')
+      assert.equal((await response.json() as { statusMessage: string }).statusMessage, 'Invalid callback authorization')
+    })
+
+    assert.deepEqual(sqlite.prepare('SELECT status, provider_message_id FROM notification_event_deliveries').get(), { status: 'pending', provider_message_id: null })
+    assert.deepEqual(sqlite.prepare('SELECT * FROM notification_delivery_callbacks').all(), [])
+    assert.deepEqual(sqlite.prepare('SELECT * FROM notification_suppressions').all(), [])
+    assert.deepEqual(sqlite.prepare('SELECT id FROM notification_contacts').get(), { id: 1 })
+    assert.equal(sqlite.prepare('SELECT status FROM notification_outbox').get().status, 'claimed')
+  }
 })
