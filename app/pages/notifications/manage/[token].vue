@@ -173,7 +173,7 @@ onMounted(() => heading.value?.focus())
             <USelect :model-value="recoveryChannel" :items="[{ label: 'E-mail', value: 'email' }, { label: 'SMS', value: 'sms' }]" @update:model-value="switchRecoveryChannel" />
           </UFormField>
           <UFormField name="contact" :label="recoveryInputLabel" :error="recoveryError ?? undefined">
-            <UInput v-model="recoveryContact" name="recovery-contact" :type="recoveryInputType" autocomplete="email" class="min-h-11" />
+            <UInput v-model="recoveryContact" name="recovery-contact" :type="recoveryInputType" :autocomplete="recoveryInputType" class="min-h-11" />
           </UFormField>
           <UFormField v-if="recoveryNeedsChallenge" name="turnstileToken" label="Ověřovací kód">
             <UInput v-model="recoveryChallenge" name="turnstile-token" class="min-h-11" />

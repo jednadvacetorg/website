@@ -6,7 +6,7 @@ const { initialCommunity, directEntry = false } = defineProps<{
 const { $counterscale } = useNuxtApp()
 
 const wholeCountryValue = 'all-czech-communities'
-const fakeDoorAlert = 'Tato možnost ještě není připravená, takže jsme nic neaktivovali. Sleduj prosím naše sociální sítě; už teď můžeš odebírat kalendář přes iCalendar.'
+const falseReadinessMessage = 'Tato možnost ještě není připravená. Nic jsme neaktivovali; už teď můžeš odebírat kalendář přes iCalendar.'
 const temporaryUnavailableMessage = 'Tato možnost je teď dočasně nedostupná. Nic jsme neaktivovali; zkus to prosím později.'
 const { public: publicConfig } = useRuntimeConfig()
 const { data: readiness } = await useFetch<{ email: boolean, sms: boolean, webPush: boolean }>('/api/notifications/readiness', {
@@ -181,15 +181,12 @@ const enableWebPush = async () => {
 }
 const expressSmsInterest = () => {
   $counterscale.trackSmsIntent()
-  window.alert(fakeDoorAlert)
 }
 const expressEmailInterest = () => {
   $counterscale.trackEmailIntent()
-  window.alert(fakeDoorAlert)
 }
 const expressWebInterest = () => {
   $counterscale.trackWebIntent()
-  window.alert(fakeDoorAlert)
 }
 const methodContact = (method: 'sms' | 'email') => method === 'sms' ? telephone.value : email.value
 const validMethodContact = (method: 'sms' | 'email') => method === 'sms' ? hasTelephone.value : hasEmail.value
@@ -265,11 +262,11 @@ onMounted(() => {
 
 <template>
   <section
-    class="mx-auto w-full min-w-0 max-w-[720px] space-y-8"
+    class="mx-auto w-full min-w-0 max-w-3xl space-y-8"
     :aria-labelledby="directEntry ? 'subscription-guide-title' : undefined"
   >
     <div v-if="directEntry" class="space-y-2">
-      <h2 id="subscription-guide-title" class="text-[28px] font-semibold leading-tight">Sledovat události</h2>
+      <h2 id="subscription-guide-title" class="text-3xl font-semibold leading-tight">Sledovat události</h2>
       <p>Vyber si komunity a způsob, jakým chceš jejich události sledovat.</p>
     </div>
 
@@ -356,6 +353,7 @@ onMounted(() => {
                 <UInput v-model="fakeTelephone" type="tel" autocomplete="tel" class="w-full" />
               </UFormField>
               <UButton color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope || !hasFakeTelephone" @click="expressSmsInterest">Mám zájem o SMS</UButton>
+              <p role="status" class="text-sm text-muted">{{ falseReadinessMessage }}</p>
             </template>
           </template>
 
@@ -378,6 +376,7 @@ onMounted(() => {
                 <UInput v-model="fakeEmail" type="email" autocomplete="email" class="w-full" />
               </UFormField>
               <UButton color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope || !hasFakeEmail" @click="expressEmailInterest">Mám zájem o e-mail</UButton>
+              <p role="status" class="text-sm text-muted">{{ falseReadinessMessage }}</p>
             </template>
           </template>
 
@@ -390,7 +389,10 @@ onMounted(() => {
               <UAlert v-else-if="webPushState === 'unsupported'" color="neutral" title="Tento prohlížeč teď oznámení nepodporuje nebo je nemůžeš povolit." role="status" />
               <UAlert v-else-if="webPushState === 'error'" color="error" title="Oznámení se teď nepodařilo aktivovat. Nic jsme neuložili; zkus to prosím později." role="alert" />
             </template>
-            <UButton v-else color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope" @click="expressWebInterest">Mám zájem o oznámení ve webu</UButton>
+            <template v-else>
+              <UButton color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope" @click="expressWebInterest">Mám zájem o oznámení ve webu</UButton>
+              <p role="status" class="text-sm text-muted">{{ falseReadinessMessage }}</p>
+            </template>
           </template>
         </section>
         <USeparator v-if="index < futureMethods.length - 1" label="nebo" />

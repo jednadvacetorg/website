@@ -113,6 +113,7 @@ if [[ "$mode" == "--all" || "$mode" == "--guide" ]]; then
   agent-browser --session "$browser_session" reload >/dev/null
   agent-browser --session "$browser_session" wait --load networkidle >/dev/null
   agent-browser --session "$browser_session" wait --text "Kalendářový feed" >/dev/null
+  agent-browser --session "$browser_session" eval 'Array.from(document.querySelectorAll("[role=status]")).filter(status => status.textContent?.includes("Tato možnost ještě není připravená. Nic jsme neaktivovali")).length === 3' | grep -q true
   agent-browser --session "$browser_session" screenshot /tmp/screenshots/notification-guide-desktop.png >/dev/null
   agent-browser --session "$browser_session" set viewport 320 800 >/dev/null
   agent-browser --session "$browser_session" screenshot /tmp/screenshots/notification-guide-mobile.png >/dev/null
@@ -203,6 +204,11 @@ if [[ "$mode" == "--all" || "$mode" == "--management" ]]; then
   capture_management_state 'notification-ui-management-unavailable' unavailable 'Odkaz pro správu není dostupný'
   agent-browser --session "$browser_session" eval 'document.body.innerText.includes("Zkontroluj celý odkaz nebo si nech poslat nový odkaz pro správu.")' | grep -q true
   agent-browser --session "$browser_session" eval '!document.body.innerText.includes("Oznámení ve webu") && document.body.innerText.includes("Nechat si poslat nový odkaz")' | grep -q true
+  agent-browser --session "$browser_session" eval 'document.querySelector("button[role=combobox]")?.click()' >/dev/null
+  agent-browser --session "$browser_session" find text 'SMS' click >/dev/null
+  agent-browser --session "$browser_session" eval 'document.querySelector("input[name=recovery-contact]")?.getAttribute("autocomplete") === "tel"' | grep -q true
+  agent-browser --session "$browser_session" eval 'document.querySelector("button[role=combobox]")?.click()' >/dev/null
+  agent-browser --session "$browser_session" find text 'E-mail' click >/dev/null
   agent-browser --session "$browser_session" fill 'input[name="recovery-contact"]' 'recovery@example.test' >/dev/null
   agent-browser --session "$browser_session" find role button click --name 'Poslat odkaz pro správu' >/dev/null
   agent-browser --session "$browser_session" wait --text 'Ověřovací kód' >/dev/null
