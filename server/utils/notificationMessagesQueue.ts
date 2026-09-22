@@ -52,7 +52,6 @@ interface PendingOutboxRow {
 interface ClaimedOutboxRow {
   payload_ciphertext: unknown
   payload_iv: unknown
-  transport_key_version: unknown
 }
 
 const allowedKinds = new Set<NotificationMessagePayload['kind']>(['first-activation', 'reactivation', 'management-recovery', 'event-email'])
@@ -145,18 +144,15 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
   let payload: NotificationMessagePayload
   let authorization: { expected_capability_generation: number } | null
   try {
-    const row = await dependencies.database.prepare('SELECT payload_ciphertext, payload_iv, transport_key_version FROM notification_outbox WHERE id = ? AND version = ? AND status = ? AND claim_token = ?')
+    const row = await dependencies.database.prepare('SELECT payload_ciphertext, payload_iv FROM notification_outbox WHERE id = ? AND version = ? AND status = ? AND claim_token = ?')
       .bind(pointer.outboxId, pointer.version, 'claimed', token).first<ClaimedOutboxRow>()
-    if (!row || typeof row.payload_ciphertext !== 'string' || typeof row.payload_iv !== 'string' || typeof row.transport_key_version !== 'string') throw new Error('Notification outbox payload is unavailable')
-    // Durable version labels are root versions; this is the outbox HKDF purpose key.
-    const key = dependencies.config.outboxTransportKeys[row.transport_key_version]
-    if (!key) throw new Error('Notification outbox transport key is unavailable')
-    const plaintext = await cryptoApi.subtle.decrypt({ name: 'AES-GCM', iv: asBufferSource(decodeBase64Url(row.payload_iv)) }, key, asBufferSource(decodeBase64Url(row.payload_ciphertext)))
+    if (!row || typeof row.payload_ciphertext !== 'string' || typeof row.payload_iv !== 'string') throw new Error('Notification outbox payload is unavailable')
+    const plaintext = await cryptoApi.subtle.decrypt({ name: 'AES-GCM', iv: asBufferSource(decodeBase64Url(row.payload_iv)) }, dependencies.config.outboxTransportKey, asBufferSource(decodeBase64Url(row.payload_ciphertext)))
     payload = parsePayload(decoder.decode(plaintext))
     await dependencies.barriers?.afterClaimedAndDecrypted?.(pointer)
     authorization = await dependencies.database.prepare(payload.kind === 'event-email'
-      ? 'SELECT o.expected_capability_generation FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation JOIN notification_event_deliveries d ON d.id = ? AND d.contact_id = c.id AND d.expected_capability_generation = c.capability_generation AND d.status = ? JOIN notification_subscriptions sub ON sub.contact_id = c.id WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash AND s.destination_hash_key_version = c.destination_hash_key_version) LIMIT 1'
-      : 'SELECT o.expected_capability_generation FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND o.kind IN (?, ?, ?) AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash AND s.destination_hash_key_version = c.destination_hash_key_version)')
+      ? 'SELECT o.expected_capability_generation FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation JOIN notification_event_deliveries d ON d.id = ? AND d.contact_id = c.id AND d.expected_capability_generation = c.capability_generation AND d.status = ? JOIN notification_subscriptions sub ON sub.contact_id = c.id WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash) LIMIT 1'
+      : 'SELECT o.expected_capability_generation FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND o.kind IN (?, ?, ?) AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash)')
       .bind(...(payload.kind === 'event-email'
         ? ['active', payload.deliveryId, 'pending', pointer.outboxId, pointer.version, 'claimed', token, nowIso(dependencies)]
         : ['active', pointer.outboxId, pointer.version, 'claimed', token, nowIso(dependencies), 'first-activation', 'reactivation', 'management-recovery'])).first<{ expected_capability_generation: number }>()
@@ -183,7 +179,7 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
     throw error
   }
 
-  const consumed = await dependencies.database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, transport_key_version = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE id = ? AND version = ? AND status = ? AND claim_token = ? AND expected_capability_generation = ?')
+  const consumed = await dependencies.database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE id = ? AND version = ? AND status = ? AND claim_token = ? AND expected_capability_generation = ?')
     .bind('consumed', nowIso(dependencies), nowIso(dependencies), pointer.outboxId, pointer.version, 'claimed', token, authorization.expected_capability_generation).run()
   if (changed(consumed) !== 1) throw new Error('Notification outbox consumption lost its claim')
   return { delivered: true, stale: false }

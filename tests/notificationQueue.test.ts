@@ -12,11 +12,11 @@ const Database = createRequire(import.meta.url)('better-sqlite3') as new (filena
 }
 
 const schema = `
-  CREATE TABLE notification_contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination TEXT NOT NULL, destination_hash TEXT NOT NULL, destination_hash_key_version TEXT NOT NULL, management_token_digest TEXT NOT NULL, capability_generation INTEGER NOT NULL, state TEXT NOT NULL, consent_at TEXT NOT NULL, consent_version TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(channel, destination));
+  CREATE TABLE notification_contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination TEXT NOT NULL, destination_hash TEXT NOT NULL, management_token_digest TEXT NOT NULL, capability_generation INTEGER NOT NULL, state TEXT NOT NULL, consent_at TEXT NOT NULL, consent_version TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(channel, destination));
   CREATE TABLE notification_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL, community_slug TEXT NOT NULL, frequency TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(contact_id, community_slug, frequency));
-   CREATE TABLE notification_suppressions (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination_hash TEXT NOT NULL, destination_hash_key_version TEXT NOT NULL, reason TEXT NOT NULL, suppressed_at TEXT NOT NULL, UNIQUE(channel, destination_hash));
-   CREATE TABLE notification_abuse_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, requester_hash TEXT NOT NULL, requester_hash_key_version TEXT NOT NULL, attempted_at TEXT NOT NULL, expires_at TEXT NOT NULL);
-  CREATE TABLE notification_outbox (id TEXT PRIMARY KEY, contact_id INTEGER NOT NULL, version INTEGER NOT NULL, expected_capability_generation INTEGER NOT NULL, status TEXT NOT NULL, claim_token TEXT, claim_expires_at TEXT, payload_ciphertext TEXT, payload_iv TEXT, transport_key_version TEXT, kind TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, terminal_at TEXT);
+   CREATE TABLE notification_suppressions (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination_hash TEXT NOT NULL, reason TEXT NOT NULL, suppressed_at TEXT NOT NULL, UNIQUE(channel, destination_hash));
+   CREATE TABLE notification_abuse_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, requester_hash TEXT NOT NULL, attempted_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+   CREATE TABLE notification_outbox (id TEXT PRIMARY KEY, contact_id INTEGER NOT NULL, version INTEGER NOT NULL, expected_capability_generation INTEGER NOT NULL, status TEXT NOT NULL, claim_token TEXT, claim_expires_at TEXT, payload_ciphertext TEXT, payload_iv TEXT, kind TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, terminal_at TEXT);
 `
 
 const disposableDatabase = (): { database: NotificationDatabase, query(sql: string): Record<string, unknown>[] } => {
@@ -41,7 +41,7 @@ const disposableDatabase = (): { database: NotificationDatabase, query(sql: stri
 const keyMaterial = new TextEncoder().encode('01234567890123456789012345678901')
 const root = btoa(String.fromCharCode(...keyMaterial)).replace(/=+$/g, '')
 const config = await notificationConfig({
-  notificationCommunitySlugs: 'brno', notificationRootKeys: JSON.stringify({ v1: root }), notificationCurrentKeyVersion: 'v1',
+  notificationCommunitySlugs: 'brno', notificationRootKey: root,
   notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
   notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
 })
@@ -69,11 +69,10 @@ test('producer publishes inert pointers, marks accepted work queued, and retains
 
   assert.deepEqual(await publishPendingNotificationPointers({ send: async pointer => { sent.push(pointer) } }, { database, config, crypto: predictableCrypto }), { published: 1 })
   assert.deepEqual(sent, [pointerFor(query)])
-  const [outbox] = query('SELECT status, payload_ciphertext, payload_iv, transport_key_version FROM notification_outbox')
+  const [outbox] = query('SELECT status, payload_ciphertext, payload_iv FROM notification_outbox')
   assert.equal(outbox!.status, 'queued')
   assert.equal(typeof outbox!.payload_ciphertext, 'string')
   assert.equal(typeof outbox!.payload_iv, 'string')
-  assert.equal(outbox!.transport_key_version, 'v1')
 })
 
 test('producer rejection leaves pending work recoverable', async () => {
@@ -97,10 +96,10 @@ test('stop or rotation committed after Queue acceptance makes the original point
       crypto: predictableCrypto,
       barriers: {
         afterPublished: async pointer => {
-          if (transition === 'stop') await database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, transport_key_version = NULL WHERE id = ? AND version = ?').bind('invalidated', pointer.outboxId, pointer.version).run()
+          if (transition === 'stop') await database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL WHERE id = ? AND version = ?').bind('invalidated', pointer.outboxId, pointer.version).run()
           else {
             await database.prepare('UPDATE notification_contacts SET capability_generation = capability_generation + 1').run()
-            await database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, transport_key_version = NULL WHERE id = ? AND version = ?').bind('invalidated', pointer.outboxId, pointer.version).run()
+            await database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL WHERE id = ? AND version = ?').bind('invalidated', pointer.outboxId, pointer.version).run()
           }
         },
       },
@@ -132,7 +131,7 @@ test('consumer decrypts only after claim, final-authorizes, then CAS-scrubs succ
 
   assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config, crypto: predictableCrypto }, async payload => { delivered.push(payload) }), { delivered: true, stale: false })
   assert.deepEqual(delivered, [{ destination: 'alice@example.com', capability: btoa(String.fromCharCode(...new Uint8Array(32))).replace(/=+$/g, ''), kind: 'first-activation' }])
-  assert.deepEqual(query('SELECT version, status, payload_ciphertext, payload_iv, transport_key_version, claim_token FROM notification_outbox'), [{ version: 2, status: 'consumed', payload_ciphertext: null, payload_iv: null, transport_key_version: null, claim_token: null }])
+  assert.deepEqual(query('SELECT version, status, payload_ciphertext, payload_iv, claim_token FROM notification_outbox'), [{ version: 2, status: 'consumed', payload_ciphertext: null, payload_iv: null, claim_token: null }])
 })
 
 test('stop committed after claim and decryption denies the provider hook', async () => {
@@ -150,7 +149,7 @@ test('stop committed after claim and decryption denies the provider hook', async
     },
     barriers: {
       afterClaimedAndDecrypted: async () => {
-        await database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, destination_hash_key_version, reason, suppressed_at) SELECT channel, destination_hash, destination_hash_key_version, ?, ? FROM notification_contacts').bind('user-stop', '2026-09-17T00:00:01.000Z').run()
+        await database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT channel, destination_hash, ?, ? FROM notification_contacts').bind('user-stop', '2026-09-17T00:00:01.000Z').run()
         await database.prepare('DELETE FROM notification_contacts').run()
       },
     },
@@ -191,10 +190,6 @@ test('pre-delivery failures release the exact claim so repeated Queue pointers r
   await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
   const pointer = pointerFor(query)
 
-  await assert.rejects(consumeNotificationOutboxPointer(pointer, { database, config: { ...config, outboxTransportKeys: {} }, crypto: predictableCrypto }, async () => {}))
-  assert.deepEqual(query('SELECT status, claim_token, claim_expires_at FROM notification_outbox'), [{ status: 'queued', claim_token: null, claim_expires_at: null }])
-  await assert.rejects(consumeNotificationOutboxPointer(pointer, { database, config: { ...config, outboxTransportKeys: {} }, crypto: predictableCrypto }, async () => {}))
-  assert.deepEqual(query('SELECT status, claim_token, claim_expires_at FROM notification_outbox'), [{ status: 'queued', claim_token: null, claim_expires_at: null }])
   await assert.rejects(consumeNotificationOutboxPointer(pointer, { database, config, crypto: predictableCrypto }, async () => { throw new Error('Provider unavailable') }))
   const [outbox] = query('SELECT status, claim_token, payload_ciphertext FROM notification_outbox')
   assert.equal(outbox!.status, 'queued')
@@ -207,8 +202,7 @@ test('scheduled drain publishes bounded pointers and consumer failures remain re
   await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
   const runtimeConfig = {
     notificationCommunitySlugs: 'brno',
-    notificationRootKeys: JSON.stringify({ v1: root }),
-    notificationCurrentKeyVersion: 'v1',
+    notificationRootKey: root,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
     notificationConsentVersion: '2026-09',
