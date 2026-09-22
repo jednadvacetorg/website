@@ -1,7 +1,6 @@
 CREATE TABLE `notification_abuse_attempts` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`requester_hash` text NOT NULL,
-	`requester_hash_key_version` text NOT NULL,
 	`attempted_at` text NOT NULL,
 	`expires_at` text NOT NULL
 );
@@ -12,7 +11,6 @@ CREATE TABLE `notification_contacts` (
 	`channel` text NOT NULL,
 	`destination` text NOT NULL,
 	`destination_hash` text NOT NULL,
-	`destination_hash_key_version` text NOT NULL,
 	`management_token_digest` text NOT NULL,
 	`capability_generation` integer NOT NULL,
 	`state` text NOT NULL,
@@ -42,7 +40,6 @@ CREATE TABLE `notification_event_deliveries` (
 	`contact_id` integer,
 	`expected_capability_generation` integer NOT NULL,
 	`destination_hash` text NOT NULL,
-	`destination_hash_key_version` text NOT NULL,
 	`event_uid` text NOT NULL,
 	`event_revision` integer NOT NULL,
 	`reason` text NOT NULL,
@@ -88,7 +85,6 @@ CREATE TABLE `notification_outbox` (
 	`claim_expires_at` text,
 	`payload_ciphertext` text,
 	`payload_iv` text,
-	`transport_key_version` text,
 	`kind` text NOT NULL,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL,
@@ -114,7 +110,6 @@ CREATE TABLE `notification_suppressions` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`channel` text NOT NULL,
 	`destination_hash` text NOT NULL,
-	`destination_hash_key_version` text NOT NULL,
 	`reason` text NOT NULL,
 	`suppressed_at` text NOT NULL,
 	CONSTRAINT "notification_suppressions_channel_check" CHECK("notification_suppressions"."channel" IN ('email', 'sms', 'web-push')),

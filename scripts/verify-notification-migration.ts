@@ -21,15 +21,15 @@ const Database = require('better-sqlite3') as new (filename: string) => {
 const root = resolve(process.cwd())
 const migrationPath = 'server/db/migrations/sqlite/0000_majestic_lightspeed.sql'
 const notificationTables = {
-  notification_abuse_attempts: ['id', 'requester_hash', 'requester_hash_key_version', 'attempted_at', 'expires_at'],
-  notification_contacts: ['id', 'channel', 'destination', 'destination_hash', 'destination_hash_key_version', 'management_token_digest', 'capability_generation', 'state', 'consent_at', 'consent_version', 'created_at', 'updated_at'],
+  notification_abuse_attempts: ['id', 'requester_hash', 'attempted_at', 'expires_at'],
+  notification_contacts: ['id', 'channel', 'destination', 'destination_hash', 'management_token_digest', 'capability_generation', 'state', 'consent_at', 'consent_version', 'created_at', 'updated_at'],
   notification_delivery_callbacks: ['provider_event_id', 'delivery_id', 'event', 'provider_message_id', 'received_at'],
-  notification_event_deliveries: ['id', 'contact_id', 'expected_capability_generation', 'destination_hash', 'destination_hash_key_version', 'event_uid', 'event_revision', 'reason', 'status', 'provider_message_id', 'created_at', 'updated_at', 'submitted_at'],
+  notification_event_deliveries: ['id', 'contact_id', 'expected_capability_generation', 'destination_hash', 'event_uid', 'event_revision', 'reason', 'status', 'provider_message_id', 'created_at', 'updated_at', 'submitted_at'],
   notification_event_state: ['event_key', 'uid', 'starts_at', 'ends_at', 'venue', 'cancelled', 'notification_revision', 'updated_at'],
   notification_management_capabilities: ['token_digest', 'contact_id', 'expected_capability_generation', 'created_at', 'expires_at'],
-  notification_outbox: ['id', 'contact_id', 'version', 'expected_capability_generation', 'status', 'claim_token', 'claim_expires_at', 'payload_ciphertext', 'payload_iv', 'transport_key_version', 'kind', 'created_at', 'updated_at', 'terminal_at'],
+  notification_outbox: ['id', 'contact_id', 'version', 'expected_capability_generation', 'status', 'claim_token', 'claim_expires_at', 'payload_ciphertext', 'payload_iv', 'kind', 'created_at', 'updated_at', 'terminal_at'],
   notification_subscriptions: ['id', 'contact_id', 'community_slug', 'frequency', 'created_at', 'updated_at'],
-  notification_suppressions: ['id', 'channel', 'destination_hash', 'destination_hash_key_version', 'reason', 'suppressed_at'],
+  notification_suppressions: ['id', 'channel', 'destination_hash', 'reason', 'suppressed_at'],
 } as const
 
 const expectedIndexes = {
@@ -97,7 +97,6 @@ const insertContact = (database: InstanceType<typeof Database>, overrides: Parti
     channel: 'email',
     destination: 'alice@example.test',
     destination_hash: 'destination-hash',
-    destination_hash_key_version: 'v1',
     management_token_digest: 'token-digest',
     capability_generation: 3,
     state: 'active',
@@ -107,7 +106,7 @@ const insertContact = (database: InstanceType<typeof Database>, overrides: Parti
     updated_at: '2026-09-17T00:00:00.000Z',
     ...overrides,
   }
-  database.prepare('INSERT INTO notification_contacts (channel, destination, destination_hash, destination_hash_key_version, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (@channel, @destination, @destination_hash, @destination_hash_key_version, @management_token_digest, @capability_generation, @state, @consent_at, @consent_version, @created_at, @updated_at)').run(contact)
+  database.prepare('INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (@channel, @destination, @destination_hash, @management_token_digest, @capability_generation, @state, @consent_at, @consent_version, @created_at, @updated_at)').run(contact)
 }
 
 const exerciseConstraints = (database: InstanceType<typeof Database>) => {
@@ -121,32 +120,29 @@ const exerciseConstraints = (database: InstanceType<typeof Database>) => {
   assert.throws(() => database.prepare('INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(1, 'brno', 'created', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'))
   assert.throws(() => database.prepare('INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').run(1, 'brno', 'monthly', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'))
 
-  database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, destination_hash_key_version, reason, suppressed_at) VALUES (?, ?, ?, ?, ?)').run('email', 'suppression-hash', 'v1', 'user-stop', '2026-09-17T00:00:00.000Z')
-  assert.throws(() => database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, destination_hash_key_version, reason, suppressed_at) VALUES (?, ?, ?, ?, ?)').run('email', 'bad-reason-hash', 'v1', 'freeform', '2026-09-17T00:00:00.000Z'))
+  database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) VALUES (?, ?, ?, ?)').run('email', 'suppression-hash', 'user-stop', '2026-09-17T00:00:00.000Z')
+  assert.throws(() => database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) VALUES (?, ?, ?, ?)').run('email', 'bad-reason-hash', 'freeform', '2026-09-17T00:00:00.000Z'))
 
-  database.prepare('INSERT INTO notification_abuse_attempts (requester_hash, requester_hash_key_version, attempted_at, expires_at) VALUES (?, ?, ?, ?)').run('requester-hash', 'v1', '2026-09-17T00:00:00.000Z', '2026-09-18T00:00:00.000Z')
+  database.prepare('INSERT INTO notification_abuse_attempts (requester_hash, attempted_at, expires_at) VALUES (?, ?, ?)').run('requester-hash', '2026-09-17T00:00:00.000Z', '2026-09-18T00:00:00.000Z')
 
-  database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, claim_token, claim_expires_at, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('outbox-pending', 1, 7, 3, 'pending', 'claim', '2026-09-17T00:01:00.000Z', 'ciphertext', 'iv', 'v1', 'first-activation', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')
+  database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, claim_token, claim_expires_at, payload_ciphertext, payload_iv, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('outbox-pending', 1, 7, 3, 'pending', 'claim', '2026-09-17T00:01:00.000Z', 'ciphertext', 'iv', 'first-activation', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')
   assert.throws(() => database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run('outbox-invalid', 1, 1, 3, 'retrying', 'first-activation', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'))
 
   const staleCas = database.prepare('UPDATE notification_outbox SET status = ? WHERE id = ? AND version = ? AND status = ?').run('claimed', 'outbox-pending', 6, 'pending')
   assert.equal(staleCas.changes, 0, 'a stale outbox version CAS must not mutate state')
   const currentCas = database.prepare('UPDATE notification_outbox SET status = ?, claim_token = ? WHERE id = ? AND version = ? AND status = ?').run('claimed', 'claim-2', 'outbox-pending', 7, 'pending')
   assert.equal(currentCas.changes, 1, 'the current outbox version/status CAS must mutate exactly one row')
-  const terminal = database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, transport_key_version = NULL, claim_token = NULL, claim_expires_at = NULL, terminal_at = ? WHERE id = ? AND version = ? AND status = ?').run('invalidated', '2026-09-17T00:02:00.000Z', 'outbox-pending', 7, 'claimed')
+  const terminal = database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, terminal_at = ? WHERE id = ? AND version = ? AND status = ?').run('invalidated', '2026-09-17T00:02:00.000Z', 'outbox-pending', 7, 'claimed')
   assert.equal(terminal.changes, 1, 'a current claimed row must support lifecycle invalidation')
-  assert.deepEqual(database.prepare('SELECT version, status, payload_ciphertext, payload_iv, transport_key_version, claim_token, claim_expires_at FROM notification_outbox WHERE id = ?').get('outbox-pending'), { version: 8, status: 'invalidated', payload_ciphertext: null, payload_iv: null, transport_key_version: null, claim_token: null, claim_expires_at: null })
-
-  database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('outbox-retained', 1, 1, 3, 'queued', 'retained-ciphertext', 'retained-iv', 'v2', 'reactivation', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')
-  assert.deepEqual(database.prepare("SELECT id, transport_key_version FROM notification_outbox WHERE status IN ('pending', 'queued', 'claimed') AND payload_ciphertext IS NOT NULL AND payload_iv IS NOT NULL AND transport_key_version IS NOT NULL ORDER BY id").all(), [{ id: 'outbox-retained', transport_key_version: 'v2' }], 'only nonterminal payload rows may retain transport-key references')
+  assert.deepEqual(database.prepare('SELECT version, status, payload_ciphertext, payload_iv, claim_token, claim_expires_at FROM notification_outbox WHERE id = ?').get('outbox-pending'), { version: 8, status: 'invalidated', payload_ciphertext: null, payload_iv: null, claim_token: null, claim_expires_at: null })
 
   database.prepare('INSERT INTO notification_event_state (event_key, uid, starts_at, ends_at, venue, cancelled, notification_revision, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run('brno:event-1', 'uid-1', '2026-10-01T18:00:00.000Z', '2026-10-01T19:00:00.000Z', 'Brno', 0, 1, '2026-09-17T00:00:00.000Z')
   database.prepare('UPDATE notification_event_state SET notification_revision = ?, starts_at = ?, updated_at = ? WHERE event_key = ?').run(2, '2026-10-01T17:00:00.000Z', '2026-09-17T00:01:00.000Z', 'brno:event-1')
   assert.deepEqual(database.prepare('SELECT uid, notification_revision FROM notification_event_state WHERE event_key = ?').get('brno:event-1'), { uid: 'uid-1', notification_revision: 2 })
 
-  database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, destination_hash_key_version, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('delivery-1', 1, 3, 'destination-hash', 'v1', 'uid-1', 2, 'updated', 'pending', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')
-  assert.throws(() => database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, destination_hash_key_version, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('delivery-duplicate', 1, 3, 'destination-hash', 'v1', 'uid-1', 2, 'updated', 'pending', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'))
-  assert.throws(() => database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, destination_hash_key_version, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('delivery-invalid', 1, 3, 'destination-hash', 'v1', 'uid-2', 1, 'created', 'unknown', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'))
+  database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('delivery-1', 1, 3, 'destination-hash', 'uid-1', 2, 'updated', 'pending', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')
+  assert.throws(() => database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('delivery-duplicate', 1, 3, 'destination-hash', 'uid-1', 2, 'updated', 'pending', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'))
+  assert.throws(() => database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('delivery-invalid', 1, 3, 'destination-hash', 'uid-2', 1, 'created', 'unknown', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'))
   database.prepare('INSERT INTO notification_delivery_callbacks (provider_event_id, delivery_id, event, received_at) VALUES (?, ?, ?, ?)').run('provider-event-1', 'delivery-1', 'delivered', '2026-09-17T00:00:00.000Z')
   assert.throws(() => database.prepare('INSERT INTO notification_delivery_callbacks (provider_event_id, delivery_id, event, received_at) VALUES (?, ?, ?, ?)').run('provider-event-1', 'delivery-1', 'delivered', '2026-09-17T00:00:00.000Z'))
   database.prepare('INSERT INTO notification_management_capabilities (token_digest, contact_id, expected_capability_generation, created_at) VALUES (?, ?, ?, ?)').run('alias-digest', 1, 3, '2026-09-17T00:00:00.000Z')
@@ -194,14 +190,6 @@ const fullRehearsal = async () => {
     assert.deepEqual(database.prepare('SELECT hex(payload) AS content FROM content_sentinel WHERE id = 1').get(), sentinelBefore, 'migration altered Content sentinel data')
     assert.equal(database.prepare('SELECT hex(payload) AS portal FROM portal_sentinel WHERE id = 1').get()?.portal, Buffer.from('portal-owned sentinel\u0000value').toString('hex').toUpperCase(), 'migration altered Portal sentinel data')
     exerciseConstraints(database)
-    const rootVersionReferences = {
-      outbox: database.prepare("SELECT DISTINCT transport_key_version AS version FROM notification_outbox WHERE status IN ('pending', 'queued', 'claimed') AND payload_ciphertext IS NOT NULL AND payload_iv IS NOT NULL").all(),
-      destination: database.prepare('SELECT destination_hash_key_version AS version FROM notification_contacts UNION SELECT destination_hash_key_version AS version FROM notification_suppressions UNION SELECT destination_hash_key_version AS version FROM notification_event_deliveries').all(),
-      abuse: database.prepare('SELECT DISTINCT requester_hash_key_version AS version FROM notification_abuse_attempts WHERE expires_at > ?').all('2026-09-17T00:00:00.000Z'),
-    }
-    assert.deepEqual(rootVersionReferences.outbox, [{ version: 'v2' }], 'nonterminal outbox rows retain root-version references')
-    assert.ok(rootVersionReferences.destination.every(row => row.version === 'v1'), 'destination and delivery evidence retain root-version references')
-    assert.deepEqual(rootVersionReferences.abuse, [{ version: 'v1' }], 'unexpired abuse rows retain root-version references')
     const ledgerBefore = database.prepare('SELECT name FROM _hub_migrations ORDER BY id').all()
     await applyWithNuxtHubRunner(database, join(temporaryDirectory, 'hub'), migrations)
     assert.deepEqual(database.prepare('SELECT name FROM _hub_migrations ORDER BY id').all(), ledgerBefore, 'second migration apply was not a ledger no-op')
@@ -215,10 +203,9 @@ const fullRehearsal = async () => {
 
     const reconnected = new Database(databasePath)
     assert.deepEqual(reconnected.prepare('SELECT id, version, status, expected_capability_generation FROM notification_outbox WHERE id = ?').get('outbox-pending'), { id: 'outbox-pending', version: 8, status: 'invalidated', expected_capability_generation: 3 }, 'versioned outbox tombstone did not survive reconnect')
-    assert.deepEqual(reconnected.prepare('SELECT id, transport_key_version FROM notification_outbox WHERE id = ?').get('outbox-retained'), { id: 'outbox-retained', transport_key_version: 'v2' }, 'retained outbox state did not survive reconnect')
     reconnected.close()
 
-    return { cleanup: 'pending', migrations: migrationHashes, objects: Object.keys(notificationTables), indexes: expectedIndexes, queryPlans, rootVersionReferences, sentinels: 'preserved', constraints: 'fixed codes, foreign keys, uniqueness, and CAS enforced', reconnect: 'versioned state survived a fresh SQLite handle', temporaryDirectory }
+    return { cleanup: 'pending', migrations: migrationHashes, objects: Object.keys(notificationTables), indexes: expectedIndexes, queryPlans, sentinels: 'preserved', constraints: 'fixed codes, foreign keys, uniqueness, and CAS enforced', reconnect: 'outbox CAS state survived a fresh SQLite handle', temporaryDirectory }
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true })
   }

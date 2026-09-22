@@ -21,13 +21,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "requester_hash_key_version": {
-          "name": "requester_hash_key_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
         "attempted_at": {
           "name": "attempted_at",
           "type": "text",
@@ -84,13 +77,6 @@
         },
         "destination_hash": {
           "name": "destination_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "destination_hash_key_version": {
-          "name": "destination_hash_key_version",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -278,13 +264,6 @@
         },
         "destination_hash": {
           "name": "destination_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "destination_hash_key_version": {
-          "name": "destination_hash_key_version",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -590,13 +569,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "transport_key_version": {
-          "name": "transport_key_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "kind": {
           "name": "kind",
           "type": "text",
@@ -750,13 +722,6 @@
         },
         "destination_hash": {
           "name": "destination_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "destination_hash_key_version": {
-          "name": "destination_hash_key_version",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
