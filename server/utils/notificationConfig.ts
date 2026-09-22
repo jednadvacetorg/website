@@ -57,7 +57,14 @@ const optionalPrivateText = (value: unknown) => typeof value === 'string' && val
 const exactTrue = (value: unknown) => value === true || value === 'true'
 
 const optionalVapidConfiguration = async (value: Record<string, unknown>): Promise<VapidConfiguration | undefined> => {
-  const publicKey = typeof value.notificationVapidPublicKey === 'string' ? value.notificationVapidPublicKey : undefined
+  const publicRuntime = value.public && typeof value.public === 'object' && !Array.isArray(value.public)
+    ? value.public as Record<string, unknown>
+    : undefined
+  const publicKey = typeof publicRuntime?.notificationVapidPublicKey === 'string'
+    ? publicRuntime.notificationVapidPublicKey
+    : typeof value.notificationVapidPublicKey === 'string'
+      ? value.notificationVapidPublicKey
+      : undefined
   const privateKey = typeof value.notificationVapidPrivateKey === 'string' ? value.notificationVapidPrivateKey : undefined
   const subject = typeof value.notificationVapidSubject === 'string' ? value.notificationVapidSubject : undefined
   if (!publicKey || !privateKey || !subject || !/^(?:mailto:[^\s@]+@[^\s@]+|https:\/\/[^\s/]+(?:\/[^\s]*)?)$/.test(subject)) return undefined

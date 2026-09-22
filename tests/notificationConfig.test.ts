@@ -58,7 +58,7 @@ test('Web Push VAPID configuration keeps the private key server-only and require
   const config = await notificationConfig({
     ...base,
     notificationVapidPrivateKey: jwk.d,
-    notificationVapidPublicKey: encode(publicBytes),
+    public: { notificationVapidPublicKey: encode(publicBytes) },
     notificationVapidSubject: 'mailto:notifications@jednadvacet.org',
   })
   assert.equal(config.webPushDeliveryReady, true)
