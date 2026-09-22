@@ -1,6 +1,6 @@
 import { defineEventHandler } from 'h3'
 import { notificationConfig } from '../../utils/notificationConfig.ts'
-import { assertNotificationRootKeyRetention, type NotificationDatabase } from '../../utils/notifications.ts'
+import type { NotificationDatabase } from '../../utils/notifications.ts'
 import { notificationUiVerificationFixtureEnabled } from '../../utils/notificationUiVerificationFixture.ts'
 
 export interface NotificationReadiness {
@@ -17,7 +17,6 @@ export const projectNotificationReadiness = async (runtimeConfig: Record<string,
     if (notificationUiVerificationFixtureEnabled(runtimeConfig)) return { email: true, sms: true, webPush: false }
     const config = await notificationConfig(runtimeConfig)
     if (!database) return unavailable
-    await assertNotificationRootKeyRetention({ database, config })
     const emailSmsReady = config.emailSmsEnabled
       && config.emailSmsFirstMessageReady
       && config.emailSmsEventDeliveryReady

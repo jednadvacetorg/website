@@ -6,11 +6,6 @@ export class NotificationConfigurationError extends Error {
   }
 }
 
-const versionPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-
 const decodeBase64Url = (value: string) => {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new NotificationConfigurationError()
   try {
@@ -44,20 +39,6 @@ const derivePurposeKeys = async (material: Uint8Array, subtle: SubtleCrypto) => 
     suppression: await derive(purposeLabels.suppression, { name: 'HMAC', hash: 'SHA-256', length: 256 }, ['sign']),
     abuse: await derive(purposeLabels.abuse, { name: 'HMAC', hash: 'SHA-256', length: 256 }, ['sign']),
   }
-}
-
-const parseRootKeyring = async (value: unknown, currentVersion: unknown, subtle: SubtleCrypto) => {
-  if (typeof value !== 'string' || typeof currentVersion !== 'string' || !versionPattern.test(currentVersion)) throw new NotificationConfigurationError()
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(value)
-  } catch {
-    throw new NotificationConfigurationError()
-  }
-  if (!isRecord(parsed) || !Object.keys(parsed).length || !Object.entries(parsed).every(([version, key]) => versionPattern.test(version) && typeof key === 'string')) throw new NotificationConfigurationError()
-  const derived = Object.fromEntries(await Promise.all(Object.entries(parsed).map(async ([version, key]) => [version, await derivePurposeKeys(decodeBase64Url(key as string), subtle)]))) as Record<string, Awaited<ReturnType<typeof derivePurposeKeys>>>
-  if (!derived[currentVersion]) throw new NotificationConfigurationError()
-  return derived
 }
 
 const asBoolean = (value: unknown) => value === true || value === 'true'
@@ -104,15 +85,15 @@ export const notificationConfig = async (value: Record<string, unknown>, cryptoA
   communitySlugs: typeof value.notificationCommunitySlugs === 'string'
     ? value.notificationCommunitySlugs.split(',').map(slug => slug.trim()).filter(Boolean)
     : [],
-  ...await (async () => {
-    const rootKeys = await parseRootKeyring(value.notificationRootKeys, value.notificationCurrentKeyVersion, cryptoApi.subtle)
-    return {
-      outboxTransportKeys: Object.fromEntries(Object.entries(rootKeys).map(([version, keys]) => [version, keys.outbox])),
-      suppressionHashKeys: Object.fromEntries(Object.entries(rootKeys).map(([version, keys]) => [version, keys.suppression])),
-      abuseHashKeys: Object.fromEntries(Object.entries(rootKeys).map(([version, keys]) => [version, keys.abuse])),
-      currentNotificationKeyVersion: value.notificationCurrentKeyVersion as string,
-    }
-  })(),
+   ...await (async () => {
+     if (typeof value.notificationRootKey !== 'string') throw new NotificationConfigurationError()
+     const keys = await derivePurposeKeys(decodeBase64Url(value.notificationRootKey), cryptoApi.subtle)
+     return {
+       outboxTransportKey: keys.outbox,
+       suppressionHashKey: keys.suppression,
+       abuseHashKey: keys.abuse,
+     }
+   })(),
   turnstile: {
     secret: requiredPrivateText(value.notificationTurnstileSecret),
     expectedHostname: requiredHostname(value.notificationTurnstileExpectedHostname),

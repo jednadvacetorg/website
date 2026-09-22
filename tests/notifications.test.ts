@@ -133,8 +133,7 @@ test('private purpose-specific keyrings import a Worker AES-GCM key for an activ
   const { database, query } = disposableDatabase()
   const runtimeConfig = await notificationConfig({
     notificationCommunitySlugs: 'brno,praha',
-    notificationRootKeys: JSON.stringify({ v1: key }),
-    notificationCurrentKeyVersion: 'v1',
+    notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
     notificationConsentVersion: '2026-09',
@@ -146,24 +145,22 @@ test('private purpose-specific keyrings import a Worker AES-GCM key for an activ
     notificationWebPushEventDeliveryReady: false,
   })
 
-  assert.ok('outboxTransportKeys' in runtimeConfig)
+  assert.ok('outboxTransportKey' in runtimeConfig)
   await activateNotificationChannel(input, { database, config: runtimeConfig, crypto: predictableCrypto })
-  const [outbox] = query('SELECT transport_key_version, payload_ciphertext, payload_iv FROM notification_outbox') as { transport_key_version: string, payload_ciphertext: string, payload_iv: string }[]
+  const [outbox] = query('SELECT payload_ciphertext, payload_iv FROM notification_outbox') as { payload_ciphertext: string, payload_iv: string }[]
   const plaintext = await crypto.subtle.decrypt(
     { name: 'AES-GCM', iv: fromBase64Url(outbox!.payload_iv) },
-    runtimeConfig.outboxTransportKeys.v1!,
+    runtimeConfig.outboxTransportKey,
     fromBase64Url(outbox!.payload_ciphertext),
   )
 
-  assert.equal(outbox!.transport_key_version, 'v1')
   assert.match(new TextDecoder().decode(plaintext), /"destination":"Alice@example.com"/)
 })
 
 test('missing, malformed, short, and unknown-current private key material fails before activation', async () => {
   const validRuntimeConfig = {
     notificationCommunitySlugs: 'brno,praha',
-    notificationRootKeys: JSON.stringify({ v1: key }),
-    notificationCurrentKeyVersion: 'v1',
+    notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
     notificationConsentVersion: '2026-09',
@@ -175,10 +172,10 @@ test('missing, malformed, short, and unknown-current private key material fails 
     notificationWebPushEventDeliveryReady: false,
   }
   const invalidConfigurations = [
-    { ...validRuntimeConfig, notificationRootKeys: '' },
-    { ...validRuntimeConfig, notificationRootKeys: '{' },
-    { ...validRuntimeConfig, notificationRootKeys: JSON.stringify({ v1: 'short' }) },
-    { ...validRuntimeConfig, notificationCurrentKeyVersion: 'v2' },
+    { ...validRuntimeConfig, notificationRootKey: '' },
+    { ...validRuntimeConfig, notificationRootKey: '{' },
+    { ...validRuntimeConfig, notificationRootKey: 'short' },
+    { ...validRuntimeConfig, notificationRootKey: undefined },
   ]
 
   for (const runtimeConfig of invalidConfigurations) await assert.rejects(notificationConfig(runtimeConfig))
@@ -187,8 +184,7 @@ test('missing, malformed, short, and unknown-current private key material fails 
 test('public readiness keeps email false until separate delivery evidence is complete', async () => {
   const runtimeConfig = {
     notificationCommunitySlugs: 'brno',
-    notificationRootKeys: JSON.stringify({ v1: key }),
-    notificationCurrentKeyVersion: 'v1',
+    notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
     notificationConsentVersion: '2026-09',
@@ -202,24 +198,19 @@ test('public readiness keeps email false until separate delivery evidence is com
 
   const { database } = disposableDatabase()
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: true, webPush: false })
-  assert.deepEqual(await projectNotificationReadiness({ ...runtimeConfig, notificationRootKeys: '' }, database), { email: false, sms: false, webPush: false })
+  assert.deepEqual(await projectNotificationReadiness({ ...runtimeConfig, notificationRootKey: '' }, database), { email: false, sms: false, webPush: false })
 })
 
 test('public readiness rejects missing, malformed, and unretained D1 transport-key references', async () => {
   const { database } = disposableDatabase()
   const runtimeConfig = {
-    notificationCommunitySlugs: 'brno', notificationRootKeys: JSON.stringify({ v1: key }), notificationCurrentKeyVersion: 'v1',
+    notificationCommunitySlugs: 'brno', notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
     notificationWebPushEnabled: false, notificationWebPushFirstMessageReady: false, notificationWebPushEventDeliveryReady: false,
   }
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig), { email: false, sms: false, webPush: false })
-  await database.batch(['pending', 'queued', 'claimed'].map((status, index) => database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, transport_key_version, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(`outbox-${index}`, 1, 1, 1, status, 'ciphertext', 'iv', index === 1 ? 'retired' : 'v1', 'first-activation', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z')))
-  assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: false, webPush: false })
-  await database.prepare('UPDATE notification_outbox SET transport_key_version = ?').bind('v1').run()
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: true, webPush: false })
-  await database.prepare('UPDATE notification_outbox SET transport_key_version = NULL WHERE status = ?').bind('queued').run()
-  assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: false, webPush: false })
 })
 
 test('the deterministic UI fixture is only enabled in opted-in development and accepts only reserved contacts', () => {
@@ -234,8 +225,7 @@ test('the deterministic UI fixture is only enabled in opted-in development and a
 test('private abuse and Turnstile configuration imports a dedicated HMAC key without exposing private values', async () => {
   const runtimeConfig = await notificationConfig({
     notificationCommunitySlugs: 'brno,praha',
-    notificationRootKeys: JSON.stringify({ v1: key }),
-    notificationCurrentKeyVersion: 'v1',
+    notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
     notificationTurnstileSiteKey: 'public-turnstile-site-key',
@@ -248,45 +238,14 @@ test('private abuse and Turnstile configuration imports a dedicated HMAC key wit
     notificationWebPushEventDeliveryReady: false,
   })
 
-  assert.ok('abuseHashKeys' in runtimeConfig)
-  assert.equal(runtimeConfig.currentNotificationKeyVersion, 'v1')
+  assert.ok('abuseHashKey' in runtimeConfig)
   assert.equal(runtimeConfig.turnstile.secret, 'private-turnstile-secret')
   assert.equal(runtimeConfig.turnstile.expectedHostname, 'jednadvacet.org')
   await assert.rejects(notificationConfig({
     notificationCommunitySlugs: 'brno',
-    notificationRootKeys: '{',
-    notificationCurrentKeyVersion: 'v1',
+    notificationRootKey: '{',
     notificationConsentVersion: '2026-09',
   }))
-})
-
-test('an outbox transport key remains mandatory while a nonterminal payload references it', async () => {
-  const { database, query } = disposableDatabase()
-  let randomCall = 0
-  const uniqueCrypto = { randomBytes: (length: number) => new Uint8Array(length).fill(randomCall++), subtle: crypto.subtle }
-  await activateNotificationChannel(input, { database, config, crypto: uniqueCrypto })
-  const rotatedConfig = await notificationConfig({
-    notificationCommunitySlugs: 'brno,praha', notificationRootKeys: JSON.stringify({ v1: key, v2: btoa('12345678901234567890123456789012').replace(/=+$/g, '') }), notificationCurrentKeyVersion: 'v2',
-    notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09', notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
-  })
-  const retiredV1 = {
-    ...rotatedConfig,
-    outboxTransportKeys: { v2: rotatedConfig.outboxTransportKeys.v2! },
-    suppressionHashKeys: { v1: config.suppressionHashKeys.v1!, v2: rotatedConfig.suppressionHashKeys.v2! },
-    abuseHashKeys: { v1: config.abuseHashKeys.v1!, v2: rotatedConfig.abuseHashKeys.v2! },
-  }
-
-  await assert.rejects(
-    activateNotificationChannel({ ...input, contact: 'Bob@example.com' }, { database, config: retiredV1, crypto: uniqueCrypto }),
-    { statusCode: 503 },
-  )
-  assert.deepEqual(query('SELECT transport_key_version FROM notification_outbox'), [{ transport_key_version: 'v1' }])
-
-  const retainedKeyring = {
-    ...rotatedConfig,
-  }
-  await activateNotificationChannel({ ...input, contact: 'Bob@example.com' }, { database, config: retainedKeyring, crypto: uniqueCrypto })
-  assert.deepEqual(query('SELECT transport_key_version FROM notification_outbox ORDER BY transport_key_version'), [{ transport_key_version: 'v1' }, { transport_key_version: 'v2' }])
 })
 
 test('repeating activation replaces only submitted community frequencies', async () => {
@@ -309,7 +268,7 @@ test('stopping a token-scoped contact with queued outbox work suppresses it and 
   assert.deepEqual(await stopNotificationChannel(tokenForByte(0), { database, config, crypto: predictableCrypto }), { state: 'unavailable' })
   assert.equal(query('SELECT * FROM notification_contacts').length, 0)
   assert.equal(query('SELECT * FROM notification_suppressions').length, 1)
-  assert.deepEqual(query('SELECT version, status, payload_ciphertext, payload_iv, transport_key_version, claim_token, claim_expires_at FROM notification_outbox'), [{ version: 2, status: 'invalidated', payload_ciphertext: null, payload_iv: null, transport_key_version: null, claim_token: null, claim_expires_at: null }])
+  assert.deepEqual(query('SELECT version, status, payload_ciphertext, payload_iv, claim_token, claim_expires_at FROM notification_outbox'), [{ version: 2, status: 'invalidated', payload_ciphertext: null, payload_iv: null, claim_token: null, claim_expires_at: null }])
   assert.equal(await isDeliveryEligible({ channel: 'email', contactFingerprint: contact!.destination_hash, communitySlug: 'brno', frequency: 'created', now: new Date() }, { database, config }), false)
 })
 
@@ -327,27 +286,6 @@ test('suppressed activation rotates its bearer and stays pending until only the 
     state: 'active', channel: 'email', maskedContact: 'A•••@example.com', communities: [{ slug: 'brno', title: 'brno', frequencies: ['week-before'] }],
   })
   assert.equal(query('SELECT * FROM notification_suppressions').length, 0)
-})
-
-test('retained suppression key versions preserve the matched v1 suppression through v2 reactivation', async () => {
-  const { database, query } = disposableDatabase()
-  let randomCall = 0
-  const uniqueCrypto = { randomBytes: (length: number) => new Uint8Array(length).fill(randomCall++), subtle: crypto.subtle }
-  await activateNotificationChannel(input, { database, config, crypto: uniqueCrypto })
-  await stopNotificationChannel(tokenForByte(0), { database, config, crypto: uniqueCrypto })
-  const [v1Suppression] = query('SELECT destination_hash, destination_hash_key_version FROM notification_suppressions') as { destination_hash: string, destination_hash_key_version: string }[]
-  const rotated = await notificationConfig({
-    notificationCommunitySlugs: 'brno,praha', notificationRootKeys: JSON.stringify({ v1: key, v2: btoa('12345678901234567890123456789012').replace(/=+$/g, '') }), notificationCurrentKeyVersion: 'v2',
-    notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09', notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
-  })
-
-  assert.deepEqual(await activateNotificationChannel(input, { database, config: rotated, crypto: uniqueCrypto }), { state: 'pending-reactivation' })
-  assert.deepEqual(query('SELECT state, destination_hash, destination_hash_key_version FROM notification_contacts'), [{ state: 'pending-reactivation', destination_hash: v1Suppression!.destination_hash, destination_hash_key_version: 'v1' }])
-  assert.equal(await isDeliveryEligible({ channel: 'email', contactFingerprint: v1Suppression!.destination_hash, communitySlug: 'brno', frequency: 'created', now: new Date() }, { database, config: rotated }), false)
-  assert.equal((await confirmNotificationReactivation(tokenForByte(3), { database, config: rotated, crypto: uniqueCrypto })).state, 'active')
-  assert.deepEqual(query('SELECT destination_hash_key_version FROM notification_suppressions'), [])
-  assert.equal(await isDeliveryEligible({ channel: 'email', contactFingerprint: v1Suppression!.destination_hash, communitySlug: 'brno', frequency: 'created', now: new Date() }, { database, config: rotated }), true)
-  await assert.rejects(activateNotificationChannel({ ...input, contact: 'Bob@example.com' }, { database, config: { ...rotated, suppressionHashKeys: { v2: rotated.suppressionHashKeys.v2! } }, crypto: uniqueCrypto }), { statusCode: 503 })
 })
 
 test('shared abuse policy counts every attempt, preserves the minute gate, and expires keyed IP state', async () => {
@@ -375,10 +313,10 @@ test('recovery atomically rotates a capability and makes the first encrypted out
   await activateNotificationChannel(input, { database, config, crypto: sequencedCrypto })
   await requestNotificationManagementRecovery({ channel: 'email', contact: 'Alice@example.com' }, { database, config, crypto: sequencedCrypto })
   assert.deepEqual(query('SELECT capability_generation FROM notification_contacts'), [{ capability_generation: 2 }])
-  const rows = query('SELECT version, status, payload_ciphertext, payload_iv, transport_key_version, kind, expected_capability_generation FROM notification_outbox ORDER BY created_at, id') as { version: number, status: string, payload_ciphertext: string | null, payload_iv: string | null, transport_key_version: string | null, kind: string, expected_capability_generation: number }[]
-  assert.deepEqual(rows.map(({ version, status, kind, expected_capability_generation, transport_key_version }) => ({ version, status, kind, expected_capability_generation, transport_key_version })), [
-    { version: 2, status: 'invalidated', kind: 'first-activation', expected_capability_generation: 1, transport_key_version: null },
-    { version: 1, status: 'pending', kind: 'management-recovery', expected_capability_generation: 2, transport_key_version: 'v1' },
+  const rows = query('SELECT version, status, payload_ciphertext, payload_iv, kind, expected_capability_generation FROM notification_outbox ORDER BY created_at, id') as { version: number, status: string, payload_ciphertext: string | null, payload_iv: string | null, kind: string, expected_capability_generation: number }[]
+  assert.deepEqual(rows.map(({ version, status, kind, expected_capability_generation }) => ({ version, status, kind, expected_capability_generation })), [
+    { version: 2, status: 'invalidated', kind: 'first-activation', expected_capability_generation: 1 },
+    { version: 1, status: 'pending', kind: 'management-recovery', expected_capability_generation: 2 },
   ])
   assert.equal(rows[0]?.payload_ciphertext, null)
   assert.equal(rows[0]?.payload_iv, null)

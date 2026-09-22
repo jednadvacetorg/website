@@ -4,7 +4,7 @@ import test from 'node:test'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
 
 const base = {
-  notificationCommunitySlugs: 'brno', notificationRootKeys: '{"v1":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}', notificationCurrentKeyVersion: 'v1',
+  notificationCommunitySlugs: 'brno', notificationRootKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
   notificationTurnstileSecret: 'secret', notificationTurnstileExpectedHostname: 'example.test', notificationConsentVersion: 'v1',
 }
 
