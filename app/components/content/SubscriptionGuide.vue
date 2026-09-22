@@ -38,6 +38,8 @@ const challengeRequired = ref(false)
 const turnstileToken = ref('')
 const recoveryChallengeRequired = ref(false)
 const recoveryTurnstileToken = ref('')
+const webPushState = ref<'active' | 'unsupported' | 'denied' | 'install' | 'error' | null>(null)
+const isWebPushActivating = ref(false)
 
 const { data: communities, status, refresh } = await useAsyncData('subscription-guide-communities', () => {
   return queryCollection('communities')
@@ -158,6 +160,25 @@ const futureMethods = [
 const retryCommunities = () => refresh()
 
 const isMethodReady = (method: 'sms' | 'email' | 'web-push') => readiness.value?.[method === 'web-push' ? 'webPush' : method] === true
+const vapidPublicKey = computed(() => {
+  const value = (publicConfig as Record<string, unknown>).notificationVapidPublicKey
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{80,120}$/.test(value) ? value : null
+})
+const enableWebPush = async () => {
+  if (!isMethodReady('web-push') || !hasSelectedScope.value || !vapidPublicKey.value) return
+  if (!window.isSecureContext || !('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { webPushState.value = 'unsupported'; return }
+  if (/iP(?:hone|ad|od)/.test(navigator.userAgent) && !window.matchMedia('(display-mode: standalone)').matches) { webPushState.value = 'install'; return }
+  isWebPushActivating.value = true
+  try {
+    const registration = await navigator.serviceWorker.register('/notification-sw.js', { scope: '/' })
+    const permission = await Notification.requestPermission()
+    if (permission !== 'granted') { webPushState.value = permission === 'denied' ? 'denied' : 'unsupported'; return }
+    const bytes = Uint8Array.from(atob(vapidPublicKey.value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - vapidPublicKey.value.length % 4) % 4)), character => character.charCodeAt(0))
+    const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes })
+    await $fetch('/api/notifications/activate', { method: 'POST', body: { channel: 'web-push', contact: subscription.toJSON(), communitySlugs: notificationScope.value, frequencies: selectedFrequencies.value, consentAt: new Date().toISOString(), consentVersion: '2026-09' } })
+    webPushState.value = 'active'
+  } catch { webPushState.value = 'error' } finally { isWebPushActivating.value = false }
+}
 const expressSmsInterest = () => {
   $counterscale.trackSmsIntent()
   window.alert(fakeDoorAlert)
@@ -361,7 +382,15 @@ onMounted(() => {
           </template>
 
           <template v-else>
-            <UButton color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope" @click="expressWebInterest">Mám zájem o oznámení ve webu</UButton>
+            <template v-if="isMethodReady('web-push') && vapidPublicKey">
+              <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isWebPushActivating" :disabled="!hasSelectedScope || isWebPushActivating" @click="enableWebPush">Aktivovat oznámení v prohlížeči</UButton>
+              <UAlert v-if="webPushState === 'active'" color="success" title="Oznámení jsou pro tento prohlížeč aktivní." role="status" />
+              <UAlert v-else-if="webPushState === 'denied'" color="warning" title="Oznámení máš v prohlížeči zakázaná. Povol je v jeho nastavení a pak to zkus znovu." role="alert" />
+              <UAlert v-else-if="webPushState === 'install'" color="neutral" title="Na iPhonu nebo iPadu si nejdřív přidej web na plochu a otevři ho jako aplikaci." role="status" />
+              <UAlert v-else-if="webPushState === 'unsupported'" color="neutral" title="Tento prohlížeč teď oznámení nepodporuje nebo je nemůžeš povolit." role="status" />
+              <UAlert v-else-if="webPushState === 'error'" color="error" title="Oznámení se teď nepodařilo aktivovat. Nic jsme neuložili; zkus to prosím později." role="alert" />
+            </template>
+            <UButton v-else color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope" @click="expressWebInterest">Mám zájem o oznámení ve webu</UButton>
           </template>
         </section>
         <USeparator v-if="index < futureMethods.length - 1" label="nebo" />
