@@ -18,7 +18,10 @@ self.addEventListener('notificationclick', event => {
   event.notification.close()
   const url = safeUrl(event.notification.data?.url)
   event.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then(windows => {
+    const target = new URL(url, self.location.origin).href
+    const matching = windows.find(client => client.url === target)
+    if (matching) return matching.focus()
     const current = windows.find(client => new URL(client.url).origin === self.location.origin)
-    return current ? current.focus() : clients.openWindow(url)
+    return current ? current.navigate(url).then(client => client?.focus()) : clients.openWindow(url)
   }))
 })
