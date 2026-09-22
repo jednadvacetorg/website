@@ -1,4 +1,5 @@
 const safeUrl = value => {
+  if (typeof value !== 'string') return '/kalendar'
   try {
     const url = new URL(value, self.location.origin)
     return url.origin === self.location.origin ? `${url.pathname}${url.search}` : '/kalendar'
