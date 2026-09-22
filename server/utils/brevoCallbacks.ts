@@ -15,7 +15,6 @@ interface DeliveryRow {
   contact_id: number | null
   expected_capability_generation: number
   destination_hash: string
-  destination_hash_key_version: string
   provider_message_id: string | null
   status: string
 }
@@ -63,7 +62,7 @@ const currentRank = (status: string) => status in terminalRank ? terminalRank[st
 
 /** Applies a callback by opaque delivery ID only; provider IDs must agree once persisted. */
 export const applyBrevoCallback = async (event: BrevoCallbackEvent, database: NotificationDatabase) => {
-  const delivery = await database.prepare('SELECT id, contact_id, expected_capability_generation, destination_hash, destination_hash_key_version, provider_message_id, status FROM notification_event_deliveries WHERE id = ?').bind(event.deliveryId).first<DeliveryRow>()
+  const delivery = await database.prepare('SELECT id, contact_id, expected_capability_generation, destination_hash, provider_message_id, status FROM notification_event_deliveries WHERE id = ?').bind(event.deliveryId).first<DeliveryRow>()
   if (!delivery || (delivery.provider_message_id && event.providerMessageId && delivery.provider_message_id !== event.providerMessageId)) return { applied: false, suppressed: false }
 
   const status = currentRank(delivery.status) > terminalRank[event.kind] ? delivery.status : event.kind
@@ -75,8 +74,8 @@ export const applyBrevoCallback = async (event: BrevoCallbackEvent, database: No
   const reason = suppressionReason[event.kind]
   if (reason) {
     statements.push(
-      database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, destination_hash_key_version, reason, suppressed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = excluded.reason, suppressed_at = excluded.suppressed_at').bind('email', delivery.destination_hash, delivery.destination_hash_key_version, reason, now),
-      database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, transport_key_version = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = ? AND expected_capability_generation = ? AND status IN (?, ?, ?)').bind('invalidated', now, now, delivery.contact_id, delivery.expected_capability_generation, 'pending', 'queued', 'claimed'),
+      database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) VALUES (?, ?, ?, ?) ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = excluded.reason, suppressed_at = excluded.suppressed_at').bind('email', delivery.destination_hash, reason, now),
+      database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = ? AND expected_capability_generation = ? AND status IN (?, ?, ?)').bind('invalidated', now, now, delivery.contact_id, delivery.expected_capability_generation, 'pending', 'queued', 'claimed'),
       database.prepare('DELETE FROM notification_contacts WHERE id = ? AND capability_generation = ?').bind(delivery.contact_id, delivery.expected_capability_generation),
     )
   }

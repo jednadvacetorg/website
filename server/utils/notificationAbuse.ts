@@ -4,7 +4,7 @@ export type NotificationAbuseDecision = { allowed: true } | { allowed: false, re
 
 export interface NotificationAbuseDependencies {
   database: NotificationDatabase
-  config: Pick<NotificationLifecycleConfig, 'abuseHashKeys' | 'currentNotificationKeyVersion' | 'turnstile'>
+  config: Pick<NotificationLifecycleConfig, 'abuseHashKey' | 'turnstile'>
   fetch?: typeof fetch
   now?: () => Date
 }
@@ -19,9 +19,7 @@ const turnstileAction = 'notification-operation'
 const toBase64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 const requesterHash = async (requesterIp: string, dependencies: NotificationAbuseDependencies) => {
-  const key = dependencies.config.abuseHashKeys[dependencies.config.currentNotificationKeyVersion]
-  if (!key) return null
-  return toBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(requesterIp))))
+  return toBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', dependencies.config.abuseHashKey, encoder.encode(requesterIp))))
 }
 
 const verifyTurnstile = async (token: string | undefined, requesterIp: string, dependencies: NotificationAbuseDependencies) => {
@@ -57,7 +55,7 @@ export const evaluateNotificationAbuse = async (requesterIp: unknown, challengeT
   try {
     await dependencies.database.batch([
       dependencies.database.prepare('DELETE FROM notification_abuse_attempts WHERE expires_at <= ?').bind(now.toISOString()),
-      dependencies.database.prepare('INSERT INTO notification_abuse_attempts (requester_hash, requester_hash_key_version, attempted_at, expires_at) VALUES (?, ?, ?, ?)').bind(hash, dependencies.config.currentNotificationKeyVersion, now.toISOString(), expiresAt),
+      dependencies.database.prepare('INSERT INTO notification_abuse_attempts (requester_hash, attempted_at, expires_at) VALUES (?, ?, ?)').bind(hash, now.toISOString(), expiresAt),
     ])
     const count = await dependencies.database.prepare('SELECT COUNT(*) AS count FROM notification_abuse_attempts WHERE requester_hash = ? AND attempted_at >= ?').bind(hash, windowStart).first<AttemptCount>()
     const minuteCount = await dependencies.database.prepare('SELECT COUNT(*) AS count FROM notification_abuse_attempts WHERE requester_hash = ? AND attempted_at >= ?').bind(hash, minuteStart).first<AttemptCount>()
