@@ -6,13 +6,7 @@ Email delivery remains disabled until the verifier records current evidence for 
 
 An operator must authenticate the Cloudflare and Brevo CLIs to the intended production accounts. Brevo must verify `Jednadvacet.org <noreply@jednadvacet.org>` and the SPF, DKIM, and DMARC evidence for the `jednadvacet.org` sending domain. Do not use `noreply@b.jednadvacet.org`. Inbound mail remains deferred to a future dedicated receiving subdomain and is not configured or tested in this runbook.
 
-Store `NUXT_BREVO_API_KEY`, `NUXT_BREVO_CALLBACK_SECRET`, `NUXT_NOTIFICATION_ROOT_KEYS`, and `NUXT_NOTIFICATION_CURRENT_KEY_VERSION` as Cloudflare Worker secrets. `NUXT_NOTIFICATION_ROOT_KEYS` is a JSON map of version names to independently generated base64url 32-byte root values; never print the JSON or any root value. The Worker derives non-extractable, purpose-separated AES-GCM outbox and HMAC suppression/abuse keys with fixed HKDF context labels. Configure Brevo to call the deployed HTTPS `/api/notifications/brevo-events` endpoint with the callback bearer; never place secrets in a URL, command line, log, or this document.
-
-## Notification root rotation
-
-Add a new independently generated 32-byte root under a new version name, deploy with both the old and new roots, then switch only `NUXT_NOTIFICATION_CURRENT_KEY_VERSION` and deploy again. That one switch controls every new outbox, destination-hash, and abuse-hash write while retained root versions continue to service their durable references. Before removing an old root, verify D1 has no nonterminal encrypted outbox payload, contact/suppression or retained delivery hash, or unexpired abuse attempt with that version. Remove the old root only after those references clear.
-
-Delete the former separate notification keyring/current-version inputs from Cloudflare; they are not aliases and cannot configure notification cryptography.
+Store `NUXT_BREVO_API_KEY`, `NUXT_BREVO_CALLBACK_SECRET`, and one `NUXT_NOTIFICATION_ROOT_KEY` as Cloudflare Worker secrets. Generate the root as one unpadded base64url 32-byte value and never print it. The Worker internally derives non-extractable, purpose-separated AES-GCM outbox and HMAC suppression/abuse keys with fixed HKDF context labels. Replacing the root is a deliberate deployment and can temporarily make retained encrypted work or hashes unavailable; there is no compatibility or recovery path through a former root. Configure Brevo to call the deployed HTTPS `/api/notifications/brevo-events` endpoint with the callback bearer; never place secrets in a URL, command line, log, or this document.
 
 Before a remote migration, inspect the generated Worker target and production `web` D1 migration state. Apply only the reviewed generated migration to the intended database, deploy the matching bundle, and keep the manual switch false.
 
