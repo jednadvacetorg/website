@@ -1,5 +1,6 @@
 import type { NotificationCrypto, NotificationDatabase, NotificationLifecycleConfig } from './notifications.ts'
 import type { BrevoAttemptResult } from './brevoEmail.ts'
+import type { BrevoSmsAttemptResult } from './brevoSms.ts'
 
 export const notificationMessagesQueueName = 'notification-messages'
 
@@ -38,11 +39,11 @@ export interface EventNotificationMessagePayload {
   managementCapability: string
   event: { title: string, description?: string, location?: string, url?: string, start: string, end: string, uid: string, sequence: number, cancelled?: boolean }
   reason: 'created' | 'week-before' | 'day-before' | 'updated' | 'cancelled'
-  kind: 'event-email'
+  kind: 'event-email' | 'event-sms'
 }
 
 export type NotificationMessagePayload = LifecycleNotificationMessagePayload | EventNotificationMessagePayload
-export type NotificationDeliveryHook = (payload: NotificationMessagePayload) => Promise<void | BrevoAttemptResult>
+export type NotificationDeliveryHook = (payload: NotificationMessagePayload) => Promise<void | BrevoAttemptResult | BrevoSmsAttemptResult>
 
 interface PendingOutboxRow {
   id: unknown
@@ -54,7 +55,7 @@ interface ClaimedOutboxRow {
   payload_iv: unknown
 }
 
-const allowedKinds = new Set<NotificationMessagePayload['kind']>(['first-activation', 'reactivation', 'management-recovery', 'event-email'])
+const allowedKinds = new Set<NotificationMessagePayload['kind']>(['first-activation', 'reactivation', 'management-recovery', 'event-email', 'event-sms'])
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 const leaseDurationMs = 5 * 60 * 1000
@@ -85,7 +86,7 @@ const parsePayload = (plaintext: string): NotificationMessagePayload => {
     || typeof value.destination !== 'string' || !value.destination || !allowedKinds.has(value.kind as NotificationMessagePayload['kind'])) {
     throw new Error('Notification outbox payload is invalid')
   }
-  if (value.kind === 'event-email') {
+  if (value.kind === 'event-email' || value.kind === 'event-sms') {
     if (Object.keys(value).length !== 7 || typeof value.deliveryId !== 'string' || !value.deliveryId || typeof value.managementCapability !== 'string' || !value.managementCapability || typeof value.reason !== 'string' || !['created', 'week-before', 'day-before', 'updated', 'cancelled'].includes(value.reason) || !isRecord(value.event) || typeof value.event.title !== 'string' || typeof value.event.start !== 'string' || typeof value.event.end !== 'string' || typeof value.event.uid !== 'string' || !Number.isSafeInteger(value.event.sequence)) throw new Error('Notification outbox payload is invalid')
     return value as unknown as EventNotificationMessagePayload
   }
@@ -150,10 +151,10 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
     const plaintext = await cryptoApi.subtle.decrypt({ name: 'AES-GCM', iv: asBufferSource(decodeBase64Url(row.payload_iv)) }, dependencies.config.outboxTransportKey, asBufferSource(decodeBase64Url(row.payload_ciphertext)))
     payload = parsePayload(decoder.decode(plaintext))
     await dependencies.barriers?.afterClaimedAndDecrypted?.(pointer)
-    authorization = await dependencies.database.prepare(payload.kind === 'event-email'
+    authorization = await dependencies.database.prepare(payload.kind === 'event-email' || payload.kind === 'event-sms'
       ? 'SELECT o.expected_capability_generation FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation JOIN notification_event_deliveries d ON d.id = ? AND d.contact_id = c.id AND d.expected_capability_generation = c.capability_generation AND d.status = ? JOIN notification_subscriptions sub ON sub.contact_id = c.id WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash) LIMIT 1'
       : 'SELECT o.expected_capability_generation FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND o.kind IN (?, ?, ?) AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash)')
-      .bind(...(payload.kind === 'event-email'
+      .bind(...(payload.kind === 'event-email' || payload.kind === 'event-sms'
         ? ['active', payload.deliveryId, 'pending', pointer.outboxId, pointer.version, 'claimed', token, nowIso(dependencies)]
         : ['active', pointer.outboxId, pointer.version, 'claimed', token, nowIso(dependencies), 'first-activation', 'reactivation', 'management-recovery'])).first<{ expected_capability_generation: number }>()
   } catch (error) {
@@ -164,12 +165,12 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
 
   try {
     // A manual switch-off is terminal, not retryable backlog: nothing reaches Brevo.
-    if (payload.kind === 'event-email' && !dependencies.config.emailDeliveryReady) {
+    if ((payload.kind === 'event-email' && !dependencies.config.emailDeliveryReady) || (payload.kind === 'event-sms' && !dependencies.config.emailSmsEventDeliveryReady)) {
       await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
         .bind('failed', nowIso(dependencies), payload.deliveryId, 'pending').run()
     } else {
       const result = await deliver(payload)
-      if (payload.kind === 'event-email' && result && 'attempted' in result) {
+      if ((payload.kind === 'event-email' || payload.kind === 'event-sms') && result && 'attempted' in result) {
       await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, provider_message_id = COALESCE(?, provider_message_id), submitted_at = ?, updated_at = ? WHERE id = ?')
         .bind(result.status, result.providerMessageId ?? null, nowIso(dependencies), nowIso(dependencies), payload.deliveryId).run()
       }
