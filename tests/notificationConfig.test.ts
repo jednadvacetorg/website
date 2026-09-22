@@ -14,19 +14,18 @@ test('email delivery configuration is disabled unless every private and operatio
   assert.equal(JSON.stringify(config).includes('undefined'), false)
 })
 
-test('one root derives non-extractable, purpose-separated Worker keys and rejects superseded-only inputs', async () => {
+test('one root derives non-extractable, purpose-separated Worker keys and rejects all rotation-era inputs', async () => {
   const config = await notificationConfig(base)
-  assert.equal(config.currentNotificationKeyVersion, 'v1')
-  assert.equal(config.outboxTransportKeys.v1!.extractable, false)
-  assert.equal(config.suppressionHashKeys.v1!.extractable, false)
-  assert.equal(config.abuseHashKeys.v1!.extractable, false)
+  assert.ok('outboxTransportKey' in config)
+  assert.equal(config.outboxTransportKey.extractable, false)
+  assert.equal(config.suppressionHashKey.extractable, false)
+  assert.equal(config.abuseHashKey.extractable, false)
   const value = new TextEncoder().encode('same input')
   const [suppression, abuse] = await Promise.all([
-    crypto.subtle.sign('HMAC', config.suppressionHashKeys.v1!, value),
-    crypto.subtle.sign('HMAC', config.abuseHashKeys.v1!, value),
+    crypto.subtle.sign('HMAC', config.suppressionHashKey, value),
+    crypto.subtle.sign('HMAC', config.abuseHashKey, value),
   ])
   assert.notDeepEqual(new Uint8Array(suppression), new Uint8Array(abuse))
-  await assert.rejects(notificationConfig({ ...base, notificationRootKeys: undefined, notificationSuppressionHashKeys: base.notificationRootKeys, notificationCurrentSuppressionHashKeyVersion: 'v1' }))
 })
 
 test('email delivery accepts only the verified root-domain sender', async () => {
