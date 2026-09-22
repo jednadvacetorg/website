@@ -21,10 +21,10 @@ interface DeliveryRow {
 
 const callbackKinds: Record<string, BrevoCallbackKind> = {
   delivered: 'delivered',
-  'soft-bounce': 'soft-bounce',
-  'hard-bounce': 'hard-bounce',
+  softbounce: 'soft-bounce',
+  hardbounce: 'hard-bounce',
   blocked: 'blocked',
-  complaint: 'complaint',
+  spam: 'complaint',
   unsubscribed: 'unsubscribed',
 }
 
