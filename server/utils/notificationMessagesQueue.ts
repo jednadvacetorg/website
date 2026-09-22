@@ -43,7 +43,8 @@ export interface EventNotificationMessagePayload {
 }
 
 export type NotificationMessagePayload = LifecycleNotificationMessagePayload | EventNotificationMessagePayload
-export type NotificationDeliveryHook = (payload: NotificationMessagePayload) => Promise<void | BrevoAttemptResult | BrevoSmsAttemptResult>
+export interface NotificationDeliveryAuthorization { expected_capability_generation: number, channel: 'email' | 'sms' | 'web-push' }
+export type NotificationDeliveryHook = (payload: NotificationMessagePayload, authorization: NotificationDeliveryAuthorization) => Promise<void | BrevoAttemptResult | BrevoSmsAttemptResult>
 
 interface PendingOutboxRow {
   id: unknown
@@ -143,7 +144,7 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
   if (changed(claim) !== 1) return { delivered: false, stale: true }
 
   let payload: NotificationMessagePayload
-  let authorization: { expected_capability_generation: number } | null
+  let authorization: NotificationDeliveryAuthorization | null
   try {
     const row = await dependencies.database.prepare('SELECT payload_ciphertext, payload_iv FROM notification_outbox WHERE id = ? AND version = ? AND status = ? AND claim_token = ?')
       .bind(pointer.outboxId, pointer.version, 'claimed', token).first<ClaimedOutboxRow>()
@@ -152,11 +153,11 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
     payload = parsePayload(decoder.decode(plaintext))
     await dependencies.barriers?.afterClaimedAndDecrypted?.(pointer)
     authorization = await dependencies.database.prepare(payload.kind === 'event-email' || payload.kind === 'event-sms'
-      ? 'SELECT o.expected_capability_generation FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation JOIN notification_event_deliveries d ON d.id = ? AND d.contact_id = c.id AND d.expected_capability_generation = c.capability_generation AND d.status = ? JOIN notification_subscriptions sub ON sub.contact_id = c.id WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash) LIMIT 1'
-      : 'SELECT o.expected_capability_generation FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND o.kind IN (?, ?, ?) AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash)')
+      ? 'SELECT o.expected_capability_generation, c.channel FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation JOIN notification_event_deliveries d ON d.id = ? AND d.contact_id = c.id AND d.expected_capability_generation = c.capability_generation AND d.status = ? JOIN notification_subscriptions sub ON sub.contact_id = c.id WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash) LIMIT 1'
+      : 'SELECT o.expected_capability_generation, c.channel FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND o.kind IN (?, ?, ?) AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash)')
       .bind(...(payload.kind === 'event-email' || payload.kind === 'event-sms'
         ? ['active', payload.deliveryId, 'pending', pointer.outboxId, pointer.version, 'claimed', token, nowIso(dependencies)]
-        : ['active', pointer.outboxId, pointer.version, 'claimed', token, nowIso(dependencies), 'first-activation', 'reactivation', 'management-recovery'])).first<{ expected_capability_generation: number }>()
+        : ['active', pointer.outboxId, pointer.version, 'claimed', token, nowIso(dependencies), 'first-activation', 'reactivation', 'management-recovery'])).first<NotificationDeliveryAuthorization>()
   } catch (error) {
     await releaseClaim(pointer, token, dependencies)
     throw error
@@ -169,7 +170,7 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
       await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
         .bind('failed', nowIso(dependencies), payload.deliveryId, 'pending').run()
     } else {
-      const result = await deliver(payload)
+      const result = await deliver(payload, authorization)
       if ((payload.kind === 'event-email' || payload.kind === 'event-sms') && result && 'attempted' in result) {
       await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, provider_message_id = COALESCE(?, provider_message_id), submitted_at = ?, updated_at = ? WHERE id = ?')
         .bind(result.status, result.providerMessageId ?? null, nowIso(dependencies), nowIso(dependencies), payload.deliveryId).run()

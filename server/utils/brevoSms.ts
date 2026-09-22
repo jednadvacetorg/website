@@ -9,6 +9,12 @@ export interface BrevoSmsEvent {
   event: { title: string, start: string, url?: string }
 }
 
+export interface BrevoSmsLifecycle {
+  recipient: string
+  capability: string
+  kind: 'first-activation' | 'reactivation' | 'management-recovery'
+}
+
 export type BrevoSmsAttemptResult = {
   attempted: boolean
   status: 'submitted' | 'invalid-request' | 'auth' | 'rate-limited' | 'provider-5xx' | 'transport'
@@ -29,6 +35,16 @@ const providerMessageId = (value: unknown) => typeof value === 'object' && value
 /** Creates one application-owned Czech transactional segment, or fails instead of sending multipart SMS. */
 export const composeBrevoEventSms = (message: BrevoSmsEvent) => {
   const text = `Jednadvacet: ${message.event.title}, ${pragueTime(message.event.start)}${message.event.url ? ` ${message.event.url}` : ''}`
+  if (new TextEncoder().encode(text).length > 160) throw new Error('Notification SMS exceeds one segment')
+  return text
+}
+
+/** First and recovery messages carry only the generation-bound management capability. */
+export const composeBrevoLifecycleSms = (message: BrevoSmsLifecycle) => {
+  const lead = message.kind === 'reactivation'
+    ? 'Jednadvacet: pro obnovení upozornění potvrď nastavení: '
+    : 'Jednadvacet: nastavení nebo zrušení upozornění: '
+  const text = `${lead}https://jednadvacet.org/notifications/manage/${message.capability}`
   if (new TextEncoder().encode(text).length > 160) throw new Error('Notification SMS exceeds one segment')
   return text
 }
@@ -56,4 +72,21 @@ export const sendBrevoEventSms = async (config: BrevoSmsConfig, message: BrevoSm
   } catch {
     return { attempted: true, status: 'transport' }
   }
+}
+
+export const sendBrevoLifecycleSms = async (config: BrevoSmsConfig, message: BrevoSmsLifecycle, fetcher: typeof fetch = fetch): Promise<BrevoSmsAttemptResult> => {
+  if (!config.apiKey.trim() || !isSender(config.sender) || !isRecipient(message.recipient)) return { attempted: false, status: 'invalid-request' }
+  let content: string
+  try { content = composeBrevoLifecycleSms(message) } catch { return { attempted: false, status: 'invalid-request' } }
+  try {
+    const response = await fetcher('https://api.brevo.com/v3/transactionalSMS/send', {
+      method: 'POST', headers: { 'api-key': config.apiKey, 'content-type': 'application/json' },
+      body: JSON.stringify({ recipient: message.recipient, sender: config.sender, content, type: 'transactional' }),
+    })
+    let body: unknown
+    try { body = await response.json() } catch { body = undefined }
+    const id = providerMessageId(body)
+    if (response.status === 201) return id ? { attempted: true, status: 'submitted', httpStatus: 201, providerMessageId: id } : { attempted: true, status: 'invalid-request', httpStatus: 201 }
+    return { attempted: true, status: response.status === 429 ? 'rate-limited' : response.status === 401 || response.status === 403 ? 'auth' : response.status >= 500 ? 'provider-5xx' : 'invalid-request', httpStatus: response.status }
+  } catch { return { attempted: true, status: 'transport' } }
 }

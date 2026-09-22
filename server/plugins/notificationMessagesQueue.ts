@@ -1,6 +1,6 @@
 import { notificationConfig } from '../utils/notificationConfig.ts'
 import { sendBrevoEventEmail } from '../utils/brevoEmail.ts'
-import { sendBrevoEventSms } from '../utils/brevoSms.ts'
+import { sendBrevoEventSms, sendBrevoLifecycleSms } from '../utils/brevoSms.ts'
 import { consumeNotificationOutboxPointer, notificationMessagesQueueName, parseNotificationOutboxPointer, type NotificationDeliveryHook, type NotificationQueueDependencies } from '../utils/notificationMessagesQueue.ts'
 import type { NotificationDatabase } from '../utils/notifications.ts'
 
@@ -35,7 +35,11 @@ export default defineNitroPlugin((nitroApp) => {
     }
     for (const message of event.batch.messages) {
       try {
-        const result = await processNotificationQueueMessage(message, dependencies, async payload => {
+        const result = await processNotificationQueueMessage(message, dependencies, async (payload, authorization) => {
+          if (authorization.channel === 'sms' && (payload.kind === 'first-activation' || payload.kind === 'reactivation' || payload.kind === 'management-recovery')) {
+            if (typeof runtime.brevoApiKey !== 'string' || typeof runtime.brevoSenderName !== 'string') throw new Error('Brevo delivery is not configured')
+            return sendBrevoLifecycleSms({ apiKey: runtime.brevoApiKey, sender: runtime.brevoSenderName }, { recipient: payload.destination, capability: payload.capability, kind: payload.kind })
+          }
           if (payload.kind !== 'event-email' && payload.kind !== 'event-sms') throw new Error('Notification lifecycle delivery hook is not configured')
           if (typeof runtime.brevoApiKey !== 'string' || typeof runtime.brevoSenderName !== 'string') throw new Error('Brevo delivery is not configured')
           if (payload.kind === 'event-sms') return sendBrevoEventSms({ apiKey: runtime.brevoApiKey, sender: runtime.brevoSenderName }, {
