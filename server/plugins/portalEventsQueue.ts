@@ -4,7 +4,7 @@ import {
   type PortalChangeSignal,
 } from '../utils/portalEvents.ts'
 import { getGoogleCalendarConfig, GoogleCalendarError, reconcileGoogleCalendar, syncGoogleCalendarChanges } from '../utils/googleCalendar.ts'
-import { planEventEmailNotifications } from '../utils/eventEmailNotifications.ts'
+import { planEventNotifications } from '../utils/eventEmailNotifications.ts'
 import { notificationConfig } from '../utils/notificationConfig.ts'
 import type { NotificationDatabase } from '../utils/notifications.ts'
 import {
@@ -53,7 +53,7 @@ export default defineNitroPlugin((nitroApp) => {
       const database = (queueEvent as unknown as { context?: { cloudflare?: { env?: { DB?: NotificationDatabase } } } }).context?.cloudflare?.env?.DB
       if (database) {
         try {
-          const planned = await planEventEmailNotifications(result.calendarEvents, {
+          const planned = await planEventNotifications(result.calendarEvents, {
             database,
             config: await notificationConfig(useRuntimeConfig() as unknown as Record<string, unknown>),
           })

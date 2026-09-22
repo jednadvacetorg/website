@@ -1,5 +1,5 @@
 import { notificationConfig } from '../utils/notificationConfig.ts'
-import { planEventEmailNotifications } from '../utils/eventEmailNotifications.ts'
+import { planEventNotifications } from '../utils/eventEmailNotifications.ts'
 import { publishPendingNotificationPointers, type NotificationMessagesQueue } from '../utils/notificationMessagesQueue.ts'
 import type { NotificationDatabase } from '../utils/notifications.ts'
 import { getPortalCalendarEvents, type PortalStorage } from '../utils/portalEvents.ts'
@@ -22,7 +22,7 @@ export const drainNotificationMessages = async (context: NotificationMessagesTas
   const config = await notificationConfig(runtimeConfig)
   // Read the validated snapshot before publishing pointers. Repeated hourly runs are
   // harmless because the delivery ledger has a stable D1 dedupe identity.
-  const planned = await planEventEmailNotifications(
+  const planned = await planEventNotifications(
     await getPortalCalendarEvents(config.communitySlugs, context.portalStorage ?? useStorage('portalEvents')),
     { database, config },
   )
