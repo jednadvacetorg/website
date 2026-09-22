@@ -53,7 +53,7 @@ const pointerFor = (query: (sql: string) => Record<string, unknown>[]) => {
   return { outboxId: outbox!.id as string, version: outbox!.version as number }
 }
 const encode = (value: Uint8Array) => btoa(String.fromCharCode(...value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
-const encryptedEventPayload = async (deliveryId: string) => {
+const encryptedEventPayload = async (deliveryId: string, kind: 'event-email' | 'event-sms' = 'event-email') => {
   const iv = new Uint8Array(12)
   const plaintext = new TextEncoder().encode(JSON.stringify({
     destination: 'alice@example.com',
@@ -61,7 +61,7 @@ const encryptedEventPayload = async (deliveryId: string) => {
     managementCapability: 'capability',
     event: { title: 'Meetup', start: '2026-10-01T17:00:00.000Z', end: '2026-10-01T19:00:00.000Z', uid: 'brno-1@jednadvacet.org', sequence: 1 },
     reason: 'created',
-    kind: 'event-email',
+    kind,
   }))
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, config.outboxTransportKey, plaintext)
   return { ciphertext: encode(new Uint8Array(ciphertext)), iv: encode(iv) }
@@ -230,6 +230,55 @@ test('retryable and terminal provider results never write unsupported delivery s
 
   assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config: eventConfig, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'invalid-request' })), { delivered: true, stale: false })
   assert.deepEqual(query('SELECT status FROM notification_event_deliveries'), [{ status: 'failed' }])
+})
+
+test('lifecycle provider failures retry transient results and retain terminal failure evidence', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  const pointer = pointerFor(query)
+
+  await assert.rejects(consumeNotificationOutboxPointer(pointer, { database, config, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'provider-5xx' })))
+  const [retryable] = query('SELECT status, payload_ciphertext, claim_token FROM notification_outbox')
+  assert.equal(retryable!.status, 'queued')
+  assert.equal(typeof retryable!.payload_ciphertext, 'string')
+  assert.equal(retryable!.claim_token, null)
+
+  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'auth' })), { delivered: false, stale: false })
+  const [terminal] = query('SELECT status, payload_ciphertext, terminal_at FROM notification_outbox')
+  assert.equal(terminal!.status, 'invalidated')
+  assert.equal(terminal!.payload_ciphertext, null)
+  assert.equal(typeof terminal!.terminal_at, 'string')
+})
+
+test('a stale lifecycle Web Push endpoint is suppressed and removed', async () => {
+  const { database, query } = disposableDatabase()
+  const webPushConfig = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
+  const webPushInput = { ...input, channel: 'web-push' as const, contact: JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: 'key', auth: 'auth' } }) }
+  await activateNotificationChannel(webPushInput, { database, config: webPushConfig, crypto: predictableCrypto })
+  const pointer = pointerFor(query)
+
+  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config: webPushConfig, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'stale-endpoint', httpStatus: 410 })), { delivered: false, stale: false })
+  assert.deepEqual(query('SELECT status, payload_ciphertext FROM notification_outbox'), [{ status: 'invalidated', payload_ciphertext: null }])
+  assert.deepEqual(query('SELECT channel, reason FROM notification_suppressions'), [{ channel: 'web-push', reason: 'provider-opt-out' }])
+  assert.deepEqual(query('SELECT id FROM notification_contacts'), [])
+})
+
+test('future SMS event delivery uses SMS readiness without requiring email readiness', async () => {
+  const { database, query } = disposableDatabase()
+  const smsConfig = { ...config, emailSmsEnabled: false, emailSmsEventDeliveryReady: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true }
+  await activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: smsConfig, crypto: predictableCrypto })
+  const pointer = pointerFor(query)
+  const deliveryId = 'sms-event-delivery-id'
+  const encrypted = await encryptedEventPayload(deliveryId, 'event-sms')
+  await database.batch([
+    database.prepare('UPDATE notification_outbox SET kind = ?, payload_ciphertext = ?, payload_iv = ? WHERE id = ?').bind('event-sms', encrypted.ciphertext, encrypted.iv, pointer.outboxId),
+    database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(deliveryId, 1, 1, 'hash', 'brno-1@jednadvacet.org', 1, 'created', 'pending', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'),
+  ])
+  let deliveries = 0
+
+  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config: smsConfig, crypto: predictableCrypto }, async () => { deliveries += 1; return { attempted: true, status: 'submitted' } }), { delivered: true, stale: false })
+  assert.equal(deliveries, 1)
+  assert.deepEqual(query('SELECT status FROM notification_event_deliveries'), [{ status: 'submitted' }])
 })
 
 test('scheduled drain publishes bounded pointers and consumer failures remain retryable', async () => {

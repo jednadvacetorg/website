@@ -132,6 +132,30 @@ const releaseClaim = async (pointer: NotificationOutboxPointer, token: string, d
     .bind('queued', nowIso(dependencies), pointer.outboxId, pointer.version, 'claimed', token).run()
 }
 
+/** Records a terminal provider rejection without retaining the encrypted payload. */
+const failClaim = async (pointer: NotificationOutboxPointer, token: string, authorization: NotificationDeliveryAuthorization, dependencies: NotificationQueueDependencies) => {
+  const now = nowIso(dependencies)
+  const failed = await dependencies.database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE id = ? AND version = ? AND status = ? AND claim_token = ? AND expected_capability_generation = ?')
+    .bind('invalidated', now, now, pointer.outboxId, pointer.version, 'claimed', token, authorization.expected_capability_generation).run()
+  if (changed(failed) !== 1) throw new Error('Notification outbox failure lost its claim')
+}
+
+/** A 404/410 PushSubscription cannot recover; suppress and remove it with all pending work. */
+const removeStaleWebPushContact = async (pointer: NotificationOutboxPointer, authorization: NotificationDeliveryAuthorization, dependencies: NotificationQueueDependencies) => {
+  const now = nowIso(dependencies)
+  await dependencies.database.batch([
+    dependencies.database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = (SELECT contact_id FROM notification_outbox WHERE id = ? AND version = ? AND status = ?) AND expected_capability_generation = ? AND status IN (?, ?, ?)')
+      .bind('invalidated', now, now, pointer.outboxId, pointer.version, 'claimed', authorization.expected_capability_generation, 'pending', 'queued', 'claimed'),
+    dependencies.database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT channel, destination_hash, ?, ? FROM notification_contacts WHERE id = (SELECT contact_id FROM notification_outbox WHERE id = ? AND status = ?) AND channel = ? ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = excluded.reason, suppressed_at = excluded.suppressed_at')
+      .bind('provider-opt-out', now, pointer.outboxId, 'invalidated', 'web-push'),
+    dependencies.database.prepare('DELETE FROM notification_contacts WHERE id = (SELECT contact_id FROM notification_outbox WHERE id = ? AND status = ?) AND channel = ?')
+      .bind(pointer.outboxId, 'invalidated', 'web-push'),
+  ])
+}
+
+const isProviderAttempt = (result: Awaited<ReturnType<NotificationDeliveryHook>>): result is Exclude<Awaited<ReturnType<NotificationDeliveryHook>>, void> =>
+  Boolean(result && typeof result === 'object' && 'attempted' in result)
+
 /**
  * Claims, decrypts, then re-authorizes one pointer. Claims and plaintext are deliberately
  * non-authorizing: only the final D1 query immediately before `deliver` grants one call.
@@ -168,17 +192,25 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
 
   try {
     // A manual switch-off is terminal, not retryable backlog: nothing reaches Brevo.
-    if ((payload.kind === 'event-email' && !dependencies.config.emailDeliveryReady) || (payload.kind === 'event-sms' && !dependencies.config.emailSmsEventDeliveryReady)) {
+    if ((payload.kind === 'event-email' && !dependencies.config.emailDeliveryReady) || (payload.kind === 'event-sms' && !(dependencies.config.smsEnabled && dependencies.config.smsEventDeliveryReady && dependencies.config.smsDeliveryReady))) {
       await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
         .bind('failed', nowIso(dependencies), payload.deliveryId, 'pending').run()
     } else {
       const result = await deliver(payload, authorization)
-      if ((payload.kind === 'event-email' || payload.kind === 'event-sms') && result && 'attempted' in result) {
+      if ((payload.kind === 'event-email' || payload.kind === 'event-sms') && isProviderAttempt(result)) {
         if (retryableProviderStatuses.has(result.status)) throw new Error('Notification provider delivery is retryable')
         const status = result.status === 'submitted' ? 'submitted' : 'failed'
         const providerMessageId = 'providerMessageId' in result ? result.providerMessageId : undefined
         await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, provider_message_id = COALESCE(?, provider_message_id), submitted_at = ?, updated_at = ? WHERE id = ?')
           .bind(status, providerMessageId ?? null, nowIso(dependencies), nowIso(dependencies), payload.deliveryId).run()
+      } else if (isProviderAttempt(result) && result.status !== 'submitted') {
+        if (retryableProviderStatuses.has(result.status)) throw new Error('Notification provider delivery is retryable')
+        if (result.status === 'stale-endpoint' && authorization.channel === 'web-push') {
+          await removeStaleWebPushContact(pointer, authorization, dependencies)
+        } else {
+          await failClaim(pointer, token, authorization, dependencies)
+        }
+        return { delivered: false, stale: false }
       }
     }
   } catch (error) {
