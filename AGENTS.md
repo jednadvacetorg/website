@@ -20,7 +20,7 @@
 - Create a commit for ordinary work only when the user explicitly requests one. If its scope is clear, that request is sufficient approval; if unrelated changes are present, ask which paths to include.
 - GSD may create incremental implementation commits only on `gsd/phase-*` branches and their isolated executor worktrees. Never create GSD implementation commits on `master`.
 - Keep `master` protected: never merge, rebase, cherry-pick, tag, push, or otherwise change its history without explicit user approval. Successful checks, UAT, phase completion, or a request to review do not imply integration approval.
-- Start a dependent GSD phase only after every prerequisite phase has been reviewed, approved, and integrated into `master`. Stop rather than base a dependent phase on an unmerged phase branch.
+- When explicitly requested, related dependent GSD phases may be completed on one existing `gsd/phase-*` milestone branch. Review and approve the complete milestone diff before integrating that branch into `master`; keep the phase order and record each phase's verification in its artifacts.
 - Before integrating a phase, report the source and target branches, branch ancestry, commits and diff against `master`, relevant verification and UAT results, and unmet dependencies. Explain the consequences and confirm the user's intended integration path.
 - Prefer `/gsd-ship <phase>` for a reviewed PR into `master`; also offer keeping the phase branch unchanged when further review is wanted. Do not run `/gsd-complete-milestone` until its branch-merge effects have been explained and the user explicitly approves proceeding.
 
