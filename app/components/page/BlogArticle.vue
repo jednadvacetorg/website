@@ -36,6 +36,8 @@ const config = useRuntimeConfig()
         </template>
       </UPageHeader>
 
+      <AudioPlayer v-if="article.audio" :src="article.audio" :title="article.title" :cover="article.thumbnail" />
+
       <UContentToc :links="article.body?.toc?.links" :ui="{ root: 'lg:hidden' }" />
 
       <UPageBody>

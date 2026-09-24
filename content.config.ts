@@ -26,6 +26,7 @@ export default defineContentConfig({
         ...commonSchema,
         published: property(z.string().optional()).editor({ hidden: true }),
         thumbnail: z.string(),
+        audio: z.string().url().optional(),
         categories: z.array(z.string()).optional(),
         authors: z.array(z.string()).optional(),
       }).passthrough()
