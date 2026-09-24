@@ -86,6 +86,13 @@ export const navigationItems: NavigationMenuItem[] = [
         target: '_blank',
       },
       {
+        label: 'Bitcoin do škol',
+        description: 'Vzdělávací program pro střední a základní školy',
+        icon: 'streamline:quality-education',
+        to: 'https://inev.cz/penize-bitcoin/',
+        target: '_blank',
+      },
+      {
         label: 'Získej financování',
         description: 'Pomůžeme tu najít sponzory tvého projektu.',
         to: '/finance',
