@@ -27,9 +27,9 @@ const config = useRuntimeConfig()
   <UContainer class="relative z-40">
     <UPage>
       <UPageHeader :title="article.title">
-        <template v-if="article.categories?.length" #description>
-          <div class="flex flex-wrap items-center gap-2 mb-5">
-            <CategoriesBadges :categories-stems="article.categories" />
+        <template #description>
+          <div v-if="article.categories?.length || article.published" class="flex flex-wrap items-center gap-2 mb-5">
+            <CategoriesBadges v-if="article.categories?.length" :categories-stems="article.categories" />
             <NuxtTime v-if="article.published" :datetime="article.published" />
           </div>
           {{ article.description }}
