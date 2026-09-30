@@ -7,6 +7,12 @@
       "skillPath": "skills/document-writer/SKILL.md",
       "computedHash": "72f695bc6b6913fc05f4d3a1d40026210368aa57469985cbfe2a3759219839f9"
     },
+    "jednadvacet-copywriter": {
+      "source": "jednadvacetorg/skills",
+      "sourceType": "github",
+      "skillPath": "skills/jednadvacet-copywriter/SKILL.md",
+      "computedHash": "21379f5ad39571bfe5c1436af4784e23f6e6e06aa7f6ac9c424c422e129f7d02"
+    },
     "nuxt": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",

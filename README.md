@@ -37,10 +37,10 @@ Většina obsahu webu je uložená jako Markdown v adresáři `content/`. Strukt
 
 ### Komunity
 
-- Profily místních komunit se ukládají do `content/communities/` s názvy souborů ve formátu `mesto.md`.
+- Profily místních komunit se ukládají do `content/communities/` s názvy souborů ve formátu `mesto.md`. (Pro inspiraci koukni na `content/communities/brno.md`.)
 - Komunity se stejně jako běžné stránky zobrazují přímo v kořeni webu. Cesta komunity proto nesmí kolidovat se stránkou ani s vyhrazenou cestou `/blog`.
-- Povinná metadata jsou `title`, `region` a `signal_group`. Souřadnice v `map` určují umístění na mapě, `priority` pořadí prioritních měst a `organizers` odkazuje na soubory v `content/people/`.
-- Propojení s kalendářem se nastavuje pomocí `portal_meetup_id`; podrobnosti jsou v části [Integrace kalendáře s Portalem](#integrace-kalendáře-s-portalem).
+- Povinná metadata jsou `title`, `region` a `signal_group`. Souřadnice v `map` určují umístění na mapě a `organizers` odkazuje na soubory v `content/people/`.
+- Propojení s kalendářem se nastavuje pomocí `portal_meetup_id`. (Podrobnosti jsou v části [Integrace kalendáře s Portalem](#integrace-kalendáře-s-portalem).)
 - Nastavením `hidden: true` lze komunitu ponechat dostupnou pro kalendářovou integraci a samostatný odběr, ale skrýt její landing page, navigaci, mapu a záznam v sitemap.
 
 ### Lidé
