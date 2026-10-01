@@ -8,6 +8,8 @@ title: BTC LIGA – pravidla pro 1. ročník
 description: Proof of Knowledge · CZ & SK · sezóna 2026/27
 ---
 
+#body
+
 [← Zpět na BTC Ligu](/liga)
 
 **Verze 07.2026 · účinná od 28. 7. 2026**

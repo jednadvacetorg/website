@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
+@source "../../../content";
 
 @layer components {
   .prose :where(h1, h2, h3, h4, h5, h6) {
@@ -19,32 +20,4 @@
   --color-orange-800: #623804;
   --color-orange-900: #311c02;
   --color-orange-950: #221401;
-}
-
-/* BTC Liga – kompaktnější sekce */
-.btc-liga-section > [data-slot="container"] {
-  padding-top: 2.5rem !important;
-  padding-bottom: 2.5rem !important;
-  gap: 1.5rem !important;
-}
-
-.btc-liga-section [data-slot="body"] {
-  margin-top: 1.5rem !important;
-}
-
-/* BTC Liga – Signal QR */
-.btc-liga-signal-qr {
-  display: block !important;
-  width: 220px !important;
-  max-width: 70vw !important;
-  height: auto !important;
-  margin-left: auto !important;
-  margin-right: auto !important;
-}
-
-@media (min-width: 1024px) {
-  .btc-liga-section > [data-slot="container"] {
-    padding-top: 3rem !important;
-    padding-bottom: 3rem !important;
-  }
 }
