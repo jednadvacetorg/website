@@ -12,7 +12,7 @@ redirect_from:
 organizers:
   - miroslav-prochazka
   - filipzavoral
-  - hynek-jina
+  - hynek
 ---
 
 ::calendar{community="praha"}
