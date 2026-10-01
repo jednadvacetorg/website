@@ -14,12 +14,24 @@ redirect_from:
 title: Soutěž, která propojuje bitcoinové komunity
 description: BTC Liga navazuje na komunitní bitcoinové kvízy. Z jednorázových večerů vytváří společnou sezónu, ve které týmy sbírají body, učí se a potkávají se offline.
 features:
-  - title: Kvíz probíhá naživo, u stolu a bez elektroniky.
-  - title: Tým tvoří 1 až 5 hráčů.
-  - title: Každé kolo má 21 otázek.
-  - title: Za správnou odpověď získá tým 1 bod, poslední 21. otázka je za 2 body.
-  - title: Maximálně tak může tým získat 22 bodů za jedno kolo.
-  - title: Sezóna má čtyři kola a trvá jeden rok.
+  - title: Naživo a bez elektroniky
+    description: Hraje se u stolu na lokálních meetupech Jednadvacítky. Telefon, chytré hodinky i další elektronika zůstávají během kvízu stranou.
+    icon: i-lucide-pencil-line
+  - title: Tým o 1 až 5 hráčích
+    description: Složení týmu se může mezi koly měnit, sezónní body zůstávají registrovanému týmu. V jednom kole hraje každý hráč jen za jeden tým.
+    icon: i-lucide-user-group
+  - title: 21 otázek v každém kole
+    description: Nováčci vybírají ze tří možností, Pokročilí ze čtyř. Odpovědi se zapisují na papírový lístek.
+    icon: i-lucide-brain
+  - title: Až 22 bodů za kolo
+    description: Za správnou odpověď je 1 bod, za poslední 21. otázku 2 body. Za špatnou odpověď se body neodečítají.
+    icon: i-lucide-circle-check
+  - title: Čtyři kola za rok
+    description: Do celkového pořadí se počítají všechna 4 kola. Za vynechané kolo má tým 0 bodů, ale v žebříčku zůstává.
+    icon: i-lucide-calendar-days
+  - title: Každé kolo můžeš hrát jinde
+    description: Tým může každé kolo odehrát v jiném zapojeném městě. Stačí se na dané kolo přihlásit.
+    icon: i-lucide-map-pin
 ---
 ::
 
@@ -33,27 +45,19 @@ description: Čtyři ligová kola, společný žebříček pro Česko a Slovensk
 
 :::steps{level="4"}
 
-#### Říjen až Prosinec 2026
+#### Říjen až prosinec 2026
 
-#### Leden až Březen 2027
+#### Leden až březen 2027
 
-#### Duben až Červen 2027
+#### Duben až červen 2027
 
-#### Červenec až Září 2027
+#### Červenec až září 2027
 
 :::
 
-:::note
+:::callout
 **Pevné je pouze časové rozmezí jednotlivých kol. Přesné datum si každé zapojené město určuje samo podle termínu svého lokálního meetupu.**
 :::
-
-Čtyři ligová kola se konají na lokálních meetupech Jednadvacítky. Pokud se ve tvém městě BTC Liga zatím nehraje, můžeš to změnit právě ty. Stačí nám napsat na [liga@jednadvacet.org](mailto:liga@jednadvacet.org) — máme připravený kvíz, prezentaci, pravidla i všechny potřebné materiály.
-
-Tým může každé kolo odehrát tam, kde mu to vyhovuje. Klidně může každé kolo hrát v jiném městě — stačí se na dané kolo přihlásit.
-
-Zapojená města se také mohou domluvit a uspořádat BTC Ligu společně nebo se v pořádání jednotlivých kol střídat.
-
-Do celkového pořadí se počítají všechna 4 kola. Pokud tým některé kolo vynechá, získá za něj 0 bodů, ale v ligovém žebříčku zůstává.
 ::
 
 ::u-page-section{:ui='{ "container": "py-10 sm:py-10 lg:py-12 gap-6 sm:gap-6", "body": "mt-6" }'}
@@ -70,7 +74,7 @@ links:
     variant: outline
 ---
 
-Nevíš, kde se hraje nejbližší kolo? Podívej se do kalendáře nebo nám napiš na **liga@jednadvacet.org** a dáme ti vědět, kdy a kde se hraje nejbližší BTC Liga.
+Nenašel jsi v kalendáři nic poblíž? Napiš nám na **liga@jednadvacet.org** a poradíme ti nejbližší kolo.
 ::
 
 ::u-page-section{:ui='{ "container": "py-10 sm:py-10 lg:py-12 gap-6 sm:gap-6", "body": "mt-6" }'}
@@ -103,7 +107,7 @@ description: Kvíz pro týmy, které se orientují v historii Bitcoinu, miningu,
 
 Kategorie mají oddělené otázky, žebříčky i ceny.
 
-**Startovné se platí v bitcoinu přes Lightning.** Platbu lze poslat přes QR kód nebo na **donate@jednadvacet.org**. Pokud jsi nováček a s Lightningem zatím nemáš zkušenost, **moderátor ti na místě pomůže**.
+**Startovné se platí přednostně v bitcoinu přes Lightning** — přes QR kód nebo na **donate@jednadvacet.org**. S Lightningem zatím nemáš zkušenost? **Moderátor ti na místě pomůže**, případně od tebe přijme hotovost a převod přes Lightning zařídí za tebe.
 
 Nejsi si jistý, jestli patříš mezi Nováčky nebo Pokročilé? Podívej se do [kompletních pravidel BTC Ligy](/liga-pravidla), konkrétně na **§ 8 — Edice: kdo je nováček a kdo pokročilý**.
 ::
@@ -134,7 +138,7 @@ Doporučujeme registraci předem, protože kapacita jednotlivých míst může b
 ::u-page-section{:ui='{ "container": "py-10 sm:py-10 lg:py-12 gap-6 sm:gap-6", "body": "mt-6" }'}
 ---
 title: O co se hraje
-description: Na konci sezóny odměníme první 3 týmy mezi Nováčky i první 3 týmy mezi Pokročilými. Čekají na ně velmi zajímavé balíčky bitcoinových cen od partnerů BTC Ligy.
+description: Na konci sezóny odměníme první 3 týmy mezi Nováčky i první 3 týmy mezi Pokročilými. Čekají na ně balíčky bitcoinových cen od partnerů BTC Ligy.
 ---
 
 Mezi připravenými cenami jsou například:
@@ -180,14 +184,9 @@ links:
     icon: i-lucide-book-open
 ---
 
-- Tým tvoří **1 až 5 hráčů**.
-- Tým musí být před začátkem kvízu registrovaný, aby mohl hrát o body a ceny.
-- Složení týmu se může mezi koly měnit; sezónní body zůstávají registrovanému týmu.
-- Jeden hráč může v jednom kole reprezentovat pouze jeden tým.
-- Během kvízu se nepoužívá telefon, chytré hodinky, tablet, notebook, sluchátka ani AI asistenti.
-- Každé kolo má 21 otázek. Za správnou odpověď je 1 bod, poslední 21. otázka je za 2 body.
-- Maximum je **22 bodů za jedno kolo**.
-- Za špatnou odpověď se body neodečítají.
+- Startovné musí být zaplacené před začátkem kvízu.
+- V týmu se raď potichu, ať tě ostatní týmy neslyší.
+- Napovídání mezi týmy, opisování ani vyhledávání informací nepatří do hry.
 - Moderátor řídí průběh kvízu a jeho rozhodnutí je konečné.
 
 Podrobnosti najdeš v [kompletních pravidlech BTC Ligy](/liga-pravidla).
@@ -225,7 +224,7 @@ Nemusíš připravovat otázky ani vymýšlet pravidla. Dostaneš od nás:
 - pravidla,
 - podporu organizátorů.
 
-Ty zajistíš místo, domluvíš termín a provedeš týmy soutěží.
+Ty zajistíš místo, domluvíš termín a provedeš týmy soutěží. Můžeš se také domluvit s dalšími zapojenými městy a uspořádat BTC Ligu společně nebo se v pořádání jednotlivých kol střídat.
 
 **Za pomoc s organizací a moderováním tě také odměníme.**
 ::
