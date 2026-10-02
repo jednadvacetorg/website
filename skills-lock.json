@@ -1,12 +1,6 @@
 {
   "version": 1,
   "skills": {
-    "document-writer": {
-      "source": "onmax/nuxt-skills",
-      "sourceType": "github",
-      "skillPath": "skills/document-writer/SKILL.md",
-      "computedHash": "72f695bc6b6913fc05f4d3a1d40026210368aa57469985cbfe2a3759219839f9"
-    },
     "jednadvacet-copywriter": {
       "source": "jednadvacetorg/skills",
       "sourceType": "github",
@@ -17,43 +11,43 @@
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/nuxt/SKILL.md",
-      "computedHash": "6d7223be3c685b9c36a95e5cc8beda1ddba4d8d2ce0c4364ae664633098d2358"
+      "computedHash": "48b941815cebc7c8057249e8c4a1caf7416c059b71dca1dd67a2f8972f4cccd6"
     },
     "nuxt-content": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/nuxt-content/SKILL.md",
-      "computedHash": "223a9d45300678de4d77878141606812782237c72dfba4356f3284b08086815a"
+      "computedHash": "1a126b752eb43123c3bdd76f4e3b30c094ba7d283bae12ad23d8f91621abed26"
     },
     "nuxt-seo": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/nuxt-seo/SKILL.md",
-      "computedHash": "bffc66809f3a21055d2fd39d0bfa32eefdc681d2e93f4613fc3360addb3d3677"
+      "computedHash": "2c95519ef88aa9e307af520ce3daa38fa37602823703513d2841436c133dca98"
     },
     "nuxt-studio": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/nuxt-studio/SKILL.md",
-      "computedHash": "e830523a4e256b59e6556df64cab3a9ce6802779462bd415fb3598fd9f8e77d8"
+      "computedHash": "194a8acbc2a368992ec12a183fc12786c68b9fe6520c893726853ed17e4460f3"
     },
     "nuxt-ui": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/nuxt-ui/SKILL.md",
-      "computedHash": "c793a5cefc7a23a1e2e9fb637372ab5c4f9d1c26f04a7abba91ffa51c9726485"
+      "computedHash": "72acbf25ef51d20a455b96ec834592855b2982964fe87f7d8620291c95a53301"
     },
     "nuxthub": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/nuxthub/SKILL.md",
-      "computedHash": "09691e4e19e41f40e01fe8a5efaa9d08cf54b06cc80cf430808a9f056d20b1df"
+      "computedHash": "8084d61fbfbd7839575c9fffb9d2f4811abbcd373c7d76e2abd0ef921eeae8f0"
     },
     "vue": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/vue/SKILL.md",
-      "computedHash": "cb120821c275a351b6e3c154d82cf62a9277b6260c2c30b3101f688928a3428b"
+      "computedHash": "cc98196493d27aab872c40163ea65d241acda5d48b503f8f51891cd5fd200f75"
     },
     "vueuse-functions": {
       "source": "vueuse/skills",

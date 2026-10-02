@@ -1,53 +1,44 @@
 ---
-last_mapped_commit: 599ee9aa4c15c119dae17486c0f6ea5999b32b9e
-last_mapped_at: 2026-09-15
+last_mapped_commit: e29e037cefaa121a9b92ae058a58c950dbf2c276
+last_mapped_at: 2026-10-01
 ---
 # Testing Patterns
 
-**Analysis Date:** 2026-09-15
+**Analysis Date:** 2026-10-01
 
 ## Test Framework
 
 **Runner:**
 
-- Node.js built-in `node:test` runner with TypeScript executed by Node's `--experimental-strip-types` flag.
-- Config: No separate test configuration file is present. The command is defined in `package.json` as `node --experimental-strip-types --test tests/*.test.ts`.
+- Node.js built-in `node:test` runner executes TypeScript using Node's `--experimental-strip-types` flag.
+- Config: No separate test configuration is present. `package.json` defines `node --experimental-strip-types --test tests/*.test.ts`.
 
-**Assertion Library:**
-
-- Node's `node:assert/strict`, imported as `assert` in every test file, provides equality, matching, rejection, and exception assertions.
-- HTTP and external-library outputs are checked through stable public behavior, such as parsed iCalendar components in `tests/publicCalendar.test.ts`.
+**Assertion Library:** Node's built-in `node:assert/strict`, imported as `assert` (`tests/portalEvents.test.ts`).
 
 **Run Commands:**
 
 ```bash
-npm test                                      # Run all top-level tests
-node --experimental-strip-types --test tests/*.test.ts  # Equivalent direct runner command
-npm run typecheck                             # Validate TypeScript and generated Nuxt/Vue types
-npm run build                                 # Validate route sources and the production Nuxt build
+npm test                                      # Run all top-level test files
+node --experimental-strip-types --test tests/*.test.ts  # Direct equivalent
+npm run typecheck                             # Check Nuxt/TypeScript types
+npm run build                                 # Validate routes and build Nuxt
 ```
 
-No dedicated watch-mode or coverage command is defined in `package.json`.
+No watch or coverage command is declared in `package.json`.
 
 ## Test File Organization
 
-**Location:**
+**Location:** Tests live separately under top-level `tests/`, importing exported production functions from `app/`, `server/`, and `scripts/`.
 
-- Tests are separated from production code in the top-level `tests/` directory.
-- Test files import the public or intentionally exported functions under test from `app/`, `server/`, and `scripts/`, for example `tests/calendarProjection.test.ts` and `tests/validateContentRoutes.test.ts`.
-
-**Naming:**
-
-- Use `<domain>.test.ts`, such as `tests/googleCalendar.test.ts`, `tests/miners.test.ts`, and `tests/communityHeroMaps.test.ts`.
-- Name tests as complete behavior statements beginning with a lower-case phrase: `test('a newer update restores an event...')` in `tests/portalEvents.test.ts`.
+**Naming:** Use `<domain>.test.ts`, e.g. `tests/calendarProjection.test.ts`, `tests/portalEvents.test.ts`, and `tests/validateContentRoutes.test.ts`.
 
 **Structure:**
 
 ```text
 tests/
-├── communityHeroMaps.test.ts
 ├── communityProjection.test.ts
 ├── calendarProjection.test.ts
+├── communityHeroMaps.test.ts
 ├── eventsAdmin.test.ts
 ├── googleCalendar.test.ts
 ├── miners.test.ts
@@ -60,39 +51,31 @@ tests/
 
 ## Test Structure
 
-**Suite Organization:**
+**Suite Organization:** Tests are independent top-level `test()` calls; names state observable behavior. Representative real pattern:
 
 ```typescript
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { projectCommunities } from '../app/composables/content.ts'
+import { eventJsonLd, projectCalendarEvents } from '../app/utils/calendar.ts'
 
-test('community projection orders cities using Czech collation', () => {
-  const projection = projectCommunities([
-    { path: '/zatec', title: 'Žatec', region: 'Ústecký' },
-    { path: '/chomutov', title: 'Chomutov', region: 'Ústecký' },
-  ])
-
-  assert.deepEqual(projection.regions[0]?.communities.map(item => item.title), [
-    'Chomutov',
-    'Žatec',
-  ])
+test('JSON-LD uses the Prague winter offset', () => {
+  const event = { id: '1', title: 'Brno meetup', start: '2026-01-31T15:00:00.000Z', end: null, tags: [] }
+  assert.equal(JSON.parse(eventJsonLd([event]))['@graph'][0].startDate, '2026-01-31T16:00:00+01:00')
 })
 ```
 
+This style appears in `tests/calendarProjection.test.ts`.
+
 **Patterns:**
 
-- Use one independent `test()` per behavior or invariant; avoid nested `describe` suites.
-- Build small local factories and dependency doubles at the top of a file, such as `event`, `storage`, `fetcher`, and `portalEvent` in `tests/portalEvents.test.ts` and `tests/googleCalendar.test.ts`.
-- Assert exact structured output with `assert.deepEqual` when ordering and field filtering matter; use `assert.equal` for scalar outcomes.
-- Use `assert.ok` for presence and boolean conditions, `assert.match`/`assert.doesNotMatch` for safe strings, and `assert.throws`/`assert.rejects` for validation and async failures.
-- Keep tests deterministic with fixed dates and explicit clocks, such as `now` in `tests/portalEvents.test.ts` and `tests/publicCalendar.test.ts`.
+- Keep tests focused on a behavior or invariant; do not add nested suites.
+- Define small local fixture factories and doubles near the top of the test file (`tests/portalEvents.test.ts`).
+- Prefer exact structured assertions (`assert.deepEqual`) where shape/order matters; use scalar, presence, and regex assertions for narrower contracts.
+- Use fixed dates/clocks for deterministic time behavior (`tests/portalEvents.test.ts`, `tests/publicCalendar.test.ts`).
 
 ## Mocking
 
-**Framework:**
-
-- Node test context mocking via `t.mock.method`, plus hand-written injected function and storage doubles. No Vitest, Jest, Sinon, or Vue Test Utils setup is detected.
+**Framework:** Node test context mocking (`t.mock.method`) plus manually injected typed doubles. No Jest, Vitest, Sinon, or Vue Test Utils test harness is configured.
 
 **Patterns:**
 
@@ -103,27 +86,22 @@ const fetcher: PortalFetch = async (url, options) => {
   return url.endsWith('/meetups') ? meetupRows : events
 }
 
-test('transport failures log safe endpoint diagnostics', async t => {
+test('Portal transport failures log safe endpoint diagnostics', async t => {
   const logs: unknown[][] = []
   t.mock.method(console, 'error', (...args: unknown[]) => logs.push(args))
-  // invoke the public operation and assert the sanitized log
+  // Call the exported operation and assert its public result/log contract.
 })
 ```
 
-This pattern is used in `tests/portalEvents.test.ts`; network and storage dependencies are injected rather than globally mocked.
+The patterns are drawn from `tests/portalEvents.test.ts`.
 
 **What to Mock:**
 
-- Mock external HTTP with typed fetcher functions returning `Response.json(...)` or controlled errors, as in `tests/communityHeroMaps.test.ts` and `tests/googleCalendar.test.ts`.
-- Mock persistence with an in-memory `Map` implementing the narrow `PortalStorage` or `MinersStorage` contract in `tests/portalEvents.test.ts` and `tests/miners.test.ts`.
-- Mock console methods only when verifying safe operational logging, as in `tests/communityHeroMaps.test.ts` and `tests/portalEvents.test.ts`.
-- Mock filesystem boundaries with temporary directories and clean them in `finally`, as in `tests/validateContentRoutes.test.ts`.
+- Inject HTTP fetchers and storage interfaces; use an in-memory `Map` for storage (`tests/portalEvents.test.ts`, `tests/miners.test.ts`).
+- Mock `console` only to check operational logging (`tests/communityHeroMaps.test.ts`).
+- For file-system tools, create temporary directories and clean them in `finally` (`tests/validateContentRoutes.test.ts`).
 
-**What NOT to Mock:**
-
-- Do not mock pure projections, parsers, URL builders, or error classes; call them directly through their exported APIs.
-- Do not mock the iCalendar parser in `tests/publicCalendar.test.ts`; parse generated output with `ical.js` to verify the actual format.
-- Do not assert implementation internals or source text. Test observable return values, requests, writes, response headers, and sanitized errors.
+**What NOT to Mock:** Call pure projection/parsing functions directly. Verify generated iCalendar through the real `ical.js` parser in `tests/publicCalendar.test.ts`; test visible contracts, not implementation/source text.
 
 ## Fixtures and Factories
 
@@ -132,7 +110,6 @@ This pattern is used in `tests/portalEvents.test.ts`; network and storage depend
 ```typescript
 const brno: PortalCommunity = { id: 'brno', path: '/brno', title: 'Brno', portalMeetupId: 360 }
 const now = new Date('2026-08-30T12:00:00.000Z')
-
 const event = (overrides: Record<string, unknown> = {}) => ({
   id: 1,
   title: 'Budoucí meetup',
@@ -142,45 +119,27 @@ const event = (overrides: Record<string, unknown> = {}) => ({
 })
 ```
 
-**Location:**
+Pattern from `tests/portalEvents.test.ts`.
 
-- Fixtures are local constants and factory functions inside the relevant test file; no shared `fixtures/` or factory module is detected.
-- Prefer domain-valid minimal objects, then use an `overrides` parameter for scenario-specific fields, as in `tests/portalEvents.test.ts` and `tests/googleCalendar.test.ts`.
-- Keep fixture data in the language and formats expected by the integration: Czech collation in `tests/communityProjection.test.ts`, Prague timezone dates in `tests/calendarProjection.test.ts`, and Portal payload field names in `tests/portalEvents.test.ts`.
+**Location:** Keep fixtures/factories local to relevant test files; no shared fixture directory is detected. Prefer minimal domain-valid records with overrides for scenario differences.
 
 ## Coverage
 
-**Requirements:**
+**Requirements:** No coverage threshold, coverage tool, or coverage script is configured in `package.json`. Existing tests emphasize server integration utilities and pure data transformations; Vue rendering and browser interaction are not represented in `tests/`.
 
-- No coverage target, threshold, or coverage configuration is detected.
-- The test suite has strongest coverage around server-side integration utilities and pure data projections; Vue component rendering and browser interactions are not covered by automated tests.
-
-**View Coverage:**
-
-```bash
-
-# Not configured
-
-```
+**View Coverage:** Not configured.
 
 ## Test Types
 
-**Unit Tests:**
+**Unit Tests:** Exercise pure projections, parsers, validation, auth checks, and error classification (`tests/calendarProjection.test.ts`, `tests/eventsAdmin.test.ts`, `tests/miners.test.ts`).
 
-- Most tests are unit-level tests of pure functions, parsers, normalizers, cache projections, authentication checks, and error classification. Examples include `tests/calendarProjection.test.ts`, `tests/eventsAdmin.test.ts`, and `tests/miners.test.ts`.
+**Integration Tests:** Exercise composed utility workflows with injected external dependencies, such as event-cache refresh, calendar generation, and route validation (`tests/portalEvents.test.ts`, `tests/publicCalendar.test.ts`, `tests/validateContentRoutes.test.ts`). Route-source validation launches the script in a child Node process and supplies a temporary content root (`tests/validateContentRoutes.test.ts`). Tests do not call live Portal/Google/Mapbox services or run a Nuxt server.
 
-**Integration Tests:**
-
-- Integration-style tests exercise complete utility workflows with injected HTTP and storage dependencies, including cache refreshes, queue parsing, Google synchronization, public iCalendar generation, and route-source validation. See `tests/portalEvents.test.ts`, `tests/googleCalendar.test.ts`, `tests/publicCalendar.test.ts`, and `tests/validateContentRoutes.test.ts`.
-- The suite does not start a Nuxt server or use a live database, Cloudflare binding, Portal API, Mapbox API, or Google API.
-
-**E2E Tests:**
-
-- No browser or end-to-end test framework is detected. SSR, hydration, responsive interaction, and rendered component behavior require manual/browser verification outside `npm test`.
+**E2E Tests:** No browser/E2E framework or test files are detected. Hydration, responsive layout, and interactive UI need separate browser verification; `npm test` does not cover them.
 
 ## Common Patterns
 
-**Async Testing:**
+**Async Testing:** Use async test callbacks and `assert.rejects` for promise errors; match domain class/status when these are contractual (`tests/portalEvents.test.ts`):
 
 ```typescript
 await assert.rejects(
@@ -188,8 +147,6 @@ await assert.rejects(
   (error: unknown) => error instanceof PortalEventsError && error.statusCode === 404,
 )
 ```
-
-Use async test callbacks and `assert.rejects` for promises; pass a predicate when the domain error type and status are part of the contract, as in `tests/publicCalendar.test.ts`.
 
 **Error Testing:**
 
@@ -200,10 +157,9 @@ assert.throws(
 )
 ```
 
-- Check both rejection and safe diagnostics when security behavior matters. `tests/communityHeroMaps.test.ts`, `tests/googleCalendar.test.ts`, and `tests/portalEvents.test.ts` ensure tokens and sensitive upstream messages do not leak.
-- Exercise malformed, missing, duplicate, stale, and boundary inputs in loops where the same contract applies, as in `tests/communityHeroMaps.test.ts` and `tests/publicCalendar.test.ts`.
-- Use `try/finally` around temporary filesystem fixtures to guarantee cleanup, as in `tests/validateContentRoutes.test.ts`.
+- For safe-error behavior, assert both the error contract and absence of sensitive details in logged/public output (`tests/portalEvents.test.ts`, `tests/communityHeroMaps.test.ts`).
+- Cover malformed and boundary inputs, and use `try/finally` to guarantee temporary resource cleanup (`tests/validateContentRoutes.test.ts`).
 
 ---
 
-*Testing analysis: 2026-09-15*
+*Testing analysis: 2026-10-01*
