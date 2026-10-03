@@ -39,7 +39,7 @@ export default defineNuxtConfig({
       type: 'sqlite',
       // SQLite writes are unreliable on the devcontainer's virtiofs workspace
       // mount, so local Content caches stay on the container filesystem.
-      filename: '/tmp/jednadvacet-content.sqlite',
+      filename: process.env.CONTENT_LOCAL_DATABASE_PATH || '/tmp/jednadvacet-content.sqlite',
     },
     build: {
       transformers: [

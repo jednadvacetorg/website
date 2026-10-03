@@ -12,6 +12,29 @@ ready_port=2105
 manual_port=2106
 server_pids=()
 browser_session=""
+temporary_dir="${TMPDIR:-/tmp}"
+screenshot_dir="${AGENT_BROWSER_SCREENSHOT_DIR:-/tmp/screenshots}"
+
+assert_port_free() {
+  local listeners
+  if ! command -v ss >/dev/null || ! listeners="$(ss -H -ltn "sport = :$1")"; then
+    echo "Cannot determine occupancy of port $1; refusing to launch." >&2
+    exit 1
+  fi
+  if [[ -n "$listeners" ]]; then
+    echo "Port $1 is occupied; refusing to launch or stop any server." >&2
+    exit 1
+  fi
+}
+
+# Check the entire journey before starting anything, not just its first server.
+case "$mode" in
+  --all|--guide) ports=("$guide_port" "$ready_port") ;;
+  --management) ports=("$guide_port") ;;
+  --manual-management|--test-manual-management) ports=("$manual_port") ;;
+esac
+for port in "${ports[@]}"; do assert_port_free "$port"; done
+
 if [[ "$mode" != "--manual-management" && "$mode" != "--test-manual-management" ]]; then
   browser_session="$(agent-browser session id --scope worktree --prefix notification-lifecycle)"
 fi
@@ -19,7 +42,17 @@ fi
 stop_servers() {
   for server_pid in "${server_pids[@]}"; do
     kill -- "-$server_pid" >/dev/null 2>&1 || true
+    for _ in {1..50}; do
+      if ! ps -eo pgid=,stat= | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.exit(s.split("\n").some(l=>{const [g,t]=l.trim().split(/\s+/);return g===process.argv[1]&&t&&!t.startsWith("Z")})?0:1))' "$server_pid"; then break; fi
+      sleep 0.1
+    done
+    kill -KILL -- "-$server_pid" >/dev/null 2>&1 || true
     wait "$server_pid" 2>/dev/null || true
+    sleep 0.1
+    if ps -eo pgid=,stat= | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>process.exit(s.split("\n").some(l=>{const [g,t]=l.trim().split(/\s+/);return g===process.argv[1]&&t&&!t.startsWith("Z")})?0:1))' "$server_pid"; then
+      echo "Owned server group $server_pid still has live descendants; cleanup failed." >&2
+      exit 1
+    fi
   done
   server_pids=()
 }
@@ -35,7 +68,9 @@ start_server() {
   local port="$1"
   local fixture="$2"
   base_url="http://localhost:${port}"
-  local log_file="/tmp/notification-lifecycle-ui-${port}.log"
+  assert_port_free "$port"
+  local log_file
+  log_file="$(mktemp "${temporary_dir%/}/notification-lifecycle-ui-${port}-XXXXXX.log")"
 
   if [[ "$fixture" == true ]]; then
     setsid env NUXT_NOTIFICATION_UI_VERIFICATION_FIXTURE=true NUXT_PUBLIC_NOTIFICATION_TURNSTILE_SITE_KEY=notification-ui-verification-site-key npm run dev -- --port "$port" >"$log_file" 2>&1 &
@@ -43,8 +78,17 @@ start_server() {
     setsid npm run dev -- --port "$port" >"$log_file" 2>&1 &
   fi
   server_pids+=("$!")
+  local server_pid="${server_pids[-1]}"
+  echo "Owned server launch: port=$port fixture=$fixture process_group=$server_pid log=$log_file"
   for _ in {1..60}; do
-    if curl --silent --fail --max-time 1 "$base_url/kalendar" >/dev/null; then return; fi
+    if ! kill -0 -- "-$server_pid" 2>/dev/null; then
+      echo "Owned server group $server_pid exited during startup." >&2
+      break
+    fi
+    if curl --silent --fail --max-time 1 "$base_url/kalendar" >/dev/null; then
+      kill -0 -- "-$server_pid" 2>/dev/null || exit 1
+      return
+    fi
     sleep 1
   done
   printf 'Notification lifecycle UI server failed to start:\n' >&2
@@ -68,7 +112,7 @@ if [[ "$mode" == "--manual-management" ]]; then
 fi
 
 if [[ "$mode" == "--test-manual-management" ]]; then
-  manual_log="/tmp/notification-manual-management-$$.log"
+  manual_log="$(mktemp "${temporary_dir%/}/notification-manual-management-XXXXXX.log")"
   setsid env --default-signal=INT bash "$0" --manual-management >"$manual_log" 2>&1 &
   manual_pid=$!
   trap 'kill -INT "-$manual_pid" >/dev/null 2>&1 || true; wait "$manual_pid" 2>/dev/null || true; cleanup' EXIT
@@ -114,9 +158,9 @@ if [[ "$mode" == "--all" || "$mode" == "--guide" ]]; then
   agent-browser --session "$browser_session" wait --load networkidle >/dev/null
   agent-browser --session "$browser_session" wait --text "Kalendářový feed" >/dev/null
   agent-browser --session "$browser_session" eval 'Array.from(document.querySelectorAll("[role=status]")).filter(status => status.textContent?.includes("Tato možnost ještě není připravená. Nic jsme neaktivovali")).length === 3' | grep -q true
-  agent-browser --session "$browser_session" screenshot /tmp/screenshots/notification-guide-desktop.png >/dev/null
+  agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-guide-desktop.png" >/dev/null
   agent-browser --session "$browser_session" set viewport 320 800 >/dev/null
-  agent-browser --session "$browser_session" screenshot /tmp/screenshots/notification-guide-mobile.png >/dev/null
+  agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-guide-mobile.png" >/dev/null
   agent-browser --session "$browser_session" eval 'document.documentElement.scrollWidth <= window.innerWidth' | grep -q true
 
   # The private development fixture makes email/SMS ready while keeping push false.
@@ -153,10 +197,10 @@ if [[ "$mode" == "--all" || "$mode" == "--management" ]]; then
     agent-browser --session "$browser_session" wait --load networkidle >/dev/null
     agent-browser --session "$browser_session" wait --text "$expected_text" >/dev/null
     agent-browser --session "$browser_session" eval 'document.documentElement.scrollWidth <= window.innerWidth' | grep -q true
-    agent-browser --session "$browser_session" screenshot "/tmp/screenshots/notification-management-${name}-desktop.png" >/dev/null
+    agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-management-${name}-desktop.png" >/dev/null
     agent-browser --session "$browser_session" set viewport 320 800 >/dev/null
     agent-browser --session "$browser_session" eval 'document.documentElement.scrollWidth <= window.innerWidth' | grep -q true
-    agent-browser --session "$browser_session" screenshot "/tmp/screenshots/notification-management-${name}-mobile.png" >/dev/null
+    agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-management-${name}-mobile.png" >/dev/null
   }
 
   capture_management_state 'notification-ui-management-active' active 'Správa upozornění'
@@ -182,20 +226,20 @@ if [[ "$mode" == "--all" || "$mode" == "--management" ]]; then
   agent-browser --session "$browser_session" eval 'document.querySelector("[data-testid=\"notification-stop-trigger\"]")?.focus(); document.querySelector("[data-testid=\"notification-stop-trigger\"]")?.click()' >/dev/null
   agent-browser --session "$browser_session" wait --text "Opravdu chceš ukončit odběr" >/dev/null
   agent-browser --session "$browser_session" eval 'document.querySelector("[role=dialog]")?.contains(document.activeElement)' | grep -q true
-  agent-browser --session "$browser_session" screenshot /tmp/screenshots/notification-management-stop-confirmation-desktop.png >/dev/null
+  agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-management-stop-confirmation-desktop.png" >/dev/null
   agent-browser --session "$browser_session" set viewport 320 800 >/dev/null
   agent-browser --session "$browser_session" eval 'document.documentElement.scrollWidth <= window.innerWidth' | grep -q true
-  agent-browser --session "$browser_session" screenshot /tmp/screenshots/notification-management-stop-confirmation-mobile.png >/dev/null
+  agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-management-stop-confirmation-mobile.png" >/dev/null
   agent-browser --session "$browser_session" eval 'Array.from(document.querySelectorAll("[role=dialog] button")).find(button => button.textContent?.trim() === "Neukončovat")?.click()' >/dev/null
   agent-browser --session "$browser_session" wait --fn '!document.querySelector("[role=dialog]") && document.activeElement?.textContent?.includes("Ukončit odběr")' >/dev/null
   agent-browser --session "$browser_session" eval 'document.querySelector("[data-testid=\"notification-stop-trigger\"]")?.focus(); document.querySelector("[data-testid=\"notification-stop-trigger\"]")?.click()' >/dev/null
   agent-browser --session "$browser_session" wait --text "Opravdu chceš ukončit odběr" >/dev/null
   agent-browser --session "$browser_session" eval 'Array.from(document.querySelectorAll("[role=dialog] button")).find(button => button.textContent?.trim() === "Ukončit odběr")?.click()' >/dev/null
   agent-browser --session "$browser_session" wait --text "Odběr je ukončený" >/dev/null
-  agent-browser --session "$browser_session" screenshot /tmp/screenshots/notification-management-stopped-desktop.png >/dev/null
+  agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-management-stopped-desktop.png" >/dev/null
   agent-browser --session "$browser_session" set viewport 320 800 >/dev/null
   agent-browser --session "$browser_session" eval 'document.documentElement.scrollWidth <= window.innerWidth' | grep -q true
-  agent-browser --session "$browser_session" screenshot /tmp/screenshots/notification-management-stopped-mobile.png >/dev/null
+  agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-management-stopped-mobile.png" >/dev/null
 
   capture_management_state 'notification-ui-management-pending-reactivation' pending-reactivation 'Znovu aktivovat odběr'
   agent-browser --session "$browser_session" eval 'document.body.innerText.includes("+1555 ••• ••••") && !document.body.innerText.includes("notification-ui")' | grep -q true
