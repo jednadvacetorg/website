@@ -5,6 +5,7 @@ import {
   getGoogleCalendarConfig,
   GoogleCalendarError,
   googleCalendarEventId,
+  importGoogleCalendarEvents,
   reconcileGoogleCalendar,
   syncGoogleCalendarChanges,
   syncGoogleCalendarEvent,
@@ -384,4 +385,108 @@ test('full reconciliation retains grouped Google insert diagnostics', async () =
       return true
     },
   )
+})
+
+const importNow = new Date('2026-09-01T00:00:00.000Z')
+const decin: PortalCommunity = { id: 'decin', path: '/decin', title: 'Děčín', portalMeetupId: 361 }
+const manualEvent = (id: string, summary: string, overrides: Record<string, unknown> = {}) => ({
+  id,
+  summary,
+  start: { dateTime: '2026-09-20T18:00:00+02:00' },
+  end: { dateTime: '2026-09-20T20:00:00+02:00' },
+  ...overrides,
+})
+const importFetcher = (items: unknown[], requests: Array<{ url: string, init?: RequestInit }>): GoogleFetch =>
+  async (url, init) => {
+    requests.push({ url, init })
+    if (url === 'https://oauth2.googleapis.com/token') return tokenResponse()
+    if (url === 'https://portal.einundzwanzig.space/api/meetup-events') {
+      return Response.json({ data: { id: 900 } }, { status: 201 })
+    }
+    if (!init?.method) return Response.json({ items })
+    return new Response(null, { status: init.method === 'DELETE' ? 204 : 200 })
+  }
+
+test('import creates a Portal event for a manual Google event and marks the original', async () => {
+  const requests: Array<{ url: string, init?: RequestInit }> = []
+  const report = await importGoogleCalendarEvents([], [brno, decin], config, 'portal-token', importFetcher([
+    manualEvent('manual-1', 'Decin: Přednáška', {
+      location: ' Kavárna ',
+      description: 'První řádek<br>druhý &amp; <b>tučný</b>',
+    }),
+  ], requests), importNow)
+
+  assert.deepEqual(report, { created: 1, removed: 0, pending: 0, skipped: 0, failed: 0 })
+  const created = requests.find(request => request.url.startsWith('https://portal.einundzwanzig.space/'))
+  assert.equal(new Headers(created?.init?.headers).get('authorization'), 'Bearer portal-token')
+  assert.deepEqual(JSON.parse(String(created?.init?.body)), {
+    meetup_id: 361,
+    start: '2026-09-20T18:00:00+02:00',
+    end: '2026-09-20T20:00:00+02:00',
+    title: 'Přednáška',
+    location: 'Kavárna',
+    description: 'První řádek\ndruhý & tučný',
+  })
+  const marker = requests.at(-1)
+  assert.equal(marker?.init?.method, 'PATCH')
+  assert.match(marker?.url ?? '', /\/events\/manual-1$/)
+  assert.deepEqual(JSON.parse(String(marker?.init?.body)), {
+    extendedProperties: { private: { jednadvacetImportedEventId: '900' } },
+  })
+})
+
+test('import removes a manual Google event once Portal publishes it and never creates it twice', async () => {
+  const requests: Array<{ url: string, init?: RequestInit }> = []
+  const marked = { extendedProperties: { private: { jednadvacetImportedEventId: '900' } } }
+  const report = await importGoogleCalendarEvents([
+    portalEvent('900', { event: { ...portalEvent('900').event, start: '2026-09-21T10:00:00.000Z' } }),
+    portalEvent('77', { event: { ...portalEvent('77').event, start: '2026-09-22T16:00:00.000Z' } }),
+  ], [brno], config, 'portal-token', importFetcher([
+    manualEvent('moved-in-portal', 'Brno - Meetup', marked),
+    manualEvent('same-start', 'Brno - Meetup', { start: { dateTime: '2026-09-22T18:00:00+02:00' } }),
+    manualEvent('not-visible-yet', 'Brno - Jiný', {
+      start: { dateTime: '2026-09-25T18:00:00+02:00' },
+      extendedProperties: { private: { jednadvacetImportedEventId: '901' } },
+    }),
+  ], requests), importNow)
+
+  assert.deepEqual(report, { created: 0, removed: 2, pending: 1, skipped: 0, failed: 0 })
+  assert.deepEqual(
+    requests.filter(request => request.init?.method).map(request => `${request.init?.method} ${request.url.split('/').at(-1)}`),
+    ['POST token', 'DELETE moved-in-portal', 'DELETE same-start'],
+  )
+})
+
+test('import leaves managed, unmatched, all-day and recurring Google events alone', async () => {
+  const requests: Array<{ url: string, init?: RequestInit }> = []
+  const report = await importGoogleCalendarEvents([], [brno, { id: 'online', path: '/online', title: 'Online' }], config, 'portal-token', importFetcher([
+    manualEvent('managed', 'Brno - Meetup', { extendedProperties: { private: { jednadvacetSource: 'portal' } } }),
+    manualEvent('other-city', 'Brnoslav slaví'),
+    manualEvent('no-meetup', 'Online - Stream'),
+    manualEvent('all-day', 'Brno - Konference', { start: { date: '2026-09-20' }, end: { date: '2026-09-21' } }),
+    manualEvent('recurring', 'Brno - Stůl', { recurringEventId: 'series' }),
+  ], requests), importNow)
+
+  assert.deepEqual(report, { created: 0, removed: 0, pending: 0, skipped: 4, failed: 0 })
+  assert.equal(requests.filter(request => request.init?.method && !request.url.includes('oauth2')).length, 0)
+})
+
+test('import counts a rejected Portal write and continues with the next event', async () => {
+  const requests: Array<{ url: string, init?: RequestInit }> = []
+  let portalCalls = 0
+  const base = importFetcher([
+    manualEvent('first', 'Brno - První'),
+    manualEvent('second', 'Brno', { start: { dateTime: '2026-09-23T18:00:00+02:00' }, end: undefined }),
+  ], requests)
+  const report = await importGoogleCalendarEvents([], [brno], config, 'portal-token', async (url, init) => {
+    if (url.startsWith('https://portal.einundzwanzig.space/') && ++portalCalls === 1) {
+      requests.push({ url, init })
+      return Response.json({ message: 'This action is unauthorized.' }, { status: 403 })
+    }
+    return base(url, init)
+  }, importNow)
+
+  assert.deepEqual(report, { created: 1, removed: 0, pending: 0, skipped: 0, failed: 1 })
+  const second = requests.filter(request => request.url.startsWith('https://portal.einundzwanzig.space/')).at(-1)
+  assert.deepEqual(JSON.parse(String(second?.init?.body)), { meetup_id: 360, start: '2026-09-23T18:00:00+02:00' })
 })

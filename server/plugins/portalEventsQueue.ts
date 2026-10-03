@@ -3,7 +3,13 @@ import {
   refreshPortalMeetups,
   type PortalChangeSignal,
 } from '../utils/portalEvents.ts'
-import { getGoogleCalendarConfig, GoogleCalendarError, reconcileGoogleCalendar, syncGoogleCalendarChanges } from '../utils/googleCalendar.ts'
+import {
+  getGoogleCalendarConfig,
+  GoogleCalendarError,
+  importGoogleCalendarEvents,
+  reconcileGoogleCalendar,
+  syncGoogleCalendarChanges,
+} from '../utils/googleCalendar.ts'
 import {
   parsePortalEventsQueueBatch,
   portalEventsQueueName,
@@ -52,10 +58,24 @@ export default defineNitroPlugin((nitroApp) => {
       if (refreshAll) {
         // Use the materialized state that was just written. An immediate KV read is not
         // guaranteed to observe that write, even from the same Cloudflare location.
-        await reconcileGoogleCalendar(
-          result.calendarEvents,
-          getGoogleCalendarConfig(useRuntimeConfig() as unknown as Record<string, unknown>),
-        )
+        const runtimeConfig = useRuntimeConfig() as unknown as Record<string, unknown>
+        const googleConfig = getGoogleCalendarConfig(runtimeConfig)
+        await reconcileGoogleCalendar(result.calendarEvents, googleConfig)
+        // The reverse direction is opt-in: without a Portal API token manual Google events stay untouched.
+        if (typeof runtimeConfig.portalApiToken === 'string' && runtimeConfig.portalApiToken) {
+          try {
+            const imported = await importGoogleCalendarEvents(
+              result.calendarEvents,
+              selected,
+              googleConfig,
+              runtimeConfig.portalApiToken,
+            )
+            console.info('[portal-events] Imported manual Google Calendar events', imported)
+          } catch (error) {
+            // Publishing Portal events already succeeded; a failed import must not retry the whole refresh.
+            console.error(`[portal-events] Google Calendar import failed: ${error instanceof Error ? error.message : typeof error}`)
+          }
+        }
       } else {
         const eventIds = new Set(changes.flatMap(change => change.eventId ? [change.eventId] : []))
         if (eventIds.size > 0) {

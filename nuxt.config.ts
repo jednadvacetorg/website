@@ -72,6 +72,7 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     portalWebhookSecret: '',
+    portalApiToken: '',
     googleOauthClientId: '',
     googleOauthSecret: '',
     googleOauthRefreshToken: '',

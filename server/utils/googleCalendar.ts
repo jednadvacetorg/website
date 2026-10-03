@@ -487,3 +487,214 @@ export const reconcileGoogleCalendar = async (
   }
   return report
 }
+
+const portalMeetupEventsUrl = 'https://portal.einundzwanzig.space/api/meetup-events'
+const portalRequestTimeoutMs = 10_000
+const importedEventProperty = 'jednadvacetImportedEventId'
+const portalTextLimit = 255
+
+export interface GoogleCalendarImportReport {
+  /** Events created in Portal from manually added Google events. */
+  created: number
+  /** Manual Google events removed because Portal already publishes them. */
+  removed: number
+  /** Imported events whose Portal copy was not visible in the supplied Portal state yet. */
+  pending: number
+  /** Events without a recognizable community prefix, all-day events and recurring events. */
+  skipped: number
+  failed: number
+}
+
+interface ManualGoogleEvent {
+  id: string
+  summary: string
+  start: string
+  end?: string
+  location?: string
+  description?: string
+  importedEventId?: string
+}
+
+const comparable = (value: string) => value.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase()
+
+/** Resolves the community from the city prefix used by legacy calendar titles, e.g. "Brno - Meetup". */
+const splitCommunityPrefix = (summary: string, communities: readonly PortalCalendarEvent['community'][]) => {
+  const title = summary.normalize('NFC').trim()
+  const candidates = communities
+    .filter(community => community.portalMeetupId !== undefined)
+    .map(community => ({ community, prefix: community.title.normalize('NFC').trim() }))
+    .sort((left, right) => right.prefix.length - left.prefix.length)
+  for (const { community, prefix } of candidates) {
+    if (!prefix || comparable(title.slice(0, prefix.length)) !== comparable(prefix)) continue
+    const rest = title.slice(prefix.length)
+    if (rest && /^[\p{L}\p{N}]/u.test(rest)) continue
+    return { community, title: rest.replace(/^[\s\-–—:|,]+/u, '') }
+  }
+  return undefined
+}
+
+/** Portal renders descriptions as plain text, while Google stores what its editor produced as HTML. */
+const plainText = (value: string) => value
+  .replace(/<br\s*\/?>|<\/p>|<\/li>/gi, '\n')
+  .replace(/<[^>]+>/g, '')
+  .replace(/&nbsp;/g, ' ')
+  .replace(/&lt;/g, '<')
+  .replace(/&gt;/g, '>')
+  .replace(/&quot;/g, '"')
+  .replace(/&#39;/g, '\'')
+  .replace(/&amp;/g, '&')
+  .trim()
+
+const listManualEvents = async (
+  config: GoogleCalendarConfig,
+  fetcher: GoogleFetch,
+  token: string,
+  now: Date,
+) => {
+  const events: ManualGoogleEvent[] = []
+  let skipped = 0
+  let pageToken: string | undefined
+  do {
+    const query = new URLSearchParams({
+      timeMin: now.toISOString(),
+      singleEvents: 'true',
+      maxResults: '2500',
+      showDeleted: 'false',
+    })
+    if (pageToken) query.set('pageToken', pageToken)
+    const response = await googleRequest(fetcher, token, config, `/events?${query}`)
+    if (!response.ok) await rejectedResponse(response, 'Google Calendar rejected the event list')
+    const payload = await responseJson(response)
+    if (!isRecord(payload) || !Array.isArray(payload.items)) {
+      throw new GoogleCalendarError('Google Calendar returned an invalid event list')
+    }
+    for (const value of payload.items) {
+      if (!isRecord(value) || typeof value.id !== 'string') continue
+      const privateProperties = isRecord(value.extendedProperties) && isRecord(value.extendedProperties.private)
+        ? value.extendedProperties.private
+        : undefined
+      if (privateProperties?.jednadvacetSource === integrationSource) continue
+      const start = isRecord(value.start) && typeof value.start.dateTime === 'string' ? value.start.dateTime : undefined
+      if (typeof value.summary !== 'string' || !start || Number.isNaN(Date.parse(start))
+        || typeof value.recurringEventId === 'string') {
+        skipped += 1
+        continue
+      }
+      const end = isRecord(value.end) && typeof value.end.dateTime === 'string' ? value.end.dateTime : undefined
+      events.push({
+        id: value.id,
+        summary: value.summary,
+        start,
+        ...(end && Date.parse(end) > Date.parse(start) ? { end } : {}),
+        ...(typeof value.location === 'string' && value.location.trim() ? { location: value.location.trim() } : {}),
+        ...(typeof value.description === 'string' && plainText(value.description)
+          ? { description: plainText(value.description) }
+          : {}),
+        ...(typeof privateProperties?.[importedEventProperty] === 'string'
+          ? { importedEventId: privateProperties[importedEventProperty] }
+          : {}),
+      })
+    }
+    pageToken = typeof payload.nextPageToken === 'string' ? payload.nextPageToken : undefined
+  } while (pageToken)
+  return { events, skipped }
+}
+
+const createPortalEvent = async (
+  item: ManualGoogleEvent,
+  meetupId: number,
+  title: string,
+  portalApiToken: string,
+  fetcher: GoogleFetch,
+) => {
+  const response = await fetcher(portalMeetupEventsUrl, {
+    method: 'POST',
+    signal: AbortSignal.timeout(portalRequestTimeoutMs),
+    headers: {
+      'authorization': `Bearer ${portalApiToken}`,
+      'accept': 'application/json',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      meetup_id: meetupId,
+      start: item.start,
+      ...(item.end ? { end: item.end } : {}),
+      ...(title ? { title: title.slice(0, portalTextLimit) } : {}),
+      ...(item.location ? { location: item.location.slice(0, portalTextLimit) } : {}),
+      ...(item.description ? { description: item.description } : {}),
+    }),
+  })
+  if (!response.ok) {
+    await discardResponseBody(response)
+    throw new Error(`Portal rejected an event import (${response.status})`)
+  }
+  const payload = await response.json().catch(() => undefined)
+  const created = isRecord(payload) && isRecord(payload.data) ? payload.data : payload
+  if (!isRecord(created) || (typeof created.id !== 'number' && typeof created.id !== 'string')) {
+    throw new Error('Portal returned an invalid imported event')
+  }
+  return String(created.id)
+}
+
+/**
+ * Moves manually added Google events into Portal, which stays the single source of truth.
+ * A manual event is created in Portal once and marked; it is removed from Google only after the
+ * supplied Portal state contains its copy, which the regular synchronization publishes back.
+ */
+export const importGoogleCalendarEvents = async (
+  portalEvents: readonly PortalCalendarEvent[],
+  communities: readonly PortalCalendarEvent['community'][],
+  config: GoogleCalendarConfig,
+  portalApiToken: string,
+  fetcher: GoogleFetch = fetch,
+  now = new Date(),
+): Promise<GoogleCalendarImportReport> => {
+  const token = await accessToken(config, fetcher)
+  const { events, skipped } = await listManualEvents(config, fetcher, token, now)
+  const published = portalEvents.filter(item => !item.cancelled)
+  const report: GoogleCalendarImportReport = { created: 0, removed: 0, pending: 0, skipped, failed: 0 }
+
+  // Sequential on purpose: Portal throttles writes per token and a partial run must stay easy to resume.
+  for (const item of events) {
+    const match = splitCommunityPrefix(item.summary, communities)
+    if (!match) {
+      report.skipped += 1
+      continue
+    }
+    try {
+      const alreadyPublished = published.some(portal => portal.event.id === item.importedEventId
+        || (portal.community.id === match.community.id && Date.parse(portal.event.start) === Date.parse(item.start)))
+      if (alreadyPublished) {
+        const response = await googleRequest(fetcher, token, config, `/events/${encodeURIComponent(item.id)}`, {
+          method: 'DELETE',
+        })
+        if (!response.ok && response.status !== 404 && response.status !== 410) {
+          await rejectedResponse(response, 'Google Calendar rejected a manual event deletion')
+        }
+        await discardResponseBody(response)
+        report.removed += 1
+      } else if (item.importedEventId) {
+        report.pending += 1
+      } else {
+        const portalEventId = await createPortalEvent(
+          item,
+          match.community.portalMeetupId as number,
+          match.title,
+          portalApiToken,
+          fetcher,
+        )
+        report.created += 1
+        const response = await googleRequest(fetcher, token, config, `/events/${encodeURIComponent(item.id)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ extendedProperties: { private: { [importedEventProperty]: portalEventId } } }),
+        })
+        if (!response.ok) await rejectedResponse(response, 'Google Calendar rejected an import marker')
+        await discardResponseBody(response)
+      }
+    } catch (error) {
+      report.failed += 1
+      console.error(`[portal-events] Google Calendar import step failed: ${error instanceof Error ? error.message : typeof error}`)
+    }
+  }
+  return report
+}
