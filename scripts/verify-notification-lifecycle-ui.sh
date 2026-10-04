@@ -2,8 +2,8 @@
 set -euo pipefail
 
 mode="${1:---all}"
-if [[ "$mode" != "--all" && "$mode" != "--guide" && "$mode" != "--management" && "$mode" != "--manual-management" && "$mode" != "--test-manual-management" ]]; then
-  echo "Usage: $0 [--guide|--management|--manual-management|--test-manual-management]" >&2
+if [[ "$mode" != "--all" && "$mode" != "--fake-doors" && "$mode" != "--guide" && "$mode" != "--management" && "$mode" != "--manual-management" && "$mode" != "--test-manual-management" ]]; then
+  echo "Usage: $0 [--all|--fake-doors|--guide|--management|--manual-management|--test-manual-management]" >&2
   exit 64
 fi
 
@@ -31,6 +31,7 @@ assert_port_free() {
 case "$mode" in
   --all|--guide) ports=("$guide_port" "$ready_port") ;;
   --management) ports=("$guide_port") ;;
+  --fake-doors) ports=("$guide_port") ;;
   --manual-management|--test-manual-management) ports=("$manual_port") ;;
 esac
 for port in "${ports[@]}"; do assert_port_free "$port"; done
@@ -58,7 +59,11 @@ stop_servers() {
 }
 
 cleanup() {
+  local result=$?
   if [[ -n "$browser_session" ]]; then
+    if [[ "$mode" == "--fake-doors" && "$result" != 0 ]]; then
+      agent-browser --session "$browser_session" --no-auto-dialog snapshot >"$screenshot_dir/notification-fake-doors-failure.txt" 2>&1 || true
+    fi
     agent-browser --session "$browser_session" close >/dev/null 2>&1 || true
   fi
   stop_servers
@@ -80,6 +85,12 @@ start_server() {
   server_pids+=("$!")
   local server_pid="${server_pids[-1]}"
   echo "Owned server launch: port=$port fixture=$fixture process_group=$server_pid log=$log_file"
+  # setsid creates the owned group asynchronously after the shell forks.
+  for _ in {1..20}; do
+    if kill -0 -- "-$server_pid" 2>/dev/null; then break; fi
+    kill -0 "$server_pid" 2>/dev/null || break
+    sleep 0.05
+  done
   for _ in {1..60}; do
     if ! kill -0 -- "-$server_pid" 2>/dev/null; then
       echo "Owned server group $server_pid exited during startup." >&2
@@ -134,6 +145,254 @@ if [[ "$mode" == "--test-manual-management" ]]; then
   exit 0
 fi
 trap cleanup EXIT
+
+if [[ "$mode" == "--fake-doors" ]]; then
+  start_server "$guide_port" false
+  # Chromium resolves *.localhost to loopback. The real tracker intentionally
+  # suppresses exact localhost; this local origin exercises its serialization.
+  base_url="http://notification-ui.localhost:$guide_port"
+  ab() { agent-browser --session "$browser_session" --no-auto-dialog --screenshot-dir "$screenshot_dir" "$@"; }
+  assert_browser() { ab wait --fn "$1" >/dev/null; }
+  inspect_capture() {
+    ab network requests --json >"$screenshot_dir/${case_name}-requests.json"
+    node --input-type=module -e '
+      import fs from "node:fs";
+      const response = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      if (!response.success || !Array.isArray(response.data?.requests)) throw Error("Missing request capture");
+      const requests = response.data.requests;
+      if (requests.some(r => /15551234567|fake-door@example\.test/.test(JSON.stringify(r)))) throw Error("Browser-local contact crossed a network boundary");
+      const readiness = requests.filter(r => new URL(r.url).pathname === "/api/notifications/readiness");
+      if (!readiness.some(r => r.status === 200)) throw Error("Readiness interception was not consumed");
+      const forbidden = requests.filter(r => (/\/api\/notifications\//.test(r.url) && !r.url.includes("/readiness")) || /\/notifications\/manage\/|brevo|twilio|fcm\.googleapis|push\.services\.mozilla/.test(r.url) || new URL(r.url).pathname === "/notification-sw.js");
+      if (forbidden.length) throw Error("Forbidden notification attempt: " + JSON.stringify(forbidden));
+      const events = requests.filter(r => new URL(r.url).pathname === "/cntrsclc" && new URL(r.url).searchParams.has("p"));
+      const expected = JSON.parse(process.argv[2]);
+      for (const [path, count] of Object.entries(expected)) {
+        const actual = events.filter(r => new URL(r.url).searchParams.get("p") === path);
+        if (actual.length !== count) throw Error(`${path}: expected ${count}, captured ${actual.length}`);
+        for (const request of actual) {
+          const url = new URL(request.url);
+          if (url.searchParams.get("r") !== "" || [...url.searchParams.keys()].some(k => !["p","h","r","sid","ht"].includes(k))) throw Error("Unexpected analytics metadata");
+          const serialized = JSON.stringify(request);
+          if (/15551234567|fake-door|example\.test|week-before|day-before|all-czech-communities/.test(serialized)) throw Error("Private data in emitted tracker request");
+          const referrer = Object.entries(request.headers ?? {}).find(([k]) => k.toLowerCase() === "referer")?.[1];
+          if (referrer && (new URL(referrer).search || new URL(referrer).hash)) throw Error("Identifying referrer query");
+        }
+      }
+      console.log(JSON.stringify({readiness: readiness.length, counts: expected, notificationAttempts: forbidden.length}));
+    ' "$screenshot_dir/${case_name}-requests.json" "$counts"
+    assert_browser 'window.__notificationVerification?.permission === 0 && window.__notificationVerification?.subscribe === 0'
+  }
+  navigate_guide() {
+    ab open "$base_url/lide" >/dev/null
+    assert_browser 'document.querySelector("#__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false'
+    ab eval 'window.__notificationVerification = {permission:0,subscribe:0}; if (window.Notification) Notification.requestPermission = () => { window.__notificationVerification.permission++; return Promise.reject(Error("Forbidden permission request")); }; if (window.PushManager) PushManager.prototype.subscribe = () => { window.__notificationVerification.subscribe++; return Promise.reject(Error("Forbidden push subscription")); }' >/dev/null
+    # Audit reload/neutral-page traffic before resetting the per-journey counts.
+    if [[ -n "${counts:-}" ]]; then inspect_capture; fi
+    ab network requests --clear >/dev/null
+    ab eval "document.querySelector('#__nuxt').__vue_app__.config.globalProperties.\$router.push('/$surface')" >/dev/null
+    if [[ "$surface" == brno ]]; then
+      ab wait --text 'Nadcházející události' >/dev/null
+      assert_browser 'Array.from(document.querySelectorAll("button")).some(b => b.textContent.trim() === "Sledovat události" && !b.disabled)'
+      ab eval 'Array.from(document.querySelectorAll("button")).find(b => b.textContent.trim() === "Sledovat události").focus()' >/dev/null
+      ab press Enter >/dev/null
+    fi
+    ab wait --text 'Kalendářový feed' >/dev/null
+    assert_browser 'Array.from(document.querySelectorAll("button")).filter(b => b.textContent.trim().startsWith("Mám zájem o")).length === 3 && !Array.from(document.querySelectorAll("button")).some(b => /Aktivovat|Spravovat.*notifikace/.test(b.textContent))'
+    assert_browser 'Array.from(document.querySelectorAll("h3")).map(h => h.textContent.trim()).filter(t => ["SMS","E-mail","Oznámení ve webu","Kalendářový feed"].includes(t)).join("|") === "SMS|E-mail|Oznámení ve webu|Kalendářový feed"'
+    if [[ "$surface" == brno ]]; then assert_browser 'document.querySelector("[role=dialog]")?.contains(document.activeElement)'; fi
+    counts='{"/kalendar/signin-sms":0,"/kalendar/signin-mail":0,"/kalendar/signin-web":0,"/kalendar/copy-ical":0,"/kalendar/subscription-guide":1}'
+    inspect_capture
+  }
+  for width in 1280 320; do
+    for surface in kalendar brno; do
+      case_name="notification-fake-doors-${surface}-${width}"
+      browser_session="${case_name}-$$"
+      counts=""
+      ab --args '--disable-dev-shm-usage' open about:blank >/dev/null
+      ab set viewport "$width" 800 >/dev/null
+      # The installed CLI chooses the first matching interception rule.
+      ab network route '**/api/notifications/readiness' --body '{"email":false,"sms":false,"webPush":false}' >/dev/null
+      ab network route '**/api/notifications/*' --abort >/dev/null
+      ab network route '**/cntrsclc*' --body '{"ht":1}' >/dev/null
+      for destination in '**/notifications/manage/*' '*brevo*' '*twilio*' '*fcm.googleapis*' '*push.services.mozilla*'; do
+        ab network route "$destination" --abort >/dev/null
+      done
+      navigate_guide
+      assert_browser 'Array.from(document.querySelectorAll("button")).filter(b => ["Mám zájem o SMS","Mám zájem o e-mail"].includes(b.textContent.trim())).every(b => b.disabled)'
+      expected_scope=all
+      if [[ "$surface" == brno ]]; then expected_scope=brno; fi
+      assert_browser "document.querySelector('code[aria-label]')?.textContent.trim() === '$base_url/ical/$expected_scope'"
+      ab find label 'Telefonní číslo' fill '+15551234567' >/dev/null
+      ab find label 'E-mail' fill 'fake-door@example.test' >/dev/null
+      ab find role button click --name 'Upravit' --exact >/dev/null
+      ab find role checkbox click --name 'týden předem' --exact >/dev/null
+      ab find role checkbox click --name 'den předem' --exact >/dev/null
+      ab find role button click --name 'Hotovo' --exact >/dev/null
+      assert_browser 'document.body.innerText.includes("při vytvoření události, týden předem, den předem")'
+      for repeat in 1 2; do
+        if [[ "$repeat" == 2 ]]; then
+          selections=(Praha)
+          if [[ "$surface" == kalendar ]]; then selections=(Brno Praha); fi
+          for selection in "${selections[@]}"; do
+            ab find role button click --name 'Komunity, které chceš sledovat' >/dev/null
+            ab find role option click --name "$selection" --exact >/dev/null
+            ab find role button click --name 'Komunity, které chceš sledovat' >/dev/null
+            assert_browser '!document.querySelector("[role=listbox]")'
+          done
+          assert_browser "document.querySelector('code[aria-label]')?.textContent.trim() === '$base_url/ical/brno,praha'"
+        fi
+        for channel in sms mail web; do
+          case "$channel" in
+            sms) label='Mám zájem o SMS' ;;
+            mail) label='Mám zájem o e-mail' ;;
+            web) label='Mám zájem o oznámení ve webu' ;;
+          esac
+          inspect_capture
+          ab eval "Array.from(document.querySelectorAll('button')).find(b => b.textContent.trim() === '$label').focus()" >/dev/null
+          if [[ "$repeat" == 2 && "$channel" == sms ]]; then
+            # CDP keyboard dispatch can stay pending while the native dialog
+            # pauses the renderer. Require the exact dialog proof below.
+            if ! ab press Enter >"$screenshot_dir/${case_name}-${channel}-${repeat}-input.txt" 2>&1; then
+              if ! grep -q 'A JavaScript alert dialog is blocking the page' "$screenshot_dir/${case_name}-${channel}-${repeat}-input.txt"; then
+                exit 1
+              fi
+            fi
+          else
+            ab find role button click --name "$label" --exact >"$screenshot_dir/${case_name}-${channel}-${repeat}-input.txt" 2>&1
+          fi
+          sleep 0.5
+          ab dialog status --json >"$screenshot_dir/${case_name}-${channel}-${repeat}-dialog.json"
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const response = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (!response.success || response.data?.hasDialog !== true || response.data.type !== "alert") throw Error("Missing native alert");
+            const expected = "Promiň, tato možnost ještě není připravená, takže jsme nic neaktivovali. Sleduj prosím naše sociální sítě; už teď můžeš odebírat kalendář přes iCalendar.";
+            if (response.data.message !== expected) throw Error("Unexpected native alert copy");
+          ' "$screenshot_dir/${case_name}-${channel}-${repeat}-dialog.json"
+          ab dialog accept >/dev/null
+          assert_browser "document.activeElement?.textContent.trim() === '$label'"
+          assert_browser 'document.querySelector("input[name=telephone]")?.value === "+15551234567" && document.querySelector("input[name=email]")?.value === "fake-door@example.test" && localStorage.getItem("subscription-guide-telephone") === "+15551234567" && localStorage.getItem("subscription-guide-email") === "fake-door@example.test"'
+          counts="$(node -e 'const c=JSON.parse(process.argv[1]); c["/kalendar/signin-"+process.argv[2]]++; console.log(JSON.stringify(c))' "$counts" "$channel")"
+          sleep 0.3
+          inspect_capture
+          ab dialog status --json | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const r=JSON.parse(s);if(!r.success||r.data?.hasDialog!==false)process.exit(1)})'
+        done
+      done
+      ab network requests --json >"$screenshot_dir/${case_name}-intent-requests.json"
+      # Selection/frequency/copy/help share the same rendered guide controls.
+      assert_browser 'document.body.innerText.includes("při vytvoření události, týden předem, den předem")'
+      ab find role button click --name 'Komunity, které chceš sledovat' >/dev/null
+      ab find role option click --name 'Celé Česko' --exact >/dev/null
+      ab find role button click --name 'Komunity, které chceš sledovat' >/dev/null
+      assert_browser '!document.querySelector("[role=listbox]")'
+      ab eval 'window.__originalClipboardWrite = navigator.clipboard.writeText; window.__copiedCalendarUrls = []; navigator.clipboard.writeText = async function(url) { await window.__originalClipboardWrite.call(this, url); window.__copiedCalendarUrls.push(url); }' >/dev/null
+      for selection in Brno Praha 'Celé Česko'; do
+        ab find role button click --name 'Komunity, které chceš sledovat' >/dev/null
+        ab find role option click --name "$selection" --exact >/dev/null
+        ab find role button click --name 'Komunity, které chceš sledovat' >/dev/null
+        assert_browser '!document.querySelector("[role=listbox]")'
+        if [[ "$selection" == Praha ]]; then
+          assert_browser "document.querySelector('code[aria-label]')?.textContent.trim() === '$base_url/ical/brno,praha'"
+        elif [[ "$selection" == 'Celé Česko' ]]; then
+          assert_browser "document.querySelector('code[aria-label]')?.textContent.trim() === '$base_url/ical/all'"
+        fi
+        ab find role button click --name 'Kopírovat adresu kalendáře' --exact >/dev/null
+        assert_browser '!!document.querySelector("button[aria-label=\"Adresa zkopírována\"]") && window.__copiedCalendarUrls.at(-1) === document.querySelector("code[aria-label]")?.textContent.trim()'
+        ab eval 'fetch(window.__copiedCalendarUrls.at(-1)).then(async r => ({url:r.url,status:r.status,headers:Object.fromEntries(r.headers),body:await r.text()}))' --json >"$screenshot_dir/${case_name}-feed-${selection// /-}.json"
+        node --input-type=module -e '
+          import fs from "node:fs";
+          const response = JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+          if (!response.success || !response.data?.result) throw Error("Missing copied-feed response");
+          const r = response.data.result;
+          if (/attachment/i.test(r.headers["content-disposition"] ?? "")) throw Error("Download disposition");
+          if (r.status === 200) {
+            if (!r.headers["content-type"]?.includes("text/calendar") || !r.body.includes("BEGIN:VCALENDAR")) throw Error("Invalid inline calendar");
+          } else {
+            if (![404,503].includes(r.status) || !r.headers["content-type"]?.includes("application/json") || !JSON.parse(r.body).statusMessage) throw Error("Unreadable feed error");
+            console.log("Populated feed/client evidence BLOCKED: " + r.url + " HTTP " + r.status);
+          }
+        ' "$screenshot_dir/${case_name}-feed-${selection// /-}.json"
+      done
+      counts="$(node -e 'const c=JSON.parse(process.argv[1]);c["/kalendar/copy-ical"]=3;console.log(JSON.stringify(c))' "$counts")"
+      inspect_capture
+      ab wait --fn '!!document.querySelector("button[aria-label=\"Adresa zkopírována\"]")' >/dev/null
+      assert_browser "window.__copiedCalendarUrls.length === 3 && window.__copiedCalendarUrls[0] === '$base_url/ical/brno' && window.__copiedCalendarUrls[1] === '$base_url/ical/brno,praha' && window.__copiedCalendarUrls[2] === '$base_url/ical/all'"
+      ab eval 'window.__copiedCalendarUrls' --json >"$screenshot_dir/${case_name}-clipboard-write.json"
+      ab eval 'navigator.clipboard.writeText = () => Promise.reject(Error("Local clipboard denial"))' >/dev/null
+      ab find role button click --name 'Adresa zkopírována' --exact >/dev/null
+      ab wait --text 'Adresu se nepodařilo zkopírovat. Označ ji a zkopíruj ručně.' >/dev/null
+      counts="$(node -e 'const c=JSON.parse(process.argv[1]);c["/kalendar/copy-ical"]=4;console.log(JSON.stringify(c))' "$counts")"
+      assert_browser "document.querySelector('code[aria-label]')?.textContent.trim() === '$base_url/ical/all'"
+      ab eval 'navigator.clipboard.writeText = window.__originalClipboardWrite' >/dev/null
+      for help in 'Google Calendar' 'Apple Kalendář' Outlook 'Jiná aplikace'; do
+        case "$help" in
+          'Google Calendar') instruction='V Kalendáři Google otevři' ;;
+          'Apple Kalendář') instruction='iPhone/iPad: Nastavení' ;;
+          Outlook) instruction='V Outlooku na webu vyber' ;;
+          'Jiná aplikace') instruction='V aplikaci hledej volbu' ;;
+        esac
+        ab find role button click --name "$help" --exact >/dev/null
+        assert_browser "document.querySelector('button[aria-label=\"$help\"]')?.getAttribute('aria-expanded') === 'true' && document.body.innerText.includes('$instruction')"
+        ab press Escape >/dev/null
+        assert_browser "document.querySelector('button[aria-label=\"$help\"]')?.getAttribute('aria-expanded') === 'false'"
+      done
+      assert_browser 'document.body.innerText.includes("Stažený soubor .ics je jen jednorázová kopie.") && document.body.innerText.includes("Čas obnovení určuje tvoje kalendářová aplikace.")'
+      ab find role button click --name 'Komunity, které chceš sledovat' >/dev/null
+      ab find role option click --name 'Celé Česko' --exact >/dev/null
+      ab find role button click --name 'Komunity, které chceš sledovat' >/dev/null
+      assert_browser '!document.querySelector("[role=listbox]")'
+      assert_browser 'Array.from(document.querySelectorAll("button")).filter(b => b.textContent.trim().startsWith("Mám zájem o")).every(b => b.disabled) && !document.querySelector("code[aria-label]")'
+      assert_browser 'document.body.innerText.includes("při vytvoření události, týden předem, den předem")'
+      inspect_capture
+      if [[ "$surface" == brno ]]; then
+        ab press Escape >/dev/null
+        assert_browser '!document.querySelector("[role=dialog]") && document.activeElement?.textContent.trim() === "Sledovat události"'
+        ab press Enter >/dev/null
+        ab wait --text 'Kalendářový feed' >/dev/null
+        assert_browser "document.querySelector('code[aria-label]')?.textContent.trim() === '$base_url/ical/brno'"
+        counts="$(node -e 'const c=JSON.parse(process.argv[1]);c["/kalendar/subscription-guide"]=2;console.log(JSON.stringify(c))' "$counts")"
+      fi
+      ab reload >/dev/null
+      assert_browser 'document.querySelector("#__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false'
+      sleep 0.3
+      if [[ "$surface" == kalendar ]]; then
+        ab wait --text 'Kalendářový feed' >/dev/null
+        counts="$(node -e 'const c=JSON.parse(process.argv[1]);c["/kalendar/subscription-guide"]++;console.log(JSON.stringify(c))' "$counts")"
+      fi
+      # SSR payload is never used as readiness proof after reload.
+      navigate_guide
+      assert_browser 'document.querySelector("input[name=telephone]")?.value === "+15551234567" && document.querySelector("input[name=email]")?.value === "fake-door@example.test"'
+      ab find label 'Telefonní číslo' fill '' >/dev/null
+      ab find label 'E-mail' fill '' >/dev/null
+      assert_browser '!localStorage.getItem("subscription-guide-telephone") && !localStorage.getItem("subscription-guide-email")'
+      ab reload >/dev/null
+      assert_browser 'document.querySelector("#__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false'
+      sleep 0.3
+      if [[ "$surface" == kalendar ]]; then
+        ab wait --text 'Kalendářový feed' >/dev/null
+        counts="$(node -e 'const c=JSON.parse(process.argv[1]);c["/kalendar/subscription-guide"]++;console.log(JSON.stringify(c))' "$counts")"
+      fi
+      navigate_guide
+      assert_browser 'document.querySelector("input[name=telephone]")?.value === "" && document.querySelector("input[name=email]")?.value === ""'
+      for theme in light dark; do
+        ab set media "$theme" >/dev/null
+        assert_browser 'document.documentElement.scrollWidth <= window.innerWidth'
+        ab scrollintoview 'input[name=telephone]' >/dev/null
+        ab screenshot "$screenshot_dir/${case_name}-${theme}.png" >/dev/null
+      done
+      ab errors --json >"$screenshot_dir/${case_name}-errors.json"
+      node --input-type=module -e 'import fs from "node:fs";const r=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(!r.success||!Array.isArray(r.data?.errors)||r.data.errors.length)throw Error("Browser page errors")' "$screenshot_dir/${case_name}-errors.json"
+      ab console --json >"$screenshot_dir/${case_name}-console.json"
+      node --input-type=module -e 'import fs from "node:fs";const r=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));if(!r.success||!Array.isArray(r.data?.messages)||/hydration[^"\n]*mismatch/i.test(JSON.stringify(r.data.messages)))throw Error("Hydration evidence failed")' "$screenshot_dir/${case_name}-console.json"
+      inspect_capture
+      ab close >/dev/null
+      browser_session=""
+    done
+  done
+  echo 'False-readiness native-dialog verification passed.'
+  exit 0
+fi
 
 if [[ "$mode" == "--all" || "$mode" == "--guide" ]]; then
   start_server "$guide_port" false

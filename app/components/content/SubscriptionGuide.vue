@@ -7,6 +7,7 @@ const { $counterscale } = useNuxtApp()
 
 const wholeCountryValue = 'all-czech-communities'
 const falseReadinessMessage = 'Tato možnost ještě není připravená. Nic jsme neaktivovali; už teď můžeš odebírat kalendář přes iCalendar.'
+const interestConfirmation = 'Promiň, tato možnost ještě není připravená, takže jsme nic neaktivovali. Sleduj prosím naše sociální sítě; už teď můžeš odebírat kalendář přes iCalendar.'
 const temporaryUnavailableMessage = 'Tato možnost je teď dočasně nedostupná. Nic jsme neaktivovali; zkus to prosím později.'
 const { public: publicConfig } = useRuntimeConfig()
 const { data: readiness } = await useFetch<{ email: boolean, sms: boolean, webPush: boolean }>('/api/notifications/readiness', {
@@ -181,12 +182,15 @@ const enableWebPush = async () => {
 }
 const expressSmsInterest = () => {
   $counterscale.trackSmsIntent()
+  window.alert(interestConfirmation)
 }
 const expressEmailInterest = () => {
   $counterscale.trackEmailIntent()
+  window.alert(interestConfirmation)
 }
 const expressWebInterest = () => {
   $counterscale.trackWebIntent()
+  window.alert(interestConfirmation)
 }
 const methodContact = (method: 'sms' | 'email') => method === 'sms' ? telephone.value : email.value
 const validMethodContact = (method: 'sms' | 'email') => method === 'sms' ? hasTelephone.value : hasEmail.value
