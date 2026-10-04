@@ -5,6 +5,9 @@ import test from 'node:test'
 
 import { consumeNotificationOutboxPointer, parseNotificationOutboxPointer, publishPendingNotificationPointers } from '../server/utils/notificationMessagesQueue.ts'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
+import { planEventNotifications } from '../server/utils/eventEmailNotifications.ts'
+import { applyBrevoCallback } from '../server/utils/brevoCallbacks.ts'
+import type { PortalCalendarEvent } from '../server/utils/portalEvents.ts'
 import { activateNotificationChannel, confirmNotificationReactivation, isDeliveryEligible, readNotificationManagement, requestNotificationManagementRecovery, stopNotificationChannel, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 
 const Database = createRequire(import.meta.url)('better-sqlite3') as new (filename: string) => {
@@ -33,7 +36,7 @@ const disposableDatabase = (): { database: NotificationDatabase, query(sql: stri
   }
   return { database: { prepare: statement, batch: async statements => {
     sqlite.exec('BEGIN')
-    try { for (const item of statements) await item.run(); sqlite.exec('COMMIT') }
+    try { const results = []; for (const item of statements) results.push(await item.run()); sqlite.exec('COMMIT'); return results }
     catch (error) { sqlite.exec('ROLLBACK'); throw error }
   } }, query: sql => sqlite.prepare(sql).all() as Record<string, unknown>[] }
 }
@@ -59,6 +62,104 @@ pluginGlobals.defineNitroPlugin = () => undefined
 const { dispatchNotificationQueueMessage } = await import('../server/plugins/notificationMessagesQueue.ts')
 pluginGlobals.defineNitroPlugin = previousPlugin
 const syntheticRuntime = { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet' }
+
+const calendarEvent: PortalCalendarEvent = {
+  event: { id: '12', title: 'Synthetic meetup', start: '2026-10-12T12:00:00.000Z', end: null, location: 'Synthetic venue', tags: [] },
+  community: { id: 'brno', path: '/brno', title: 'Brno' }, sequence: 4, changedAt: '2026-10-04T00:00:00.000Z', cancelled: false,
+}
+
+test('actual event dispatch and callbacks converge in both orders without overwriting terminal evidence or retrying', async () => {
+  for (const callbackKind of ['delivered', 'hard-bounce', 'complaint', 'unsubscribed'] as const) {
+    for (const early of [true, false]) {
+      const { database, query } = disposableDatabase()
+      const dependencies = { database, config, now: () => new Date('2026-10-04T10:00:00Z') }
+      await activateNotificationChannel(input, dependencies)
+      await planEventNotifications([calendarEvent], dependencies)
+      const [row] = query("SELECT id, version FROM notification_outbox WHERE kind = 'event-email'")
+      const pointer = { outboxId: row!.id as string, version: row!.version as number }
+      let calls = 0
+      let deliveryId = ''
+      const receive = () => applyBrevoCallback({ id: 'synthetic_event_123', deliveryId, kind: callbackKind, providerMessageId: 'synthetic_message_123', occurredAt: '2026-10-04T10:00:00Z' }, database)
+      const fetcher: typeof fetch = async (_url, request) => {
+        calls++
+        const body = JSON.parse(request!.body as string)
+        deliveryId = body.headers['X-Mailin-custom']
+        assert.equal(body.attachment.length, 1)
+        assert.equal((await readNotificationManagement(body.textContent.match(/\/manage\/([A-Za-z0-9_-]+)/)[1], dependencies)).state, 'active')
+        if (early) await receive()
+        return new Response(JSON.stringify({ messageId: 'synthetic_message_123' }), { status: 201 })
+      }
+      await dispatchNotificationQueueMessage({ id: 'send', body: pointer }, dependencies, syntheticRuntime, fetcher)
+      if (!early) await receive()
+      await dispatchNotificationQueueMessage({ id: 'duplicate', body: pointer }, dependencies, syntheticRuntime, fetcher)
+      assert.equal(calls, 1)
+      assert.equal(query('SELECT status FROM notification_event_deliveries')[0]!.status, callbackKind)
+      assert.equal(query('SELECT provider_message_id FROM notification_event_deliveries')[0]!.provider_message_id, 'synthetic_message_123')
+      assert.equal(query("SELECT payload_ciphertext FROM notification_outbox WHERE kind = 'event-email'")[0]!.payload_ciphertext, null)
+    }
+  }
+})
+
+test('early callback provider ID conflicts and attempted HTTP/fetch failures retain evidence and end email work', async () => {
+  for (const outcome of [201, 429, 503, 'transport'] as const) {
+    const { database, query } = disposableDatabase()
+    const dependencies = { database, config, now: () => new Date('2026-10-04T10:00:00Z') }
+    await activateNotificationChannel(input, dependencies)
+    await planEventNotifications([calendarEvent], dependencies)
+    const [row] = query("SELECT id, version FROM notification_outbox WHERE kind = 'event-email'")
+    const pointer = { outboxId: row!.id as string, version: row!.version as number }
+    let calls = 0
+    const fetcher: typeof fetch = async (_url, request) => {
+      calls++
+      const body = JSON.parse(request!.body as string)
+      await applyBrevoCallback({ id: 'synthetic_event_123', deliveryId: body.headers['X-Mailin-custom'], kind: 'delivered', providerMessageId: 'callback_message_123', occurredAt: '2026-10-04T10:00:00Z' }, database)
+      if (outcome === 'transport') throw new TypeError('synthetic transport')
+      return new Response(JSON.stringify({ messageId: 'different_message_123' }), { status: outcome })
+    }
+    await dispatchNotificationQueueMessage({ id: 'send', body: pointer }, dependencies, syntheticRuntime, fetcher)
+    await dispatchNotificationQueueMessage({ id: 'duplicate', body: pointer }, dependencies, syntheticRuntime, fetcher)
+    assert.equal(calls, 1)
+    assert.deepEqual(query('SELECT status, provider_message_id FROM notification_event_deliveries'), [{ status: 'delivered', provider_message_id: 'callback_message_123' }])
+  }
+})
+
+test('recovery inside the provider call cannot repair or resend an already attempted event', async () => {
+  const { database, query } = disposableDatabase()
+  const dependencies = { database, config, now: () => new Date('2026-10-04T10:00:00Z') }
+  await activateNotificationChannel(input, dependencies)
+  await planEventNotifications([calendarEvent], dependencies)
+  const [row] = query("SELECT id, version FROM notification_outbox WHERE kind = 'event-email'")
+  let calls = 0
+  const pointer = { outboxId: row!.id as string, version: row!.version as number }
+  await dispatchNotificationQueueMessage({ id: 'send', body: pointer }, dependencies, syntheticRuntime, async () => {
+    calls++
+    await requestNotificationManagementRecovery({ channel: 'email', contact: input.contact }, dependencies)
+    assert.equal((await planEventNotifications([calendarEvent], dependencies)).planned, 0)
+    return new Response(JSON.stringify({ messageId: 'synthetic_message_123' }), { status: 201 })
+  })
+  await dispatchNotificationQueueMessage({ id: 'duplicate', body: pointer }, dependencies, syntheticRuntime, async () => { calls++; throw new Error('must not resend') })
+  assert.equal(calls, 1)
+  assert.equal(query('SELECT status FROM notification_event_deliveries')[0]!.status, 'submitted')
+  assert.equal(query("SELECT count(*) n FROM notification_outbox WHERE kind = 'event-email'")[0]!.n, 1)
+})
+
+test('a crash after the final email attempt reservation is terminally retired instead of making a second call', async () => {
+  const { database, query } = disposableDatabase()
+  const dependencies = { database, config, now: () => new Date('2026-10-04T10:00:00Z') }
+  await activateNotificationChannel(input, dependencies)
+  await planEventNotifications([calendarEvent], dependencies)
+  const [row] = query("SELECT id, version FROM notification_outbox WHERE kind = 'event-email'")
+  const pointer = { outboxId: row!.id as string, version: row!.version as number }
+  await assert.rejects(consumeNotificationOutboxPointer(pointer, dependencies, async (_payload, _authorization, authorize) => {
+    assert.equal(await authorize(), true)
+    throw new Error('Synthetic process-crash ambiguity')
+  }), /process-crash ambiguity/)
+  let calls = 0
+  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, dependencies, async () => { calls++ }), { delivered: false, stale: true })
+  assert.equal(calls, 0)
+  assert.equal(query('SELECT status FROM notification_event_deliveries')[0]!.status, 'failed')
+  assert.equal(query("SELECT payload_ciphertext FROM notification_outbox WHERE kind = 'event-email'")[0]!.payload_ciphertext, null)
+})
 
 test('real Queue dispatch sends a usable channel-scoped first email after durable signup and publication', async () => {
   const { database, query } = disposableDatabase()

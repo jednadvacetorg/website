@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { createApp, eventHandler, toNodeListener } from 'h3'
 
-import { normalizeBrevoCallback } from '../server/utils/brevoCallbacks.ts'
-import type { NotificationDatabase } from '../server/utils/notifications.ts'
+import { applyBrevoCallback, normalizeBrevoCallback } from '../server/utils/brevoCallbacks.ts'
+import type { NotificationDatabase, NotificationStatement } from '../server/utils/notifications.ts'
+import { requestNotificationManagementRecovery } from '../server/utils/notifications.ts'
+import { notificationConfig } from '../server/utils/notificationConfig.ts'
 
 let runtimeConfig: Record<string, unknown> = { brevoCallbackSecret: 'callback-secret-for-tests' }
 ;(globalThis as typeof globalThis & { useRuntimeConfig: () => Record<string, unknown> }).useRuntimeConfig = () => runtimeConfig
@@ -14,70 +17,27 @@ const callbackRoute = (await import('../server/api/notifications/brevo-events.po
 
 const createDatabase = () => {
   const sqlite = new Database(':memory:')
-  sqlite.exec(`
-    CREATE TABLE notification_event_deliveries (
-      id TEXT PRIMARY KEY,
-      contact_id INTEGER,
-      expected_capability_generation INTEGER NOT NULL,
-      destination_hash TEXT NOT NULL,
-      provider_message_id TEXT,
-      status TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    );
-    CREATE TABLE notification_delivery_callbacks (
-      provider_event_id TEXT PRIMARY KEY,
-      delivery_id TEXT NOT NULL,
-      event TEXT NOT NULL,
-      provider_message_id TEXT,
-      received_at TEXT NOT NULL
-    );
-    CREATE TABLE notification_suppressions (
-      channel TEXT NOT NULL,
-      destination_hash TEXT NOT NULL,
-      reason TEXT NOT NULL,
-      suppressed_at TEXT NOT NULL,
-      PRIMARY KEY (channel, destination_hash)
-    );
-    CREATE TABLE notification_outbox (
-      id TEXT PRIMARY KEY,
-      contact_id INTEGER,
-      expected_capability_generation INTEGER NOT NULL,
-      version INTEGER NOT NULL,
-      status TEXT NOT NULL,
-      payload_ciphertext TEXT,
-      payload_iv TEXT,
-      claim_token TEXT,
-      claim_expires_at TEXT,
-      updated_at TEXT NOT NULL,
-      terminal_at TEXT
-    );
-    CREATE TABLE notification_contacts (
-      id INTEGER PRIMARY KEY,
-      capability_generation INTEGER NOT NULL
-    );
-  `)
+  sqlite.exec(readFileSync(new URL('../server/db/migrations/sqlite/0000_majestic_lightspeed.sql', import.meta.url), 'utf8'))
+  sqlite.exec('PRAGMA foreign_keys = ON')
+  const executions = new WeakMap<NotificationStatement, () => unknown>()
   const database: NotificationDatabase = {
     prepare: query => {
       let values: unknown[] = []
-      const statement = {
+      const execute = () => ({ meta: { changes: sqlite.prepare(query).run(...values).changes } })
+      const statement: NotificationStatement = {
         bind: (...nextValues: unknown[]) => {
           values = nextValues
           return statement
         },
         first: async <T>() => sqlite.prepare(query).get(...values) as T | null,
         all: async <T>() => ({ results: sqlite.prepare(query).all(...values) as T[] }),
-        run: async () => sqlite.prepare(query).run(...values),
+        run: async () => execute(),
       }
+      executions.set(statement, execute)
       return statement
     },
     batch: async statements => {
-      const transaction = sqlite.transaction(() => {
-        for (const statement of statements) {
-          const query = statement as unknown as { run?: () => unknown }
-          query.run?.()
-        }
-      })
-      transaction()
+      return sqlite.transaction(() => statements.map(statement => executions.get(statement)!()))()
     },
   }
   return { sqlite, database }
@@ -101,9 +61,9 @@ const withCallbackRoute = async (database: NotificationDatabase, run: (baseUrl: 
 }
 
 const seedDelivery = (sqlite: Database.Database, status = 'pending') => {
-  sqlite.prepare('INSERT INTO notification_contacts (id, capability_generation) VALUES (?, ?)').run(1, 7)
-  sqlite.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, status, updated_at) VALUES (?, ?, ?, ?, ?, ?)').run('delivery_123456789', 1, 7, 'hash_123456789', status, '2026-09-21T00:00:00.000Z')
-  sqlite.prepare('INSERT INTO notification_outbox (id, contact_id, expected_capability_generation, version, status, payload_ciphertext, payload_iv, claim_token, claim_expires_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run('outbox_123456789', 1, 7, 1, 'claimed', 'ciphertext', 'iv', 'claim', '2026-09-21T01:00:00.000Z', '2026-09-21T00:00:00.000Z')
+  sqlite.prepare("INSERT INTO notification_contacts (id, channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (1, 'email', 'synthetic@example.test', 'hash_123456789', 'synthetic_digest', 7, 'active', '2026-09-21', '2026-09', '2026-09-21', '2026-09-21')").run()
+  sqlite.prepare("INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, 1, 7, 'hash_123456789', 'event@jednadvacet.org', 0, 'created', ?, '2026-09-21', '2026-09-21')").run('delivery_123456789', status)
+  sqlite.prepare("INSERT INTO notification_outbox (id, contact_id, expected_capability_generation, version, status, payload_ciphertext, payload_iv, claim_token, claim_expires_at, kind, created_at, updated_at) VALUES ('outbox_123456789', 1, 7, 1, 'claimed', 'ciphertext', 'iv', 'claim', '2026-09-21T01:00:00.000Z', 'event-email', '2026-09-21', '2026-09-21')").run()
 }
 
 const callbackBody = (event: string, id = 'event_123456789') => JSON.stringify({
@@ -216,4 +176,88 @@ test('only an exact callback bearer reaches route processing', async () => {
     assert.deepEqual(sqlite.prepare('SELECT id FROM notification_contacts').get(), { id: 1 })
     assert.equal(sqlite.prepare('SELECT status FROM notification_outbox').get().status, 'claimed')
   }
+})
+
+const callback = (kind: Parameters<typeof applyBrevoCallback>[0]['kind'], id = 'event_123456789', deliveryId = 'delivery_123456789') => ({ id, deliveryId, kind, providerMessageId: 'message_123456789', occurredAt: '2026-09-21T10:00:00Z' })
+
+test('receipt replay cannot mutate a different delivery and provider ID mismatch cannot overwrite evidence', async () => {
+  const { sqlite, database } = createDatabase()
+  seedDelivery(sqlite)
+  await applyBrevoCallback(callback('delivered'), database)
+  sqlite.exec("INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES ('delivery_other_123', 1, 7, 'hash_123456789', 'other@jednadvacet.org', 0, 'created', 'pending', '2026-09-21', '2026-09-21')")
+  assert.deepEqual(await applyBrevoCallback(callback('hard-bounce', 'event_123456789', 'delivery_other_123'), database), { applied: false, suppressed: false })
+  assert.equal(sqlite.prepare("SELECT status FROM notification_event_deliveries WHERE id = 'delivery_other_123'").get().status, 'pending')
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_suppressions').get().n, 0)
+  assert.deepEqual(await applyBrevoCallback({ ...callback('hard-bounce', 'event_conflict_123'), providerMessageId: 'message_conflict_123' }, database), { applied: false, suppressed: false })
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_delivery_callbacks').get().n, 1)
+  assert.equal(sqlite.prepare("SELECT provider_message_id FROM notification_event_deliveries WHERE id = 'delivery_123456789'").get().provider_message_id, 'message_123456789')
+})
+
+test('overlapping lower-rank callback never downgrades a committed terminal callback', async () => {
+  const { sqlite, database } = createDatabase()
+  seedDelivery(sqlite)
+  let entered!: () => void
+  let release!: () => void
+  const ready = new Promise<void>(resolve => { entered = resolve })
+  const paused = new Promise<void>(resolve => { release = resolve })
+  const lower = applyBrevoCallback(callback('delivered', 'event_lower_123'), { ...database, batch: async statements => { entered(); await paused; return database.batch(statements) } })
+  await ready
+  await applyBrevoCallback(callback('hard-bounce', 'event_upper_123'), database)
+  release()
+  await lower
+  assert.equal(sqlite.prepare('SELECT status FROM notification_event_deliveries').get().status, 'hard-bounce')
+  assert.equal(sqlite.prepare('SELECT reason FROM notification_suppressions').get().reason, 'provider-bounce')
+})
+
+test('both callback rank orders, duplicates, and deleted contacts retain monotonic privacy-safe evidence', async () => {
+  for (const kinds of [['hard-bounce', 'delivered'], ['delivered', 'hard-bounce'], ['soft-bounce', 'delivered'], ['delivered', 'soft-bounce']] as const) {
+    const { sqlite, database } = createDatabase()
+    seedDelivery(sqlite)
+    for (const [index, kind] of kinds.entries()) await applyBrevoCallback(callback(kind, `event_order_${index}`), database)
+    await applyBrevoCallback(callback(kinds[0], 'event_order_0'), database)
+    assert.equal(sqlite.prepare('SELECT status FROM notification_event_deliveries').get().status, kinds.includes('hard-bounce') ? 'hard-bounce' : 'soft-bounce')
+    assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_delivery_callbacks').get().n, 2)
+  }
+  const { sqlite, database } = createDatabase()
+  seedDelivery(sqlite)
+  sqlite.exec('DELETE FROM notification_contacts')
+  assert.deepEqual(await applyBrevoCallback(callback('complaint'), database), { applied: true, suppressed: true })
+  assert.equal(sqlite.prepare('SELECT reason FROM notification_suppressions').get().reason, 'provider-complaint')
+})
+
+test('callback racing generation recovery cannot delete or invalidate replacement-generation work', async () => {
+  const { sqlite, database } = createDatabase()
+  seedDelivery(sqlite)
+  let entered!: () => void
+  let release!: () => void
+  const ready = new Promise<void>(resolve => { entered = resolve })
+  const paused = new Promise<void>(resolve => { release = resolve })
+  const raced = applyBrevoCallback(callback('hard-bounce'), { ...database, batch: async statements => { entered(); await paused; return database.batch(statements) } })
+  await ready
+  const config = await notificationConfig({ notificationCommunitySlugs: 'brno', notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''), notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09' })
+  await requestNotificationManagementRecovery({ channel: 'email', contact: 'synthetic@example.test' }, { database, config })
+  release()
+  await raced
+  assert.equal(sqlite.prepare('SELECT capability_generation FROM notification_contacts').get().capability_generation, 8)
+  assert.equal(sqlite.prepare("SELECT status FROM notification_outbox WHERE expected_capability_generation = 8").get().status, 'pending')
+  assert.equal(sqlite.prepare("SELECT status FROM notification_outbox WHERE expected_capability_generation = 7").get().status, 'invalidated')
+  assert.equal(sqlite.prepare('SELECT reason FROM notification_suppressions').get().reason, 'provider-bounce')
+})
+
+test('actual H3 route rejects duplicate bearer, oversized body, invalid JSON and overlarge batches without writes', async () => {
+  const { sqlite, database } = createDatabase()
+  seedDelivery(sqlite)
+  await withCallbackRoute(database, async baseUrl => {
+    for (const [body, authorization, expected] of [
+      [callbackBody('hardBounce'), 'Bearer callback-secret-for-tests, Bearer callback-secret-for-tests', 401],
+      ['x'.repeat(65_537), 'Bearer callback-secret-for-tests', 413],
+      [JSON.stringify({ ignored: 'ž'.repeat(33_000) }), 'Bearer callback-secret-for-tests', 413],
+      ['{', 'Bearer callback-secret-for-tests', 400],
+      [JSON.stringify(Array(51).fill(JSON.parse(callbackBody('hardBounce')))), 'Bearer callback-secret-for-tests', 400],
+    ] as const) {
+      const response = await postCallback(baseUrl, body, authorization)
+      assert.equal(response.status, expected)
+      assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_delivery_callbacks').get().n, 0)
+    }
+  })
 })

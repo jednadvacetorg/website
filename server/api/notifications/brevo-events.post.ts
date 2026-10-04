@@ -15,7 +15,7 @@ const secureEqual = (left: string, right: string) => {
 /** Processes already-bounded normalized callbacks; exported for boundary tests. */
 export const processBrevoCallbackBody = async (rawBody: string, secret: unknown, authorization: string | undefined, database: NotificationDatabase) => {
   if (typeof secret !== 'string' || !secret.trim() || !authorization || !secureEqual(authorization, `Bearer ${secret}`)) throw createError({ statusCode: 401, statusMessage: 'Invalid callback authorization' })
-  if (rawBody.length > maxBytes) throw createError({ statusCode: 413, statusMessage: 'Invalid callback payload' })
+  if (new TextEncoder().encode(rawBody).byteLength > maxBytes) throw createError({ statusCode: 413, statusMessage: 'Invalid callback payload' })
   let body: unknown
   try { body = JSON.parse(rawBody) } catch { throw createError({ statusCode: 400, statusMessage: 'Invalid callback payload' }) }
   const values = Array.isArray(body) ? body : [body]

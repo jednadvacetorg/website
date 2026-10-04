@@ -58,27 +58,28 @@ const suppressionReason: Partial<Record<BrevoCallbackKind, 'provider-bounce' | '
   complaint: 'provider-complaint',
   unsubscribed: 'provider-opt-out',
 }
-const currentRank = (status: string) => status in terminalRank ? terminalRank[status as BrevoCallbackKind] : 0
 
 /** Applies a callback by opaque delivery ID only; provider IDs must agree once persisted. */
 export const applyBrevoCallback = async (event: BrevoCallbackEvent, database: NotificationDatabase) => {
   const delivery = await database.prepare('SELECT id, contact_id, expected_capability_generation, destination_hash, provider_message_id, status FROM notification_event_deliveries WHERE id = ?').bind(event.deliveryId).first<DeliveryRow>()
   if (!delivery || (delivery.provider_message_id && event.providerMessageId && delivery.provider_message_id !== event.providerMessageId)) return { applied: false, suppressed: false }
 
-  const status = currentRank(delivery.status) > terminalRank[event.kind] ? delivery.status : event.kind
   const now = new Date().toISOString()
+  const receiptGuard = 'EXISTS (SELECT 1 FROM notification_delivery_callbacks WHERE provider_event_id = ? AND delivery_id = ? AND event = ? AND provider_message_id IS ?) AND EXISTS (SELECT 1 FROM notification_event_deliveries WHERE id = ? AND (provider_message_id IS NULL OR ? IS NULL OR provider_message_id = ?))'
+  const guardValues = [event.id, event.deliveryId, event.kind, event.providerMessageId ?? null, event.deliveryId, event.providerMessageId ?? null, event.providerMessageId ?? null]
   const statements = [
-    database.prepare('INSERT INTO notification_delivery_callbacks (provider_event_id, delivery_id, event, provider_message_id, received_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(provider_event_id) DO NOTHING').bind(event.id, event.deliveryId, event.kind, event.providerMessageId ?? null, event.occurredAt),
-    database.prepare('UPDATE notification_event_deliveries SET status = ?, provider_message_id = COALESCE(provider_message_id, ?), updated_at = ? WHERE id = ?').bind(status, event.providerMessageId ?? null, now, event.deliveryId),
+    database.prepare('INSERT INTO notification_delivery_callbacks (provider_event_id, delivery_id, event, provider_message_id, received_at) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM notification_event_deliveries WHERE id = ? AND (provider_message_id IS NULL OR ? IS NULL OR provider_message_id = ?)) ON CONFLICT(provider_event_id) DO NOTHING').bind(event.id, event.deliveryId, event.kind, event.providerMessageId ?? null, event.occurredAt, event.deliveryId, event.providerMessageId ?? null, event.providerMessageId ?? null),
+    database.prepare(`UPDATE notification_event_deliveries SET status = CASE WHEN (CASE status WHEN 'delivered' THEN 1 WHEN 'soft-bounce' THEN 2 WHEN 'blocked' THEN 2 WHEN 'hard-bounce' THEN 3 WHEN 'complaint' THEN 3 WHEN 'unsubscribed' THEN 3 ELSE 0 END) < ? THEN ? ELSE status END, provider_message_id = COALESCE(provider_message_id, ?), updated_at = ? WHERE id = ? AND ${receiptGuard}`).bind(terminalRank[event.kind], event.kind, event.providerMessageId ?? null, now, event.deliveryId, ...guardValues),
   ]
   const reason = suppressionReason[event.kind]
   if (reason) {
     statements.push(
-      database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) VALUES (?, ?, ?, ?) ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = excluded.reason, suppressed_at = excluded.suppressed_at').bind('email', delivery.destination_hash, reason, now),
-      database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = ? AND expected_capability_generation = ? AND status IN (?, ?, ?)').bind('invalidated', now, now, delivery.contact_id, delivery.expected_capability_generation, 'pending', 'queued', 'claimed'),
-      database.prepare('DELETE FROM notification_contacts WHERE id = ? AND capability_generation = ?').bind(delivery.contact_id, delivery.expected_capability_generation),
+      database.prepare(`INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT ?, ?, ?, ? WHERE ${receiptGuard} ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = CASE WHEN notification_suppressions.reason = 'user-stop' THEN excluded.reason ELSE notification_suppressions.reason END`).bind('email', delivery.destination_hash, reason, now, ...guardValues),
+      database.prepare(`UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = ? AND expected_capability_generation = ? AND status IN (?, ?, ?) AND EXISTS (SELECT 1 FROM notification_contacts WHERE id = ? AND capability_generation = ?) AND ${receiptGuard}`).bind('invalidated', now, now, delivery.contact_id, delivery.expected_capability_generation, 'pending', 'queued', 'claimed', delivery.contact_id, delivery.expected_capability_generation, ...guardValues),
+      database.prepare(`DELETE FROM notification_contacts WHERE id = ? AND capability_generation = ? AND ${receiptGuard}`).bind(delivery.contact_id, delivery.expected_capability_generation, ...guardValues),
     )
   }
-  await database.batch(statements)
-  return { applied: true, suppressed: Boolean(reason) }
+  const committed = await database.batch(statements) as { meta?: { changes?: number } }[]
+  const applied = committed[0]?.meta?.changes === 1
+  return { applied, suppressed: applied && Boolean(reason) }
 }
