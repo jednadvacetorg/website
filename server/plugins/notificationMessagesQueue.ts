@@ -30,8 +30,21 @@ export const dispatchNotificationQueueMessage = (message: NotificationQueueEnvel
       if (!await authorize()) throw new Error('Notification delivery authorization expired')
       return fetcher(url, request)
     }
-    if (authorization.channel === 'web-push' && payload.kind !== 'event-email' && payload.kind !== 'event-sms') {
+    if (authorization.channel === 'web-push') {
       if (!dependencies.config.webPushDelivery) throw new Error('Web Push delivery is not configured')
+      if (payload.kind === 'event-web-push') {
+        let url = '/kalendar'
+        try {
+          const candidate = new URL(payload.event.url ?? url, 'https://jednadvacet.org')
+          if (candidate.origin === 'https://jednadvacet.org' && !candidate.username && !candidate.password) url = `${candidate.pathname}${candidate.search}`
+        } catch { /* Fall back to the application calendar. */ }
+        return sendWebPush(parseWebPushSubscription(JSON.parse(payload.destination)), {
+          title: payload.reason === 'cancelled' ? 'Akce je zrušená' : payload.reason === 'updated' ? 'Změna akce' : 'Jednadvacet.org',
+          body: Array.from(payload.event.title.replace(/[\u0000-\u001f\u007f]/g, ' ')).slice(0, 200).join(''),
+          url,
+        }, dependencies.config.webPushDelivery, authorizedFetch)
+      }
+      if (!('capability' in payload)) throw new Error('Notification channel is invalid')
       return sendWebPush(parseWebPushSubscription(JSON.parse(payload.destination)), {
         title: 'Jednadvacet.org',
         body: payload.kind === 'reactivation' ? 'Potvrď obnovení upozornění.' : payload.kind === 'management-recovery' ? 'Otevři nové nastavení upozornění.' : 'Odběr upozornění je aktivní.',
@@ -39,12 +52,13 @@ export const dispatchNotificationQueueMessage = (message: NotificationQueueEnvel
       }, dependencies.config.webPushDelivery, authorizedFetch)
     }
     if (typeof runtime.brevoApiKey !== 'string' || !runtime.brevoApiKey.trim() || typeof runtime.brevoSenderName !== 'string' || !runtime.brevoSenderName.trim()) throw new Error('Brevo delivery is not configured')
-    if (payload.kind !== 'event-email' && payload.kind !== 'event-sms') {
+    if (payload.kind === 'event-web-push') throw new Error('Notification channel is invalid')
+    if ('capability' in payload) {
       if (authorization.channel === 'sms') return sendBrevoLifecycleSms({ apiKey: runtime.brevoApiKey, sender: runtime.brevoSenderName }, { recipient: payload.destination, capability: payload.capability, kind: payload.kind }, authorizedFetch)
       if (authorization.channel !== 'email') throw new Error('Notification channel is invalid')
       return sendBrevoLifecycleEmail({ apiKey: runtime.brevoApiKey, senderName: runtime.brevoSenderName, senderEmail: 'noreply@jednadvacet.org', sandbox: runtime.brevoSandbox === true }, { destination: payload.destination, capability: payload.capability, kind: payload.kind }, authorizedFetch)
     }
-    if (payload.kind === 'event-sms') return sendBrevoEventSms({ apiKey: runtime.brevoApiKey, sender: runtime.brevoSenderName }, { deliveryId: payload.deliveryId, recipient: payload.destination, event: payload.event }, authorizedFetch)
+    if (payload.kind === 'event-sms') return sendBrevoEventSms({ apiKey: runtime.brevoApiKey, sender: runtime.brevoSenderName }, { deliveryId: payload.deliveryId, recipient: payload.destination, event: payload.event, reason: payload.reason }, authorizedFetch)
     return sendBrevoEventEmail({ apiKey: runtime.brevoApiKey, senderName: runtime.brevoSenderName, senderEmail: 'noreply@jednadvacet.org', sandbox: runtime.brevoSandbox === true }, {
       deliveryId: payload.deliveryId, recipient: payload.destination,
       managementUrl: `https://jednadvacet.org/notifications/manage/${payload.managementCapability}`,
