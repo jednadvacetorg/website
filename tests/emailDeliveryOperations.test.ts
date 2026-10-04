@@ -436,8 +436,9 @@ test('deployment movement during verification invalidates the result', async t =
 
 for (const mode of ['callback', 'live-canary'] as const) test(`${mode} cannot operate on a different contact behind a supplied opaque ID`, async t => {
   const f = await fixture(t)
-  f.sqlite.exec("UPDATE notification_contacts SET destination = 'other@example.test'")
-  await assert.rejects(f.run(mode, { authorizeProbe: true }))
+  const changed = f.sqlite.prepare("UPDATE notification_contacts SET destination = 'other@example.test' WHERE id = ?").run(mode === 'callback' ? 1 : 2)
+  assert.equal(changed.changes, 1)
+  await assert.rejects(f.run(mode, { authorizeProbe: true }), mode === 'callback' ? /callback-probe/ : /send/)
   assert.equal(f.requests.filter(request => request.init.method === 'POST').length, 0)
 })
 
