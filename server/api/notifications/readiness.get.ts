@@ -1,6 +1,6 @@
-import { defineEventHandler } from 'h3'
+import { defineEventHandler, setResponseHeader } from 'h3'
 import { notificationConfig } from '../../utils/notificationConfig.ts'
-import type { NotificationDatabase } from '../../utils/notifications.ts'
+import { isNotificationChannelReady, type NotificationDatabase } from '../../utils/notifications.ts'
 import { notificationUiVerificationFixtureEnabled } from '../../utils/notificationUiVerificationFixture.ts'
 
 export interface NotificationReadiness {
@@ -17,27 +17,14 @@ export const projectNotificationReadiness = async (runtimeConfig: Record<string,
     if (notificationUiVerificationFixtureEnabled(runtimeConfig)) return { email: true, sms: true, webPush: false }
     const config = await notificationConfig(runtimeConfig)
     if (!database) return unavailable
-    const emailReady = config.emailSmsEnabled
-      && config.emailSmsFirstMessageReady
-      && config.emailSmsEventDeliveryReady
-      && config.emailDeliveryReady
-    const smsReady = config.smsEnabled
-      && config.smsFirstMessageReady
-      && config.smsEventDeliveryReady
-      && config.smsDeliveryReady
-      && config.eventSmsOutboxSupported
-    const webPushReady = config.webPushEnabled
-      && config.webPushFirstMessageReady
-      && config.webPushEventDeliveryReady
-      && config.webPushDeliveryReady
-
-    return { email: emailReady, sms: smsReady, webPush: webPushReady }
+    return { email: isNotificationChannelReady('email', config), sms: isNotificationChannelReady('sms', config), webPush: isNotificationChannelReady('web-push', config) }
   } catch {
     return unavailable
   }
 }
 
 export default defineEventHandler(event => {
+  setResponseHeader(event, 'cache-control', 'no-store')
   const database = (event.context._platform as { cloudflare?: { env?: { DB?: NotificationDatabase } } } | undefined)?.cloudflare?.env?.DB
   return projectNotificationReadiness(useRuntimeConfig(event), database)
 })

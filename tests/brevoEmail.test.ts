@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { composeBrevoEventEmail, eventIcs, sendBrevoEventEmail } from '../server/utils/brevoEmail.ts'
+import { composeBrevoEventEmail, composeBrevoLifecycleEmail, eventIcs, sendBrevoEventEmail, sendBrevoLifecycleEmail } from '../server/utils/brevoEmail.ts'
 
 const message = {
   deliveryId: 'opaque-delivery-id', recipient: 'operator@example.test', managementUrl: 'https://jednadvacet.org/notifications/manage/token', uid: 'event@jednadvacet.org', sequence: 2,
@@ -15,6 +15,26 @@ test('composer escapes HTML and creates a non-interactive PUBLISH attachment', (
   assert.match(composed.ics, /METHOD:PUBLISH/)
   assert.match(composed.ics, /SEQUENCE:2/)
   assert.doesNotMatch(composed.ics, /ATTENDEE/)
+})
+
+test('all lifecycle kinds carry the exact bounded HTTPS management link without event content', async () => {
+  const capability = 'a'.repeat(43)
+  for (const kind of ['first-activation', 'reactivation', 'management-recovery'] as const) {
+    const lifecycle = { destination: 'synthetic@example.test', capability, kind }
+    const content = composeBrevoLifecycleEmail(lifecycle)
+    assert.ok(content.text.includes(`https://jednadvacet.org/notifications/manage/${capability}`))
+    assert.ok(content.html.includes(`href="https://jednadvacet.org/notifications/manage/${capability}"`))
+    assert.ok(content.text.length < 512)
+    if (kind !== 'first-activation') assert.doesNotMatch(content.text, /je aktivní/)
+    let calls = 0
+    await sendBrevoLifecycleEmail({ apiKey: 'synthetic', senderName: 'Jednadvacet', senderEmail: 'noreply@jednadvacet.org' }, lifecycle, async (_url, request) => {
+      calls++
+      assert.deepEqual(Object.keys(JSON.parse(request!.body as string)).sort(), ['htmlContent', 'sender', 'subject', 'textContent', 'to'])
+      return new Response(JSON.stringify({ messageId: 'synthetic' }), { status: 201 })
+    })
+    assert.equal(calls, 1)
+  }
+  assert.throws(() => composeBrevoLifecycleEmail({ destination: 'synthetic@example.test', capability: '<script>', kind: 'first-activation' }))
 })
 
 test('composer preserves Czech UTF-8, stable revisions, and cancellation semantics in a CRLF attachment', () => {

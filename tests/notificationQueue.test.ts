@@ -1,28 +1,23 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import { consumeNotificationOutboxPointer, parseNotificationOutboxPointer, publishPendingNotificationPointers } from '../server/utils/notificationMessagesQueue.ts'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
-import { activateNotificationChannel, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
+import { activateNotificationChannel, confirmNotificationReactivation, isDeliveryEligible, readNotificationManagement, requestNotificationManagementRecovery, stopNotificationChannel, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 
 const Database = createRequire(import.meta.url)('better-sqlite3') as new (filename: string) => {
   exec(sql: string): void
   prepare(sql: string): { run(...values: unknown[]): unknown, get(...values: unknown[]): unknown, all(...values: unknown[]): unknown[] }
 }
 
-const schema = `
-  CREATE TABLE notification_contacts (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination TEXT NOT NULL, destination_hash TEXT NOT NULL, management_token_digest TEXT NOT NULL, capability_generation INTEGER NOT NULL, state TEXT NOT NULL, consent_at TEXT NOT NULL, consent_version TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(channel, destination));
-  CREATE TABLE notification_subscriptions (id INTEGER PRIMARY KEY AUTOINCREMENT, contact_id INTEGER NOT NULL, community_slug TEXT NOT NULL, frequency TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE(contact_id, community_slug, frequency));
-   CREATE TABLE notification_suppressions (id INTEGER PRIMARY KEY AUTOINCREMENT, channel TEXT NOT NULL, destination_hash TEXT NOT NULL, reason TEXT NOT NULL, suppressed_at TEXT NOT NULL, UNIQUE(channel, destination_hash));
-   CREATE TABLE notification_abuse_attempts (id INTEGER PRIMARY KEY AUTOINCREMENT, requester_hash TEXT NOT NULL, attempted_at TEXT NOT NULL, expires_at TEXT NOT NULL);
-    CREATE TABLE notification_outbox (id TEXT PRIMARY KEY, contact_id INTEGER NOT NULL, version INTEGER NOT NULL, expected_capability_generation INTEGER NOT NULL, status TEXT NOT NULL, claim_token TEXT, claim_expires_at TEXT, payload_ciphertext TEXT, payload_iv TEXT, kind TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, terminal_at TEXT);
-   CREATE TABLE notification_event_deliveries (id TEXT PRIMARY KEY, contact_id INTEGER NOT NULL, expected_capability_generation INTEGER NOT NULL, destination_hash TEXT NOT NULL, event_uid TEXT NOT NULL, event_revision INTEGER NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'submitted', 'delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed', 'failed')), provider_message_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, submitted_at TEXT);
- `
+const schema = readFileSync(new URL('../server/db/migrations/sqlite/0000_majestic_lightspeed.sql', import.meta.url), 'utf8')
 
 const disposableDatabase = (): { database: NotificationDatabase, query(sql: string): Record<string, unknown>[] } => {
   const sqlite = new Database(':memory:')
   sqlite.exec(schema)
+  sqlite.exec('PRAGMA foreign_keys = ON')
   const statement = (sql: string): NotificationStatement => {
     let values: unknown[] = []
     const result: NotificationStatement = {
@@ -36,16 +31,20 @@ const disposableDatabase = (): { database: NotificationDatabase, query(sql: stri
     }
     return result
   }
-  return { database: { prepare: statement, batch: async statements => { for (const item of statements) await item.run() } }, query: sql => sqlite.prepare(sql).all() as Record<string, unknown>[] }
+  return { database: { prepare: statement, batch: async statements => {
+    sqlite.exec('BEGIN')
+    try { for (const item of statements) await item.run(); sqlite.exec('COMMIT') }
+    catch (error) { sqlite.exec('ROLLBACK'); throw error }
+  } }, query: sql => sqlite.prepare(sql).all() as Record<string, unknown>[] }
 }
 
 const keyMaterial = new TextEncoder().encode('01234567890123456789012345678901')
 const root = btoa(String.fromCharCode(...keyMaterial)).replace(/=+$/g, '')
-const config = await notificationConfig({
+const config = { ...await notificationConfig({
   notificationCommunitySlugs: 'brno', notificationRootKey: root,
   notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
   notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
-})
+}), emailDeliveryReady: true }
 const predictableCrypto = { randomBytes: (length: number) => new Uint8Array(length), subtle: crypto.subtle }
 const input = { channel: 'email' as const, contact: 'alice@example.com', communitySlugs: ['brno'], frequencies: ['created'] as const, consentAt: '2026-09-17T00:00:00.000Z', consentVersion: '2026-09' }
 const pointerFor = (query: (sql: string) => Record<string, unknown>[]) => {
@@ -53,6 +52,270 @@ const pointerFor = (query: (sql: string) => Record<string, unknown>[]) => {
   return { outboxId: outbox!.id as string, version: outbox!.version as number }
 }
 const encode = (value: Uint8Array) => btoa(String.fromCharCode(...value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+const initialToken = encode(new Uint8Array(32))
+const pluginGlobals = globalThis as typeof globalThis & { defineNitroPlugin?: unknown }
+const previousPlugin = pluginGlobals.defineNitroPlugin
+pluginGlobals.defineNitroPlugin = () => undefined
+const { dispatchNotificationQueueMessage } = await import('../server/plugins/notificationMessagesQueue.ts')
+pluginGlobals.defineNitroPlugin = previousPlugin
+const syntheticRuntime = { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet' }
+
+test('real Queue dispatch sends a usable channel-scoped first email after durable signup and publication', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  const pointers: unknown[] = []
+  await publishPendingNotificationPointers({ send: async pointer => { pointers.push(pointer) } }, { database, config })
+  const requests: RequestInit[] = []
+  const result = await dispatchNotificationQueueMessage({ id: 'synthetic-message', body: pointers[0] }, { database, config }, { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet' }, async (_url, request) => {
+    requests.push(request!)
+    return new Response(JSON.stringify({ messageId: 'synthetic-provider-id' }), { status: 201 })
+  })
+  assert.deepEqual(result, { delivered: true, stale: false })
+  assert.equal(requests.length, 1)
+  const body = JSON.parse(requests[0]!.body as string)
+  assert.deepEqual(body.to, [{ email: input.contact }])
+  assert.deepEqual(body.sender, { name: 'Jednadvacet', email: 'noreply@jednadvacet.org' })
+  assert.equal(body.attachment, undefined)
+  assert.ok(body.textContent.includes(`https://jednadvacet.org/notifications/manage/${initialToken}`))
+  assert.equal((await readNotificationManagement(initialToken, { database, config })).state, 'active')
+  assert.equal(query('SELECT payload_ciphertext FROM notification_outbox')[0]!.payload_ciphertext, null)
+})
+
+test('real dispatch reaches pending reactivation and recovery without unsuppressing event work', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  await stopNotificationChannel(initialToken, { database, config })
+  await activateNotificationChannel(input, { database, config })
+  for (const kind of ['reactivation', 'management-recovery'] as const) {
+    if (kind === 'management-recovery') await requestNotificationManagementRecovery({ channel: 'email', contact: input.contact }, { database, config })
+    const [row] = query("SELECT id, version FROM notification_outbox WHERE status = 'pending'")
+    let capability = ''
+    await dispatchNotificationQueueMessage({ id: kind, body: { outboxId: row!.id, version: row!.version } }, { database, config }, syntheticRuntime, async (_url, request) => {
+      const body = JSON.parse(request!.body as string)
+      capability = body.textContent.match(/\/notifications\/manage\/([A-Za-z0-9_-]+)/)[1]
+      assert.doesNotMatch(body.textContent, /je aktivní/)
+      return new Response(JSON.stringify({ messageId: 'synthetic' }), { status: 201 })
+    })
+    assert.equal((await readNotificationManagement(capability, { database, config })).state, 'pending-reactivation')
+    const [contact] = query('SELECT destination_hash FROM notification_contacts')
+    assert.equal(await isDeliveryEligible({ channel: 'email', contactFingerprint: contact!.destination_hash as string, communitySlug: 'brno', frequency: 'created', now: new Date() }, { database, config }), false)
+    assert.equal(query('SELECT id FROM notification_suppressions').length, 1)
+    if (kind === 'management-recovery') {
+      assert.equal((await confirmNotificationReactivation(capability, { database, config })).state, 'active')
+      assert.equal(query('SELECT id FROM notification_suppressions').length, 0)
+    }
+  }
+})
+
+test('production email dispatch makes one attempt for every HTTP/fetch outcome and none after stop', async () => {
+  for (const status of [201, 202, 400, 401, 403, 429, 503, 'transport'] as const) {
+    const { database, query } = disposableDatabase()
+    await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+    const pointer = pointerFor(query)
+    let calls = 0
+    const fetcher: typeof fetch = async () => {
+      calls++
+      if (status === 'transport') throw new TypeError('synthetic transport')
+      return new Response(JSON.stringify({ messageId: 'synthetic' }), { status })
+    }
+    await dispatchNotificationQueueMessage({ id: 'attempt', body: pointer }, { database, config }, syntheticRuntime, fetcher)
+    assert.equal(calls, 1)
+    assert.deepEqual(await dispatchNotificationQueueMessage({ id: 'duplicate', body: pointer }, { database, config }, syntheticRuntime, fetcher), { delivered: false, stale: true })
+    assert.equal(calls, 1)
+    assert.equal(query('SELECT payload_ciphertext FROM notification_outbox')[0]!.payload_ciphertext, null)
+  }
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  const pointer = pointerFor(query)
+  let calls = 0
+  assert.deepEqual(await dispatchNotificationQueueMessage({ id: 'stopped', body: pointer }, { database, config, barriers: { afterClaimedAndDecrypted: async () => { await stopNotificationChannel(initialToken, { database, config }) } } }, syntheticRuntime, async () => { calls++; throw new Error('must not send') }), { delivered: false, stale: true })
+  assert.equal(calls, 0)
+})
+
+test('missing production adapter configuration and unattempted outcomes retain retryable work', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  const pointer = pointerFor(query)
+  await assert.rejects(dispatchNotificationQueueMessage({ id: 'missing', body: pointer }, { database, config }, {}, async () => { throw new Error('must not send') }))
+  await assert.rejects(consumeNotificationOutboxPointer(pointer, { database, config }, async () => ({ attempted: false, status: 'auth' })))
+  assert.equal(query('SELECT status FROM notification_outbox')[0]!.status, 'queued')
+  assert.equal(typeof query('SELECT payload_ciphertext FROM notification_outbox')[0]!.payload_ciphertext, 'string')
+})
+
+test('duplicate live leases retry, expired crashed claims reclaim, and terminal/version-stale pointers acknowledge', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  const pointer = pointerFor(query)
+  let entered!: () => void
+  let release!: () => void
+  const claimed = new Promise<void>(resolve => { entered = resolve })
+  const paused = new Promise<void>(resolve => { release = resolve })
+  let now = new Date('2026-10-04T00:00:00Z')
+  let calls = 0
+  const dependencies = { database, config, now: () => now }
+  const first = consumeNotificationOutboxPointer(pointer, { ...dependencies, barriers: { afterClaimedAndDecrypted: async () => { entered(); await paused } } }, async () => { calls++ })
+  await claimed
+  await assert.rejects(consumeNotificationOutboxPointer(pointer, dependencies, async () => { calls++ }), /live claim/)
+  now = new Date('2026-10-04T00:06:00Z')
+  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, dependencies, async () => { calls++ }), { delivered: true, stale: false })
+  release()
+  assert.deepEqual(await first, { delivered: false, stale: true })
+  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, dependencies, async () => { calls++ }), { delivered: false, stale: true })
+  assert.equal(calls, 1)
+  assert.equal(query('SELECT payload_ciphertext FROM notification_outbox')[0]!.payload_ciphertext, null)
+})
+
+test('lost final authority retires only the owned stale ciphertext and a post-call stop never resends', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  const pointer = pointerFor(query)
+  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config, now: () => new Date('2026-10-04T00:00:00Z'), barriers: { afterClaimedAndDecrypted: async () => { await database.prepare("UPDATE notification_outbox SET claim_expires_at = '2026-10-03T00:00:00Z'").run() } } }, async () => { throw new Error('must not send') }), { delivered: false, stale: true })
+  assert.deepEqual(query('SELECT status, payload_ciphertext, claim_token FROM notification_outbox'), [{ status: 'invalidated', payload_ciphertext: null, claim_token: null }])
+  await requestNotificationManagementRecovery({ channel: 'email', contact: input.contact }, { database, config })
+  const [row] = query("SELECT id, version FROM notification_outbox WHERE status = 'pending'")
+  const next = { outboxId: row!.id as string, version: row!.version as number }
+  let calls = 0
+  await dispatchNotificationQueueMessage({ id: 'post-call-stop', body: next }, { database, config }, syntheticRuntime, async (_url, request) => {
+    calls++
+    const capability = JSON.parse(request!.body as string).textContent.match(/\/manage\/([A-Za-z0-9_-]+)/)[1]
+    await stopNotificationChannel(capability, { database, config })
+    return new Response(JSON.stringify({ messageId: 'synthetic' }), { status: 201 })
+  })
+  await dispatchNotificationQueueMessage({ id: 'duplicate', body: next }, { database, config }, syntheticRuntime, async () => { calls++; throw new Error('must not send') })
+  assert.equal(calls, 1)
+})
+
+test('Web Push stop during awaited VAPID preparation denies the real transport boundary', async () => {
+  const { database, query } = disposableDatabase()
+  const vapid = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const publicKey = encode(new Uint8Array(await crypto.subtle.exportKey('raw', vapid.publicKey)))
+  const contact = JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: encode(new Uint8Array(await crypto.subtle.exportKey('raw', receiver.publicKey))), auth: encode(new Uint8Array(16)) } })
+  const pushConfig = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, webPushDelivery: { privateKey: vapid.privateKey, publicKey, subject: 'mailto:test@example.test' } }
+  await activateNotificationChannel({ ...input, channel: 'web-push', contact }, { database, config: pushConfig, crypto: predictableCrypto })
+  const sign = crypto.subtle.sign
+  let calls = 0
+  let signatures = 0
+  crypto.subtle.sign = async (...args) => {
+    signatures++
+    await stopNotificationChannel(initialToken, { database, config: pushConfig })
+    return sign.apply(crypto.subtle, args)
+  }
+  try {
+    assert.deepEqual(await dispatchNotificationQueueMessage({ id: 'push', body: pointerFor(query) }, { database, config: pushConfig }, {}, async () => { calls++; return new Response(null, { status: 201 }) }), { delivered: false, stale: true })
+    assert.equal(signatures, 1)
+    assert.equal(calls, 0)
+    assert.equal(query('SELECT payload_ciphertext FROM notification_outbox')[0]!.payload_ciphertext, null)
+  } finally { crypto.subtle.sign = sign }
+})
+
+test('final transport authorization infrastructure failure retries without an email attempt', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  let reads = 0
+  const failingDatabase: NotificationDatabase = { ...database, prepare: sql => {
+    const statement = database.prepare(sql)
+    if (sql.startsWith('SELECT o.expected_capability_generation')) {
+      const first = statement.first
+      statement.first = async <T>() => {
+        if (++reads === 2) throw new Error('Synthetic D1 outage')
+        return first<T>()
+      }
+    }
+    return statement
+  } }
+  let calls = 0
+  await assert.rejects(dispatchNotificationQueueMessage({ id: 'outage', body: pointerFor(query) }, { database: failingDatabase, config }, syntheticRuntime, async () => { calls++; return new Response(null, { status: 201 }) }), /Synthetic D1 outage/)
+  assert.equal(calls, 0)
+  assert.equal(query('SELECT status FROM notification_outbox')[0]!.status, 'queued')
+})
+
+test('provider suppression, pending event work, and mismatched outbox/payload kinds fail final authorization and scrub', async () => {
+  for (const reason of ['provider-bounce', 'provider-complaint', 'provider-opt-out', 'event-pending', 'kind-mismatch'] as const) {
+    const { database, query } = disposableDatabase()
+    await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+    await stopNotificationChannel(initialToken, { database, config })
+    await activateNotificationChannel(input, { database, config })
+    const [row] = query("SELECT id, version FROM notification_outbox WHERE status = 'pending'")
+    const pointer = { outboxId: row!.id as string, version: row!.version as number }
+    if (reason.startsWith('provider-')) await database.prepare('UPDATE notification_suppressions SET reason = ?').bind(reason).run()
+    if (reason === 'kind-mismatch') await database.prepare("UPDATE notification_outbox SET kind = 'first-activation' WHERE id = ?").bind(pointer.outboxId).run()
+    if (reason === 'event-pending') {
+      const encrypted = await encryptedEventPayload('pending-event')
+      const [contact] = query('SELECT id, destination_hash FROM notification_contacts')
+      await database.prepare("UPDATE notification_outbox SET kind = 'event-email', payload_ciphertext = ?, payload_iv = ? WHERE id = ?").bind(encrypted.ciphertext, encrypted.iv, pointer.outboxId).run()
+      await database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind('pending-event', contact!.id, 1, contact!.destination_hash, 'pending@jednadvacet.org', 1, 'created', 'pending', '2026-10-04', '2026-10-04').run()
+    }
+    let calls = 0
+    assert.deepEqual(await dispatchNotificationQueueMessage({ id: reason, body: pointer }, { database, config }, syntheticRuntime, async () => { calls++; throw new Error('must not send') }), { delivered: false, stale: true })
+    assert.equal(calls, 0)
+    assert.deepEqual(query(`SELECT status, payload_ciphertext, claim_token FROM notification_outbox WHERE id = '${pointer.outboxId}'`), [{ status: 'invalidated', payload_ciphertext: null, claim_token: null }])
+  }
+})
+
+test('pending recovery/repeated signup at decrypt barriers revoke claimed and queued work atomically', async () => {
+  for (const transition of ['recovery', 'signup'] as const) {
+    const { database, query } = disposableDatabase()
+    await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+    await stopNotificationChannel(initialToken, { database, config })
+    await activateNotificationChannel(input, { database, config })
+    let published!: { outboxId: string, version: number }
+    await publishPendingNotificationPointers({ send: async pointer => { published = pointer } }, { database, config })
+    assert.deepEqual(await consumeNotificationOutboxPointer(published, { database, config, barriers: { afterClaimedAndDecrypted: async () => {
+      if (transition === 'recovery') await requestNotificationManagementRecovery({ channel: 'email', contact: input.contact }, { database, config })
+      else await activateNotificationChannel(input, { database, config })
+    } } }, async () => { throw new Error('must not send') }), { delivered: false, stale: true })
+    assert.deepEqual(query(`SELECT status, payload_ciphertext FROM notification_outbox WHERE id = '${published.outboxId}'`), [{ status: 'invalidated', payload_ciphertext: null }])
+    assert.deepEqual(query("SELECT expected_capability_generation FROM notification_outbox WHERE status = 'pending'"), [{ expected_capability_generation: 2 }])
+  }
+})
+
+test('Web Push transient provider outcomes retain the ciphertext for Queue retry', async () => {
+  for (const status of ['rate-limited', 'provider-5xx', 'transport'] as const) {
+    const { database, query } = disposableDatabase()
+    const ready = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
+    await activateNotificationChannel({ ...input, channel: 'web-push', contact: '{}' }, { database, config: ready, crypto: predictableCrypto })
+    await assert.rejects(consumeNotificationOutboxPointer(pointerFor(query), { database, config: ready }, async () => ({ attempted: true, status })), /retryable/)
+    const [row] = query('SELECT status, payload_ciphertext, claim_token FROM notification_outbox')
+    assert.equal(row!.status, 'queued')
+    assert.equal(typeof row!.payload_ciphertext, 'string')
+    assert.equal(row!.claim_token, null)
+  }
+})
+
+test('real SMS signup/recovery dispatch carries a usable SMS-only management link and stop revokes it', async () => {
+  const { database, query } = disposableDatabase()
+  const ready = { ...config, emailSmsEnabled: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true }
+  const contact = '+420777123456'
+  await activateNotificationChannel({ ...input, channel: 'sms', contact }, { database, config: ready })
+  let firstToken = ''
+  for (const kind of ['first-activation', 'management-recovery'] as const) {
+    if (kind === 'management-recovery') await requestNotificationManagementRecovery({ channel: 'sms', contact }, { database, config: ready })
+    const [row] = query("SELECT id, version FROM notification_outbox WHERE status = 'pending'")
+    let token = ''
+    let calls = 0
+    await dispatchNotificationQueueMessage({ id: kind, body: { outboxId: row!.id, version: row!.version } }, { database, config: ready }, syntheticRuntime, async (url, request) => {
+      calls++
+      assert.equal(url, 'https://api.brevo.com/v3/transactionalSMS/send')
+      const body = JSON.parse(request!.body as string)
+      assert.equal(body.recipient, contact)
+      assert.equal(body.type, 'transactional')
+      token = body.content.match(/https:\/\/jednadvacet.org\/notifications\/manage\/([A-Za-z0-9_-]+)/)[1]
+      return new Response(JSON.stringify({ messageId: 'synthetic-sms' }), { status: 201 })
+    })
+    assert.equal(calls, 1)
+    const management = await readNotificationManagement(token, { database, config: ready })
+    assert.equal(management.state, 'active')
+    if (management.state !== 'unavailable') assert.equal(management.channel, 'sms')
+    if (kind === 'first-activation') firstToken = token
+    else {
+      assert.equal((await readNotificationManagement(firstToken, { database, config: ready })).state, 'unavailable')
+      await stopNotificationChannel(token, { database, config: ready })
+      assert.equal((await readNotificationManagement(token, { database, config: ready })).state, 'unavailable')
+    }
+  }
+  assert.deepEqual(query('SELECT channel, reason FROM notification_suppressions'), [{ channel: 'sms', reason: 'user-stop' }])
+})
 const encryptedEventPayload = async (deliveryId: string, kind: 'event-email' | 'event-sms' = 'event-email') => {
   const iv = new Uint8Array(12)
   const plaintext = new TextEncoder().encode(JSON.stringify({
@@ -111,11 +374,8 @@ test('stop or rotation committed after Queue acceptance makes the original point
       crypto: predictableCrypto,
       barriers: {
         afterPublished: async pointer => {
-          if (transition === 'stop') await database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL WHERE id = ? AND version = ?').bind('invalidated', pointer.outboxId, pointer.version).run()
-          else {
-            await database.prepare('UPDATE notification_contacts SET capability_generation = capability_generation + 1').run()
-            await database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL WHERE id = ? AND version = ?').bind('invalidated', pointer.outboxId, pointer.version).run()
-          }
+          if (transition === 'stop') await stopNotificationChannel(initialToken, { database, config })
+          else await requestNotificationManagementRecovery({ channel: 'email', contact: input.contact }, { database, config })
         },
       },
     })
@@ -134,7 +394,7 @@ test('stop or rotation committed after Queue acceptance makes the original point
     assert.deepEqual(await consumeNotificationOutboxPointer(sent[0] as { outboxId: string, version: number }, { database, config, crypto: cryptoWithDecryptSpy }, async () => { calls += 1 }), { delivered: false, stale: true })
     assert.equal(calls, 0)
     assert.equal(decrypts, 0, `${transition} committed after enqueue must prevent decryption`)
-    assert.deepEqual(query('SELECT status, payload_ciphertext FROM notification_outbox'), [{ status: 'invalidated', payload_ciphertext: null }])
+    assert.deepEqual(query(`SELECT status, payload_ciphertext FROM notification_outbox WHERE id = '${(sent[0] as { outboxId: string }).outboxId}'`), [{ status: 'invalidated', payload_ciphertext: null }])
   }
 })
 
@@ -160,12 +420,11 @@ test('stop committed after claim and decryption denies the provider hook', async
     config,
     crypto: {
       randomBytes: predictableCrypto.randomBytes,
-      subtle: { ...crypto.subtle, decrypt: async (...args: Parameters<SubtleCrypto['decrypt']>) => { decrypts += 1; return crypto.subtle.decrypt(...args) } } as SubtleCrypto,
+      subtle: { digest: crypto.subtle.digest.bind(crypto.subtle), decrypt: async (...args: Parameters<SubtleCrypto['decrypt']>) => { decrypts += 1; return crypto.subtle.decrypt(...args) } } as SubtleCrypto,
     },
     barriers: {
       afterClaimedAndDecrypted: async () => {
-        await database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT channel, destination_hash, ?, ? FROM notification_contacts').bind('user-stop', '2026-09-17T00:00:01.000Z').run()
-        await database.prepare('DELETE FROM notification_contacts').run()
+        await stopNotificationChannel(initialToken, { database, config })
       },
     },
   }, async () => { calls += 1 })
@@ -186,11 +445,11 @@ test('rotation committed after claim and decryption denies the provider hook', a
     config,
     crypto: {
       randomBytes: predictableCrypto.randomBytes,
-      subtle: { ...crypto.subtle, decrypt: async (...args: Parameters<SubtleCrypto['decrypt']>) => { decrypts += 1; return crypto.subtle.decrypt(...args) } } as SubtleCrypto,
+      subtle: { digest: crypto.subtle.digest.bind(crypto.subtle), decrypt: async (...args: Parameters<SubtleCrypto['decrypt']>) => { decrypts += 1; return crypto.subtle.decrypt(...args) } } as SubtleCrypto,
     },
     barriers: {
       afterClaimedAndDecrypted: async () => {
-        await database.prepare('UPDATE notification_contacts SET capability_generation = capability_generation + 1').run()
+        await requestNotificationManagementRecovery({ channel: 'email', contact: input.contact }, { database, config })
       },
     },
   }, async () => { calls += 1 })
@@ -212,7 +471,7 @@ test('pre-delivery failures release the exact claim so repeated Queue pointers r
   assert.equal(typeof outbox!.payload_ciphertext, 'string')
 })
 
-test('retryable and terminal provider results never write unsupported delivery statuses', async () => {
+test('attempted event email rate limiting is terminal and never writes unsupported delivery statuses', async () => {
   const { database, query } = disposableDatabase()
   const eventConfig = { ...config, emailDeliveryReady: true }
   await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
@@ -224,17 +483,15 @@ test('retryable and terminal provider results never write unsupported delivery s
     database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(deliveryId, 1, 1, 'hash', 'brno-1@jednadvacet.org', 1, 'created', 'pending', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'),
   ])
 
-  await assert.rejects(consumeNotificationOutboxPointer(pointer, { database, config: eventConfig, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'rate-limited' })))
-  assert.deepEqual(query('SELECT status FROM notification_event_deliveries'), [{ status: 'pending' }])
-  assert.deepEqual(query('SELECT status FROM notification_outbox'), [{ status: 'queued' }])
-
-  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config: eventConfig, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'invalid-request' })), { delivered: true, stale: false })
+  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config: eventConfig, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'rate-limited' })), { delivered: true, stale: false })
   assert.deepEqual(query('SELECT status FROM notification_event_deliveries'), [{ status: 'failed' }])
+  assert.deepEqual(query('SELECT status, payload_ciphertext FROM notification_outbox'), [{ status: 'consumed', payload_ciphertext: null }])
 })
 
-test('lifecycle provider failures retry transient results and retain terminal failure evidence', async () => {
+test('SMS lifecycle provider failures retry transient results and retain terminal failure evidence', async () => {
   const { database, query } = disposableDatabase()
-  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  const smsConfig = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true }
+  await activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: smsConfig, crypto: predictableCrypto })
   const pointer = pointerFor(query)
 
   await assert.rejects(consumeNotificationOutboxPointer(pointer, { database, config, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'provider-5xx' })))
@@ -263,22 +520,11 @@ test('a stale lifecycle Web Push endpoint is suppressed and removed', async () =
   assert.deepEqual(query('SELECT id FROM notification_contacts'), [])
 })
 
-test('future SMS event delivery uses SMS readiness without requiring email readiness', async () => {
+test('SMS activation is blocked by the actual unsupported event schema despite provider flags', async () => {
   const { database, query } = disposableDatabase()
   const smsConfig = { ...config, emailSmsEnabled: false, emailSmsEventDeliveryReady: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true }
-  await activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: smsConfig, crypto: predictableCrypto })
-  const pointer = pointerFor(query)
-  const deliveryId = 'sms-event-delivery-id'
-  const encrypted = await encryptedEventPayload(deliveryId, 'event-sms')
-  await database.batch([
-    database.prepare('UPDATE notification_outbox SET kind = ?, payload_ciphertext = ?, payload_iv = ? WHERE id = ?').bind('event-sms', encrypted.ciphertext, encrypted.iv, pointer.outboxId),
-    database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(deliveryId, 1, 1, 'hash', 'brno-1@jednadvacet.org', 1, 'created', 'pending', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'),
-  ])
-  let deliveries = 0
-
-  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config: smsConfig, crypto: predictableCrypto }, async () => { deliveries += 1; return { attempted: true, status: 'submitted' } }), { delivered: true, stale: false })
-  assert.equal(deliveries, 1)
-  assert.deepEqual(query('SELECT status FROM notification_event_deliveries'), [{ status: 'submitted' }])
+  await assert.rejects(activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: smsConfig, crypto: predictableCrypto }), error => (error as { statusCode: number }).statusCode === 503)
+  assert.deepEqual(query('SELECT id FROM notification_contacts'), [])
 })
 
 test('scheduled drain publishes bounded pointers and consumer failures remain retryable', async () => {

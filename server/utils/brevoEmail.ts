@@ -1,4 +1,5 @@
 import type { CalendarEventProjection } from './calendarEventProjection.ts'
+import type { LifecycleNotificationMessagePayload } from './notificationMessagesQueue.ts'
 
 export interface BrevoEmailConfig {
   apiKey: string
@@ -67,6 +68,37 @@ export const composeBrevoEventEmail = (message: BrevoEventEmail) => {
 }
 
 const boundedMessageId = (value: unknown) => typeof value === 'object' && value !== null && 'messageId' in value && typeof value.messageId === 'string' && value.messageId.length <= 256 ? value.messageId : undefined
+
+export const composeBrevoLifecycleEmail = (message: LifecycleNotificationMessagePayload) => {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(message.capability)) throw new Error('Notification management capability is invalid')
+  const url = `https://jednadvacet.org/notifications/manage/${message.capability}`
+  const lead = message.kind === 'first-activation'
+    ? 'Odběr e-mailových upozornění je aktivní. Tady můžeš změnit nastavení nebo odběr ukončit.'
+    : message.kind === 'reactivation'
+      ? 'Chceš obnovit e-mailová upozornění? Otevři nastavení a potvrď obnovení. Do té doby ti upozornění na akce nepošleme.'
+      : 'Tady je tvůj nový odkaz na nastavení e-mailových upozornění. Předchozí odkaz už neplatí. Pokud čekáš na obnovení odběru, potvrď ho v nastavení.'
+  return {
+    subject: message.kind === 'reactivation' ? 'Potvrď obnovení upozornění' : 'Nastavení e-mailových upozornění',
+    text: `${lead}\n\nNastavení odběru: ${url}`,
+    html: `<p>${escapeHtml(lead)}</p><p><a href="${escapeHtml(url)}">Nastavení odběru</a></p>`,
+  }
+}
+
+/** Lifecycle mail has no event attachment and makes exactly one transport attempt. */
+export const sendBrevoLifecycleEmail = async (config: BrevoEmailConfig, message: LifecycleNotificationMessagePayload, fetcher: typeof fetch = fetch): Promise<BrevoAttemptResult> => {
+  if (config.senderEmail !== 'noreply@jednadvacet.org' || !config.apiKey.trim() || !config.senderName.trim()) return { attempted: false, status: 'auth' }
+  const content = composeBrevoLifecycleEmail(message)
+  try {
+    const response = await fetcher('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST', headers: { 'api-key': config.apiKey, 'content-type': 'application/json', ...(config.sandbox ? { 'X-Sib-Sandbox': 'drop' } : {}) },
+      body: JSON.stringify({ sender: { name: config.senderName, email: config.senderEmail }, to: [{ email: message.destination }], subject: content.subject, textContent: content.text, htmlContent: content.html }),
+    })
+    let data: unknown
+    try { data = await response.json() } catch { data = undefined }
+    if (response.status === 201 || response.status === 202) return { attempted: true, status: boundedMessageId(data) ? 'submitted' : 'invalid-request', httpStatus: response.status, providerMessageId: boundedMessageId(data) }
+    return { attempted: true, status: response.status === 429 ? 'rate-limited' : response.status === 401 || response.status === 403 ? 'auth' : response.status >= 500 ? 'provider-5xx' : 'invalid-request', httpStatus: response.status }
+  } catch { return { attempted: true, status: 'transport' } }
+}
 
 /** Makes exactly one Worker-native transactional request and never returns provider response text. */
 export const sendBrevoEventEmail = async (config: BrevoEmailConfig, message: BrevoEventEmail, fetcher: typeof fetch = fetch): Promise<BrevoAttemptResult> => {
