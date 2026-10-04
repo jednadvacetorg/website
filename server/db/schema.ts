@@ -63,12 +63,15 @@ export const notificationOutbox = sqliteTable('notification_outbox', {
 }, table => [
   index('notification_outbox_contact_status_idx').on(table.contactId, table.status),
   check('notification_outbox_status_check', sql`${table.status} IN ('pending', 'queued', 'claimed', 'consumed', 'invalidated')`),
-  check('notification_outbox_kind_check', sql`${table.kind} IN ('first-activation', 'reactivation', 'management-recovery', 'event-email')`),
+  check('notification_outbox_kind_check', sql`${table.kind} IN ('first-activation', 'reactivation', 'management-recovery', 'event-email', 'event-sms', 'event-web-push')`),
 ])
 
 export const notificationEventDeliveries = sqliteTable('notification_event_deliveries', {
   id: text('id').primaryKey(),
   contactId: integer('contact_id').references(() => notificationContacts.id, { onDelete: 'set null' }),
+  channel: text('channel').notNull().default('email'),
+  communitySlug: text('community_slug'),
+  eligibilityFrequency: text('eligibility_frequency'),
   expectedCapabilityGeneration: integer('expected_capability_generation').notNull(),
   destinationHash: text('destination_hash').notNull(),
   eventUid: text('event_uid').notNull(),
@@ -82,6 +85,10 @@ export const notificationEventDeliveries = sqliteTable('notification_event_deliv
 }, table => [
   uniqueIndex('notification_event_deliveries_dedupe_unique').on(table.contactId, table.eventUid, table.eventRevision, table.reason),
   index('notification_event_deliveries_status_idx').on(table.status),
+  index('notification_event_deliveries_authority_idx').on(table.contactId, table.channel, table.communitySlug, table.eligibilityFrequency),
+  check('notification_event_deliveries_channel_check', sql`${table.channel} IN ('email', 'sms', 'web-push')`),
+  check('notification_event_deliveries_frequency_check', sql`${table.eligibilityFrequency} IN ('created', 'week-before', 'day-before')`),
+  check('notification_event_deliveries_reason_check', sql`${table.reason} IN ('created', 'week-before', 'day-before', 'updated', 'cancelled')`),
   check('notification_event_deliveries_status_check', sql`${table.status} IN ('pending', 'submitted', 'delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed', 'failed')`),
 ])
 
