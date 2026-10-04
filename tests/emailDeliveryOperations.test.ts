@@ -38,7 +38,9 @@ const fixture = async (t: TestContext) => {
     triggers: { crons: ['13 * * * *'] }, observability: { logs: { enabled: true, persist: true, invocation_logs: true } },
   }
   const configBytes = JSON.stringify(config)
-  const migrationBytes = await readFile(new URL('../server/db/migrations/sqlite/0000_majestic_lightspeed.sql', import.meta.url), 'utf8')
+  const migrationNames = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_phase_7_constraints']
+  const migrationBytes = await Promise.all(migrationNames.map(name => readFile(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')))
+  const migrationPaths = ['migration.sql', 'columns.sql', 'constraints.sql']
   const moduleBytes = 'import "./chunk.mjs"; export default {}'
   const chunkBytes = 'export const message = "candidate"'
   const manifestBytes = '{"/asset.css":{"hash":"asset-byte-hash","size":12}}'
@@ -49,19 +51,20 @@ const fixture = async (t: TestContext) => {
     managementBaseUrl: 'https://jednadvacet.org/notifications/manage/', callbackUrl: 'https://jednadvacet.org/api/notifications/brevo-events',
     spfValue: 'v=spf1 include:spf.sendinblue.com ~all',
     configHash: sha(configBytes), bundleHash: sha(JSON.stringify({ modules: [['chunk.mjs', sha(chunkBytes)], ['index.mjs', sha(moduleBytes)]], assetsHash: sha(manifestBytes) })),
-    migrationHash: sha(JSON.stringify([['0000_majestic_lightspeed', sha(migrationBytes)]])),
+    migrationHash: sha(JSON.stringify(migrationNames.map((name, index) => [name, sha(migrationBytes[index]!)]))),
   }
   const options: operations.EmailVerificationOptions = { mode: 'preflight', target: 'production', configPath: join(directory, 'wrangler.json'), expectationsPath: join(directory, 'expectations.json'), artifactsPath: join(directory, 'artifacts.json'), expectedSwitch: false }
   const save = (name: string, value: unknown) => writeFile(join(directory, name), typeof value === 'string' ? value : JSON.stringify(value))
   await Promise.all([
     save('wrangler.json', configBytes), save('expectations.json', expected), save('index.mjs', moduleBytes), save('chunk.mjs', chunkBytes),
-    save('assets.json', manifestBytes), save('migration.sql', migrationBytes),
-    save('artifacts.json', { modules: [{ name: 'index.mjs' }, { name: 'chunk.mjs' }], assetsManifest: join(directory, 'assets.json'), migrations: [{ name: '0000_majestic_lightspeed', path: join(directory, 'migration.sql') }] }),
+    save('assets.json', manifestBytes), ...migrationPaths.map((path, index) => save(path, migrationBytes[index]!)),
+    save('artifacts.json', { modules: [{ name: 'index.mjs' }, { name: 'chunk.mjs' }], assetsManifest: join(directory, 'assets.json'), migrations: migrationNames.map((name, index) => ({ name, path: join(directory, migrationPaths[index]!) })) }),
   ])
   const sqlite = new Database(':memory:')
   t.after(() => sqlite.close())
-  sqlite.exec(migrationBytes)
-  sqlite.exec('PRAGMA foreign_keys = ON; CREATE TABLE _hub_migrations (name TEXT); INSERT INTO _hub_migrations VALUES (\'0000_majestic_lightspeed\');')
+  for (const sql of migrationBytes) sqlite.exec(sql)
+  sqlite.exec('PRAGMA foreign_keys = ON; CREATE TABLE _hub_migrations (name TEXT);')
+  for (const name of migrationNames) sqlite.prepare('INSERT INTO _hub_migrations VALUES (?)').run(name)
   sqlite.exec("INSERT INTO notification_contacts (id, channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (1, 'email', 'suppression@example.test', 'synthetic-hash', 'synthetic-digest', 1, 'active', '2026-10-04', '1', '2026-10-04', '2026-10-04'); INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, provider_message_id, created_at, updated_at) VALUES ('suppression_delivery_123', 1, 1, 'synthetic-hash', 'synthetic-event', 0, 'created', 'submitted', 'message_123456789', '2026-10-04', '2026-10-04'); INSERT INTO notification_outbox (id, contact_id, expected_capability_generation, version, status, payload_ciphertext, payload_iv, kind, created_at, updated_at) VALUES ('outbox_123456789', 1, 1, 1, 'queued', 'encrypted', 'iv', 'event-email', '2026-10-04', '2026-10-04');")
   sqlite.exec("INSERT INTO notification_contacts (id, channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (2, 'email', 'final@example.test', 'final-hash', 'final-digest', 1, 'active', '2026-10-04', '1', '2026-10-04', '2026-10-04'); INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, provider_message_id, created_at, updated_at) VALUES ('final_delivery_123456', 2, 1, 'final-hash', 'final-event', 0, 'created', 'pending', NULL, '2026-10-04', '2026-10-04')")
   const executions = new WeakMap<NotificationStatement, () => unknown>()
