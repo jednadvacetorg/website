@@ -58,12 +58,32 @@ export default defineNuxtConfig({
     '@nuxt/content',
     '@nuxt/ui',
     '@nuxt/image',
+    '@nuxt/fonts',
+    'nuxt-og-image',
     '@nuxthub/core',
     '@nuxtjs/sitemap',
     '@vueuse/nuxt',
     './shared/contentRedirectsModule',
     'nuxt-studio'
   ],
+
+  fonts: {
+    families: [
+      { name: 'Ubuntu', weights: [400, 700], styles: ['italic'], global: true },
+    ],
+  },
+
+  ogImage: {
+    defaults: {
+      extension: 'png',
+    },
+    // Czech titles need latin-ext glyphs (ě, š, č, ř, ž, ý, á, í, é, ú, ů, ó, ď, ť, ň).
+    fontSubsets: ['latin', 'latin-ext'],
+    security: {
+      // Must cover the 3840px YouTube 4K export (default limit is 2048px).
+      maxDimension: 3840,
+    },
+  },
 
   site: {
     url: 'https://jednadvacet.org',
