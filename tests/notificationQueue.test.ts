@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
+import { createECDH, createDecipheriv, hkdfSync } from 'node:crypto'
 import test from 'node:test'
 
 import { consumeNotificationOutboxPointer, parseNotificationOutboxPointer, publishPendingNotificationPointers } from '../server/utils/notificationMessagesQueue.ts'
@@ -15,7 +16,7 @@ const Database = createRequire(import.meta.url)('better-sqlite3') as new (filena
   prepare(sql: string): { run(...values: unknown[]): unknown, get(...values: unknown[]): unknown, all(...values: unknown[]): unknown[] }
 }
 
-const schema = readFileSync(new URL('../server/db/migrations/sqlite/0000_majestic_lightspeed.sql', import.meta.url), 'utf8')
+const schema = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_phase_7_constraints'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
 
 const disposableDatabase = (): { database: NotificationDatabase, query(sql: string): Record<string, unknown>[] } => {
   const sqlite = new Database(':memory:')
@@ -67,6 +68,203 @@ const calendarEvent: PortalCalendarEvent = {
   event: { id: '12', title: 'Synthetic meetup', start: '2026-10-12T12:00:00.000Z', end: null, location: 'Synthetic venue', tags: [] },
   community: { id: 'brno', path: '/brno', title: 'Brno' }, sequence: 4, changedAt: '2026-10-04T00:00:00.000Z', cancelled: false,
 }
+
+const jointFixture = async () => {
+  const fixture = disposableDatabase()
+  const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const vapid = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const contact = { endpoint: 'https://push.example.test/subscription', keys: { p256dh: encode(new Uint8Array(await crypto.subtle.exportKey('raw', receiver.publicKey))), auth: encode(new Uint8Array(16)) } }
+  const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true, webPushDelivery: { privateKey: vapid.privateKey, publicKey: encode(new Uint8Array(await crypto.subtle.exportKey('raw', vapid.publicKey))), subject: 'mailto:test@example.test' } }
+  const dependencies = { database: fixture.database, config: ready, now: () => new Date('2026-10-04T10:00:00Z') }
+  for (const channel of ['email', 'sms', 'web-push'] as const) await activateNotificationChannel({ ...input, channel, contact: channel === 'email' ? input.contact : channel === 'sms' ? '+420777123456' : contact }, dependencies)
+  return { ...fixture, dependencies, receiver, contact }
+}
+
+test('actual single planner dispatches three transports, encrypted push is independently visible and SMS stop leaves siblings', async () => {
+  const { database, query, dependencies, receiver, contact } = await jointFixture()
+  assert.equal((await planEventNotifications([calendarEvent], dependencies)).planned, 3)
+  const rows = query("SELECT id, version, kind, payload_ciphertext, payload_iv FROM notification_outbox WHERE kind LIKE 'event-%'")
+  assert.equal(rows.length, 3)
+  const called: string[] = []
+  let smsToken = ''
+  for (const row of rows) {
+    const outbox = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: Buffer.from(row.payload_iv as string, 'base64url') }, config.outboxTransportKey, Buffer.from(row.payload_ciphertext as string, 'base64url'))))
+    assert.equal((await readNotificationManagement(outbox.managementCapability, dependencies)).state, 'active')
+    if (row.kind === 'event-sms') smsToken = outbox.managementCapability
+    const fetcher: typeof fetch = async (url, request) => {
+      called.push(row.kind as string)
+      if (row.kind === 'event-web-push') {
+        assert.equal(String(url), contact.endpoint)
+        const body = Buffer.from(request!.body as Uint8Array)
+        const ecdh = createECDH('prime256v1')
+        ecdh.setPrivateKey(Buffer.from((await crypto.subtle.exportKey('jwk', receiver.privateKey)).d!, 'base64url'))
+        const shared = ecdh.computeSecret(body.subarray(21, 86))
+        const ikm = hkdfSync('sha256', shared, Buffer.from(contact.keys.auth, 'base64url'), Buffer.concat([Buffer.from('WebPush: info\0'), Buffer.from(contact.keys.p256dh, 'base64url'), body.subarray(21, 86)]), 32)
+        const cek = hkdfSync('sha256', Buffer.from(ikm), body.subarray(0, 16), Buffer.from('Content-Encoding: aes128gcm\0'), 16)
+        const nonce = hkdfSync('sha256', Buffer.from(ikm), body.subarray(0, 16), Buffer.from('Content-Encoding: nonce\0'), 12)
+        const decipher = createDecipheriv('aes-128-gcm', Buffer.from(cek), Buffer.from(nonce))
+        decipher.setAuthTag(body.subarray(-16))
+        const plaintext = Buffer.concat([decipher.update(body.subarray(86, -16)), decipher.final()])
+        assert.equal(plaintext.at(-1), 2)
+        assert.deepEqual(JSON.parse(plaintext.subarray(0, -1).toString()), { title: 'Jednadvacet.org', body: calendarEvent.event.title, url: '/kalendar' })
+        return new Response(null, { status: 201 })
+      }
+      const body = JSON.parse(request!.body as string)
+      if (row.kind === 'event-sms') { assert.equal(body.type, 'transactional'); assert.ok(body.content.length <= 160); return new Response(JSON.stringify({ messageId: 12345 }), { status: 201 }) }
+      assert.equal(body.attachment.length, 1)
+      return new Response(JSON.stringify({ messageId: 'synthetic_message_123' }), { status: 201 })
+    }
+    assert.equal((await dispatchNotificationQueueMessage({ id: 'joint', body: { outboxId: row.id, version: row.version } }, dependencies, syntheticRuntime, fetcher)).delivered, true)
+    await dispatchNotificationQueueMessage({ id: 'duplicate', body: { outboxId: row.id, version: row.version } }, dependencies, syntheticRuntime, fetcher)
+  }
+  assert.deepEqual(called.sort(), ['event-email', 'event-sms', 'event-web-push'])
+  assert.deepEqual(query('SELECT channel, status FROM notification_event_deliveries ORDER BY channel'), ['email', 'sms', 'web-push'].map(channel => ({ channel, status: 'submitted' })))
+  await requestNotificationManagementRecovery({ channel: 'sms', contact: '+420777123456' }, dependencies)
+  const [recovery] = query("SELECT id, version FROM notification_outbox WHERE kind = 'management-recovery' AND status = 'pending'")
+  await dispatchNotificationQueueMessage({ id: 'recovery', body: { outboxId: recovery!.id, version: recovery!.version } }, dependencies, syntheticRuntime, async (_url, request) => {
+    smsToken = JSON.parse(request!.body as string).content.match(/\/manage\/([A-Za-z0-9_-]+)/)[1]
+    return new Response(JSON.stringify({ messageId: 12346 }), { status: 201 })
+  })
+  await planEventNotifications([{ ...calendarEvent, event: { ...calendarEvent.event, location: 'New venue' }, changedAt: '2026-10-05T00:00:00Z' }], dependencies)
+  await database.prepare("UPDATE notification_outbox SET status = 'queued' WHERE kind = 'event-sms' AND status = 'pending'").run()
+  await stopNotificationChannel(smsToken, dependencies)
+  assert.deepEqual(query('SELECT channel FROM notification_contacts ORDER BY channel'), [{ channel: 'email' }, { channel: 'web-push' }])
+  assert.deepEqual(query('SELECT channel, reason FROM notification_suppressions'), [{ channel: 'sms', reason: 'user-stop' }])
+  assert.equal(query("SELECT count(*) n FROM notification_outbox WHERE kind = 'event-sms' AND status IN ('pending', 'queued', 'claimed')")[0]!.n, 0)
+  assert.equal(query("SELECT count(*) n FROM notification_outbox WHERE kind IN ('event-email', 'event-web-push') AND status = 'pending'")[0]!.n, 2)
+})
+
+test('SMS and push event retries reserve each attempt, clear only owned transient attempts and retire current stale devices', async () => {
+  for (const kind of ['event-sms', 'event-web-push']) {
+    const { query, dependencies } = await jointFixture()
+    await planEventNotifications([calendarEvent], dependencies)
+    const [row] = query(`SELECT id, version FROM notification_outbox WHERE kind = '${kind}'`)
+    const pointer = { outboxId: row!.id, version: row!.version }
+    let calls = 0
+    await assert.rejects(dispatchNotificationQueueMessage({ id: 'retry', body: pointer }, dependencies, syntheticRuntime, async () => { calls++; return new Response(null, { status: 429 }) }), /retryable/)
+    assert.equal(query(`SELECT submitted_at FROM notification_event_deliveries WHERE channel = '${kind === 'event-sms' ? 'sms' : 'web-push'}'`)[0]!.submitted_at, null)
+    const result = await dispatchNotificationQueueMessage({ id: 'second', body: pointer }, dependencies, syntheticRuntime, async () => { calls++; return kind === 'event-sms' ? new Response(JSON.stringify({ messageId: 456 }), { status: 201 }) : new Response(null, { status: 410 }) })
+    assert.equal(calls, 2)
+    assert.equal(result.delivered, kind === 'event-sms')
+    if (kind === 'event-web-push') {
+      assert.deepEqual(query('SELECT channel FROM notification_contacts ORDER BY channel'), [{ channel: 'email' }, { channel: 'sms' }])
+      assert.deepEqual(query('SELECT channel, reason FROM notification_suppressions'), [{ channel: 'web-push', reason: 'provider-opt-out' }])
+    }
+  }
+})
+
+test('all event channels deny stopped, expired and exact-frequency work at the final actual fetch boundary', async () => {
+  for (const kind of ['event-email', 'event-sms', 'event-web-push']) for (const change of ['frequency', 'lease', 'expired', 'stop', 'generation']) {
+    const { database, query, dependencies, contact } = await jointFixture()
+    await planEventNotifications([calendarEvent], dependencies)
+    const [row] = query(`SELECT id, version, contact_id, payload_ciphertext, payload_iv FROM notification_outbox WHERE kind = '${kind}'`)
+    const payload = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: Buffer.from(row!.payload_iv as string, 'base64url') }, config.outboxTransportKey, Buffer.from(row!.payload_ciphertext as string, 'base64url'))))
+    let calls = 0
+    const result = await dispatchNotificationQueueMessage({ id: 'race', body: { outboxId: row!.id, version: row!.version } }, { ...dependencies, now: change === 'expired' ? () => new Date('2026-10-13T00:00:00Z') : dependencies.now, barriers: { afterClaimedAndDecrypted: async () => {
+      if (change === 'frequency') await database.prepare("UPDATE notification_subscriptions SET frequency = 'day-before' WHERE contact_id = ?").bind(row!.contact_id).run()
+      if (change === 'lease') await database.prepare("UPDATE notification_outbox SET claim_expires_at = '2026-10-03T00:00:00Z' WHERE id = ?").bind(row!.id).run()
+      if (change === 'stop') await stopNotificationChannel(payload.managementCapability, dependencies)
+      if (change === 'generation') await requestNotificationManagementRecovery({ channel: kind === 'event-email' ? 'email' : kind === 'event-sms' ? 'sms' : 'web-push', contact: kind === 'event-email' ? input.contact : kind === 'event-sms' ? '+420777123456' : contact }, dependencies)
+    } } }, syntheticRuntime, async () => { calls++; return new Response(null, { status: 201 }) })
+    assert.equal(calls, 0, `${kind} ${change}`)
+    assert.deepEqual(result, { delivered: false, stale: true })
+  }
+})
+
+test('actual 404/410 delayed after recovery or stop cannot retire a replacement generation or sibling channel', async () => {
+  for (const status of [404, 410]) for (const kind of ['first-activation', 'event-web-push']) for (const action of ['recovery', 'stop']) {
+    const { query, dependencies, contact } = await jointFixture()
+    await planEventNotifications([calendarEvent], dependencies)
+    const [row] = query(`SELECT o.id, o.version, o.payload_ciphertext, o.payload_iv FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id WHERE c.channel = 'web-push' AND o.kind = '${kind}'`)
+    const payload = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: Buffer.from(row!.payload_iv as string, 'base64url') }, config.outboxTransportKey, Buffer.from(row!.payload_ciphertext as string, 'base64url'))))
+    let calls = 0
+    await dispatchNotificationQueueMessage({ id: 'late', body: { outboxId: row!.id, version: row!.version } }, dependencies, syntheticRuntime, async () => {
+      calls++
+      if (action === 'recovery') await requestNotificationManagementRecovery({ channel: 'web-push', contact }, dependencies)
+      else await stopNotificationChannel(payload.capability ?? payload.managementCapability, dependencies)
+      return new Response(null, { status })
+    })
+    assert.equal(calls, 1)
+    if (action === 'recovery') {
+      assert.deepEqual(query("SELECT capability_generation FROM notification_contacts WHERE channel = 'web-push'"), [{ capability_generation: 2 }])
+      assert.deepEqual(query('SELECT channel FROM notification_suppressions'), [])
+      assert.equal(query("SELECT count(*) n FROM notification_outbox WHERE kind = 'management-recovery' AND status = 'pending'")[0]!.n, 1)
+    } else assert.deepEqual(query('SELECT channel, reason FROM notification_suppressions'), [{ channel: 'web-push', reason: 'user-stop' }])
+    assert.equal(query("SELECT count(*) n FROM notification_contacts WHERE channel IN ('email', 'sms')")[0]!.n, 2)
+    assert.equal((await planEventNotifications([calendarEvent], dependencies)).planned, kind === 'first-activation' && action === 'recovery' ? 1 : 0, 'only never-invoked event work may repair after recovery')
+  }
+})
+
+test('push event stop while awaiting VAPID signs denies fetch after encryption, and stale retirement rolls back atomically', async () => {
+  const { query, dependencies } = await jointFixture()
+  await planEventNotifications([calendarEvent], dependencies)
+  const [row] = query("SELECT id, version, payload_ciphertext, payload_iv FROM notification_outbox WHERE kind = 'event-web-push'")
+  const payload = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: Buffer.from(row!.payload_iv as string, 'base64url') }, config.outboxTransportKey, Buffer.from(row!.payload_ciphertext as string, 'base64url'))))
+  const sign = crypto.subtle.sign
+  let calls = 0
+  crypto.subtle.sign = async (...args) => { await stopNotificationChannel(payload.managementCapability, dependencies); return sign.apply(crypto.subtle, args) }
+  try {
+    assert.deepEqual(await dispatchNotificationQueueMessage({ id: 'crypto-stop', body: { outboxId: row!.id, version: row!.version } }, dependencies, syntheticRuntime, async () => { calls++; return new Response(null, { status: 201 }) }), { delivered: false, stale: true })
+    assert.equal(calls, 0)
+  } finally { crypto.subtle.sign = sign }
+  const next = await jointFixture()
+  await planEventNotifications([calendarEvent], next.dependencies)
+  const [event] = next.query("SELECT id, version FROM notification_outbox WHERE kind = 'event-web-push'")
+  const failing: NotificationDatabase = { ...next.database, prepare: sql => {
+    const statement = next.database.prepare(sql)
+    if (sql.startsWith('DELETE FROM notification_contacts')) statement.run = async () => { throw new Error('Synthetic retirement failure') }
+    return statement
+  } }
+  await assert.rejects(dispatchNotificationQueueMessage({ id: 'rollback', body: { outboxId: event!.id, version: event!.version } }, { ...next.dependencies, database: failing }, syntheticRuntime, async () => new Response(null, { status: 410 })), /Synthetic retirement failure/)
+  assert.equal(next.query('SELECT count(*) n FROM notification_contacts')[0]!.n, 3)
+  assert.deepEqual(next.query('SELECT channel FROM notification_suppressions'), [])
+  assert.equal(next.query("SELECT status FROM notification_outbox WHERE kind = 'event-web-push'")[0]!.status, 'queued')
+})
+
+test('exact event authority rejects scope, frequency, revision, start, kind, generation and expiration changes', async () => {
+  for (const mutation of [
+    "UPDATE notification_subscriptions SET community_slug = 'praha'",
+    "UPDATE notification_subscriptions SET frequency = 'day-before'",
+    'UPDATE notification_event_state SET notification_revision = 9',
+    "UPDATE notification_event_state SET starts_at = '2026-10-13T12:00:00.000Z'",
+    'UPDATE notification_event_state SET cancelled = 1',
+    "UPDATE notification_event_deliveries SET channel = 'sms'",
+    "UPDATE notification_event_deliveries SET community_slug = NULL",
+    "UPDATE notification_management_capabilities SET expires_at = '2026-10-03T00:00:00Z'",
+    "UPDATE notification_outbox SET kind = 'event-sms' WHERE kind = 'event-email'",
+    'UPDATE notification_contacts SET capability_generation = 9',
+  ]) {
+    const { database, query } = disposableDatabase()
+    const dependencies = { database, config, now: () => new Date('2026-10-04T10:00:00Z') }
+    await activateNotificationChannel(input, dependencies)
+    await planEventNotifications([calendarEvent], dependencies)
+    const [row] = query("SELECT id, version FROM notification_outbox WHERE kind = 'event-email'")
+    let calls = 0
+    const result = await dispatchNotificationQueueMessage({ id: 'exact', body: { outboxId: row!.id, version: row!.version } }, { ...dependencies, barriers: { afterClaimedAndDecrypted: async () => { await database.prepare(mutation).run() } } }, syntheticRuntime, async () => { calls++; return new Response(null, { status: 201 }) })
+    assert.equal(calls, 0, mutation)
+    assert.deepEqual(result, { delivered: false, stale: true })
+  }
+})
+
+test('late stale push response cannot suppress a recovered device generation', async () => {
+  for (const eventWork of [false, true]) {
+    const { database, query } = disposableDatabase()
+    const contact = { endpoint: 'https://push.example.test/subscription', keys: { p256dh: 'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4', auth: 'BTBZMqHH6r4Tts7J_aSIgg' } }
+    const ready = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true }
+    const dependencies = { database, config: ready, now: () => new Date('2026-10-04T10:00:00Z') }
+    await activateNotificationChannel({ ...input, channel: 'web-push', contact }, dependencies)
+    if (eventWork) await planEventNotifications([calendarEvent], dependencies)
+    const [row] = query(`SELECT id, version FROM notification_outbox WHERE kind = '${eventWork ? 'event-web-push' : 'first-activation'}'`)
+    await consumeNotificationOutboxPointer({ outboxId: row!.id as string, version: row!.version as number }, dependencies, async (_payload, _authorization, authorize) => {
+      assert.equal(await authorize(), true)
+      await requestNotificationManagementRecovery({ channel: 'web-push', contact }, dependencies)
+      return { attempted: true, status: 'stale-endpoint', httpStatus: 410 }
+    })
+    assert.deepEqual(query('SELECT channel, capability_generation FROM notification_contacts'), [{ channel: 'web-push', capability_generation: 2 }])
+    assert.deepEqual(query('SELECT channel FROM notification_suppressions'), [])
+    assert.equal(query("SELECT count(*) n FROM notification_outbox WHERE kind = 'management-recovery' AND status = 'pending'")[0]!.n, 1)
+  }
+})
 
 test('actual event dispatch and callbacks converge in both orders without overwriting terminal evidence or retrying', async () => {
   for (const callbackKind of ['delivered', 'hard-bounce', 'complaint', 'unsubscribed'] as const) {
@@ -577,18 +775,14 @@ test('pre-delivery failures release the exact claim so repeated Queue pointers r
 test('attempted event email rate limiting is terminal and never writes unsupported delivery statuses', async () => {
   const { database, query } = disposableDatabase()
   const eventConfig = { ...config, emailDeliveryReady: true }
-  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
-  const pointer = pointerFor(query)
-  const deliveryId = 'event-delivery-id'
-  const encrypted = await encryptedEventPayload(deliveryId)
-  await database.batch([
-    database.prepare('UPDATE notification_outbox SET kind = ?, payload_ciphertext = ?, payload_iv = ? WHERE id = ?').bind('event-email', encrypted.ciphertext, encrypted.iv, pointer.outboxId),
-    database.prepare('INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(deliveryId, 1, 1, 'hash', 'brno-1@jednadvacet.org', 1, 'created', 'pending', '2026-09-17T00:00:00.000Z', '2026-09-17T00:00:00.000Z'),
-  ])
-
-  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config: eventConfig, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'rate-limited' })), { delivered: true, stale: false })
+  const dependencies = { database, config: eventConfig, now: () => new Date('2026-10-04T10:00:00Z') }
+  await activateNotificationChannel(input, dependencies)
+  await planEventNotifications([calendarEvent], dependencies)
+  const [row] = query("SELECT id, version FROM notification_outbox WHERE kind = 'event-email'")
+  const pointer = { outboxId: row!.id as string, version: row!.version as number }
+  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, dependencies, async () => ({ attempted: true, status: 'rate-limited' })), { delivered: true, stale: false })
   assert.deepEqual(query('SELECT status FROM notification_event_deliveries'), [{ status: 'failed' }])
-  assert.deepEqual(query('SELECT status, payload_ciphertext FROM notification_outbox'), [{ status: 'consumed', payload_ciphertext: null }])
+  assert.deepEqual(query("SELECT status, payload_ciphertext FROM notification_outbox WHERE kind = 'event-email'"), [{ status: 'consumed', payload_ciphertext: null }])
 })
 
 test('SMS lifecycle provider failures retry transient results and retain terminal failure evidence', async () => {

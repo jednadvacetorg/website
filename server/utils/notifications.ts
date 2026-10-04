@@ -34,6 +34,8 @@ export interface NotificationLifecycleConfig {
   smsDeliveryReady: boolean
   /** False until a separately reviewed D1 migration adds event-sms to the outbox kind constraint. */
   eventSmsOutboxSupported: boolean
+  /** Unattested/absent is false until target-bound schema readiness is implemented. */
+  eventWebPushOutboxSupported?: boolean
   /** Complete, private, deployment-bound authority for external event email. */
   emailDeliveryReady: boolean
   brevoApiKey?: string

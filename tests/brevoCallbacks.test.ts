@@ -17,7 +17,7 @@ const callbackRoute = (await import('../server/api/notifications/brevo-events.po
 
 const createDatabase = () => {
   const sqlite = new Database(':memory:')
-  sqlite.exec(readFileSync(new URL('../server/db/migrations/sqlite/0000_majestic_lightspeed.sql', import.meta.url), 'utf8'))
+  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_phase_7_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
   sqlite.exec('PRAGMA foreign_keys = ON')
   const executions = new WeakMap<NotificationStatement, () => unknown>()
   const database: NotificationDatabase = {
@@ -65,6 +65,22 @@ const seedDelivery = (sqlite: Database.Database, status = 'pending') => {
   sqlite.prepare("INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES (?, 1, 7, 'hash_123456789', 'event@jednadvacet.org', 0, 'created', ?, '2026-09-21', '2026-09-21')").run('delivery_123456789', status)
   sqlite.prepare("INSERT INTO notification_outbox (id, contact_id, expected_capability_generation, version, status, payload_ciphertext, payload_iv, claim_token, claim_expires_at, kind, created_at, updated_at) VALUES ('outbox_123456789', 1, 7, 1, 'claimed', 'ciphertext', 'iv', 'claim', '2026-09-21T01:00:00.000Z', 'event-email', '2026-09-21', '2026-09-21')").run()
 }
+
+test('email callback cannot mutate SMS or push delivery evidence or contacts', async () => {
+  for (const channel of ['sms', 'web-push']) {
+    const { sqlite, database } = createDatabase()
+    seedDelivery(sqlite)
+    sqlite.prepare('UPDATE notification_contacts SET channel = ?').run(channel)
+    sqlite.prepare('UPDATE notification_event_deliveries SET channel = ?').run(channel)
+    assert.deepEqual(await applyBrevoCallback({ id: 'event_123456789', deliveryId: 'delivery_123456789', kind: 'unsubscribed', occurredAt: '2026-10-04' }, database), { applied: false, suppressed: false })
+    assert.equal(sqlite.prepare('SELECT status FROM notification_event_deliveries').get().status, 'pending')
+    assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_contacts').get().n, 1)
+    assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_delivery_callbacks').get().n, 0)
+    assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_suppressions').get().n, 0)
+    sqlite.close()
+  }
+  assert.equal(normalizeBrevoCallback({ event: 'sms_opt_out', id: 'event_123456789', deliveryId: 'delivery_123456789' }), undefined)
+})
 
 const callbackBody = (event: string, id = 'event_123456789') => JSON.stringify({
   id,

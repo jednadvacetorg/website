@@ -35,16 +35,15 @@ export interface LifecycleNotificationMessagePayload {
 
 export interface EventNotificationMessagePayload {
   destination: string
-  capability: string
   deliveryId: string
   managementCapability: string
   event: { title: string, description?: string, location?: string, url?: string, start: string, end: string, uid: string, sequence: number, cancelled?: boolean }
   reason: 'created' | 'week-before' | 'day-before' | 'updated' | 'cancelled'
-  kind: 'event-email' | 'event-sms'
+  kind: 'event-email' | 'event-sms' | 'event-web-push'
 }
 
 export type NotificationMessagePayload = LifecycleNotificationMessagePayload | EventNotificationMessagePayload
-export interface NotificationDeliveryAuthorization { expected_capability_generation: number, channel: 'email' | 'sms' | 'web-push' }
+export interface NotificationDeliveryAuthorization { expected_capability_generation: number, channel: 'email' | 'sms' | 'web-push', contact_id: number }
 export type NotificationDeliveryHook = (payload: NotificationMessagePayload, authorization: NotificationDeliveryAuthorization, authorize: () => Promise<boolean>) => Promise<void | BrevoAttemptResult | BrevoSmsAttemptResult | WebPushAttemptResult>
 
 interface PendingOutboxRow {
@@ -57,7 +56,7 @@ interface ClaimedOutboxRow {
   payload_iv: unknown
 }
 
-const allowedKinds = new Set<NotificationMessagePayload['kind']>(['first-activation', 'reactivation', 'management-recovery', 'event-email', 'event-sms'])
+const allowedKinds = new Set<NotificationMessagePayload['kind']>(['first-activation', 'reactivation', 'management-recovery', 'event-email', 'event-sms', 'event-web-push'])
 const retryableProviderStatuses = new Set(['rate-limited', 'provider-5xx', 'transport'])
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -89,8 +88,9 @@ const parsePayload = (plaintext: string): NotificationMessagePayload => {
     || typeof value.destination !== 'string' || !value.destination || !allowedKinds.has(value.kind as NotificationMessagePayload['kind'])) {
     throw new Error('Notification outbox payload is invalid')
   }
-  if (value.kind === 'event-email' || value.kind === 'event-sms') {
+  if (value.kind === 'event-email' || value.kind === 'event-sms' || value.kind === 'event-web-push') {
     if (Object.keys(value).length !== 6 || typeof value.deliveryId !== 'string' || !value.deliveryId || typeof value.managementCapability !== 'string' || !value.managementCapability || typeof value.reason !== 'string' || !['created', 'week-before', 'day-before', 'updated', 'cancelled'].includes(value.reason) || !isRecord(value.event) || typeof value.event.title !== 'string' || typeof value.event.start !== 'string' || typeof value.event.end !== 'string' || typeof value.event.uid !== 'string' || !Number.isSafeInteger(value.event.sequence)) throw new Error('Notification outbox payload is invalid')
+    if (!Number.isFinite(Date.parse(value.event.start)) || !Number.isFinite(Date.parse(value.event.end)) || (value.event.cancelled !== undefined && typeof value.event.cancelled !== 'boolean') || (value.event.url !== undefined && typeof value.event.url !== 'string')) throw new Error('Notification outbox payload is invalid')
     return value as unknown as EventNotificationMessagePayload
   }
   if (Object.keys(value).length !== 3 || typeof value.capability !== 'string' || !value.capability) throw new Error('Notification outbox payload is invalid')
@@ -140,16 +140,35 @@ const failClaim = async (pointer: NotificationOutboxPointer, token: string, auth
 }
 
 /** A 404/410 PushSubscription cannot recover; suppress and remove it with all pending work. */
-const removeStaleWebPushContact = async (pointer: NotificationOutboxPointer, authorization: NotificationDeliveryAuthorization, dependencies: NotificationQueueDependencies) => {
+const removeStaleWebPushContact = async (pointer: NotificationOutboxPointer, token: string, authorization: NotificationDeliveryAuthorization, dependencies: NotificationQueueDependencies) => {
   const now = nowIso(dependencies)
+  const guard = "EXISTS (SELECT 1 FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id WHERE o.id = ? AND o.version = ? AND o.status = 'claimed' AND o.claim_token = ? AND o.contact_id = ? AND o.expected_capability_generation = ? AND c.channel = 'web-push' AND c.capability_generation = o.expected_capability_generation)"
+  const values = [pointer.outboxId, pointer.version, token, authorization.contact_id, authorization.expected_capability_generation]
   await dependencies.database.batch([
-    dependencies.database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = (SELECT contact_id FROM notification_outbox WHERE id = ? AND version = ? AND status = ?) AND expected_capability_generation = ? AND status IN (?, ?, ?)')
-      .bind('invalidated', now, now, pointer.outboxId, pointer.version, 'claimed', authorization.expected_capability_generation, 'pending', 'queued', 'claimed'),
-    dependencies.database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT channel, destination_hash, ?, ? FROM notification_contacts WHERE id = (SELECT contact_id FROM notification_outbox WHERE id = ? AND status = ?) AND channel = ? ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = excluded.reason, suppressed_at = excluded.suppressed_at')
-      .bind('provider-opt-out', now, pointer.outboxId, 'invalidated', 'web-push'),
-    dependencies.database.prepare('DELETE FROM notification_contacts WHERE id = (SELECT contact_id FROM notification_outbox WHERE id = ? AND status = ?) AND channel = ?')
-      .bind(pointer.outboxId, 'invalidated', 'web-push'),
+    dependencies.database.prepare(`INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT channel, destination_hash, 'provider-opt-out', ? FROM notification_contacts WHERE id = ? AND ${guard} ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = excluded.reason, suppressed_at = excluded.suppressed_at`).bind(now, authorization.contact_id, ...values),
+    dependencies.database.prepare(`UPDATE notification_outbox SET version = version + 1, status = 'invalidated', payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = ? AND id <> ? AND status IN ('pending', 'queued', 'claimed') AND ${guard}`).bind(now, now, authorization.contact_id, pointer.outboxId, ...values),
+    dependencies.database.prepare(`UPDATE notification_event_deliveries SET status = 'failed', updated_at = ? WHERE contact_id = ? AND expected_capability_generation = ? AND channel = 'web-push' AND status = 'pending' AND ${guard}`).bind(now, authorization.contact_id, authorization.expected_capability_generation, ...values),
+    // Keep the owning outbox/claim intact until deletion has checked the same authority.
+    dependencies.database.prepare(`DELETE FROM notification_contacts WHERE id = ? AND channel = 'web-push' AND capability_generation = ? AND ${guard}`).bind(authorization.contact_id, authorization.expected_capability_generation, ...values),
+    // Last in the atomic batch: retire only the exact still-owned pointer, never rediscover through an invalidated row.
+    dependencies.database.prepare("UPDATE notification_outbox SET version = version + 1, status = 'invalidated', payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE id = ? AND version = ? AND status = 'claimed' AND claim_token = ? AND contact_id = ? AND expected_capability_generation = ? AND NOT EXISTS (SELECT 1 FROM notification_contacts WHERE id = ?)").bind(now, now, ...values, authorization.contact_id),
   ])
+}
+
+const eligibleFrequencies = (payload: EventNotificationMessagePayload, now: Date) => {
+  if (payload.reason === 'updated' || payload.reason === 'cancelled') return ['created', 'week-before', 'day-before']
+  const local = (date: Date) => {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23' }).formatToParts(date).filter(part => part.type !== 'literal').map(part => [part.type, part.value]))
+    return { day: Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)), hour: Number(parts.hour) }
+  }
+  const current = local(now)
+  const start = local(new Date(payload.event.start))
+  return ['created', 'week-before', 'day-before'].filter(frequency => {
+    if (frequency === 'created') return payload.reason === 'created'
+    if (payload.reason !== 'created' && payload.reason !== frequency) return false
+    const dueDay = start.day - (frequency === 'week-before' ? 7 : 1) * 86_400_000
+    return current.day > dueDay || (current.day === dueDay && current.hour >= 9)
+  })
 }
 
 const isProviderAttempt = (result: Awaited<ReturnType<NotificationDeliveryHook>>): result is Exclude<Awaited<ReturnType<NotificationDeliveryHook>>, void> =>
@@ -184,13 +203,27 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
     const plaintext = await cryptoApi.subtle.decrypt({ name: 'AES-GCM', iv: asBufferSource(decodeBase64Url(row.payload_iv)) }, dependencies.config.outboxTransportKey, asBufferSource(decodeBase64Url(row.payload_ciphertext)))
     payload = parsePayload(decoder.decode(plaintext))
     await dependencies.barriers?.afterClaimedAndDecrypted?.(pointer)
-    const eventPayload = payload.kind === 'event-email' || payload.kind === 'event-sms' ? payload : null
-    const capabilityDigest = eventPayload ? null : base64Url(new Uint8Array(await cryptoApi.subtle.digest('SHA-256', encoder.encode(payload.capability))))
+    const eventPayload = payload.kind === 'event-email' || payload.kind === 'event-sms' || payload.kind === 'event-web-push' ? payload : null
+    const capabilityDigest = base64Url(new Uint8Array(await cryptoApi.subtle.digest('SHA-256', encoder.encode('capability' in payload ? payload.capability : payload.managementCapability))))
     const authorizationSql = eventPayload
-      ? "SELECT o.expected_capability_generation, c.channel FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.state = ? AND c.capability_generation = o.expected_capability_generation JOIN notification_event_deliveries d ON d.id = ? AND d.contact_id = c.id AND d.expected_capability_generation = c.capability_generation AND d.status = ? AND (c.channel <> 'email' OR d.submitted_at IS NULL) JOIN notification_subscriptions sub ON sub.contact_id = c.id WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND o.kind = ? AND c.channel = ? AND c.destination = ? AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash) LIMIT 1"
-      : `SELECT o.expected_capability_generation, c.channel FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.capability_generation = o.expected_capability_generation WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND o.kind = ? AND c.destination = ? AND c.management_token_digest = ? AND ((c.state = 'active' AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash)) OR (c.state = 'pending-reactivation' AND o.kind IN ('reactivation', 'management-recovery') AND EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash AND s.reason = 'user-stop')))`
+      ? `SELECT o.expected_capability_generation, c.channel, c.id AS contact_id FROM notification_outbox o
+        JOIN notification_contacts c ON c.id = o.contact_id AND c.state = 'active' AND c.capability_generation = o.expected_capability_generation
+        JOIN notification_event_deliveries d ON d.id = ? AND d.contact_id = c.id AND d.channel = c.channel AND d.destination_hash = c.destination_hash AND d.expected_capability_generation = c.capability_generation AND d.status = 'pending' AND d.submitted_at IS NULL
+        JOIN notification_subscriptions sub ON sub.contact_id = c.id AND sub.community_slug = d.community_slug AND sub.frequency = d.eligibility_frequency
+        JOIN notification_event_state e ON e.uid = d.event_uid AND e.notification_revision = d.event_revision
+          AND CASE WHEN json_valid(e.event_key) THEN json_extract(e.event_key, '$[0]') END = d.community_slug
+        JOIN notification_management_capabilities cap ON cap.token_digest = ? AND cap.contact_id = c.id AND cap.expected_capability_generation = c.capability_generation
+        WHERE o.id = ? AND o.version = ? AND o.status = 'claimed' AND o.claim_token = ? AND o.claim_expires_at > ?
+          AND o.kind = ? AND o.kind = 'event-' || c.channel AND o.id = 'event-' || d.id || '-g' || c.capability_generation
+          AND c.destination = ? AND d.event_uid = ? AND d.event_revision = ? AND d.reason = ?
+          AND e.starts_at = ? AND e.ends_at = ? AND e.cancelled = ?
+          AND CASE WHEN e.cancelled = 1 THEN e.ends_at ELSE e.starts_at END > ? AND cap.expires_at > ?
+          AND d.eligibility_frequency IN (SELECT value FROM json_each(?)) AND d.community_slug IN (SELECT value FROM json_each(?))
+          AND (d.reason NOT IN ('updated', 'cancelled') OR EXISTS (SELECT 1 FROM notification_event_deliveries prior WHERE prior.contact_id = c.id AND prior.channel = c.channel AND prior.event_uid = d.event_uid AND prior.id <> d.id AND prior.status IN ('submitted', 'delivered')))
+          AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash) LIMIT 1`
+      : `SELECT o.expected_capability_generation, c.channel, c.id AS contact_id FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.capability_generation = o.expected_capability_generation WHERE o.id = ? AND o.version = ? AND o.status = ? AND o.claim_token = ? AND o.claim_expires_at > ? AND o.kind = ? AND c.destination = ? AND c.management_token_digest = ? AND ((c.state = 'active' AND NOT EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash)) OR (c.state = 'pending-reactivation' AND o.kind IN ('reactivation', 'management-recovery') AND EXISTS (SELECT 1 FROM notification_suppressions s WHERE s.channel = c.channel AND s.destination_hash = c.destination_hash AND s.reason = 'user-stop')))`
     const authorizationValues = () => eventPayload
-         ? ['active', eventPayload.deliveryId, 'pending', pointer.outboxId, pointer.version, 'claimed', token, nowIso(dependencies), payload.kind, payload.kind === 'event-email' ? 'email' : 'sms', payload.destination]
+         ? [eventPayload.deliveryId, capabilityDigest, pointer.outboxId, pointer.version, token, nowIso(dependencies), eventPayload.kind, eventPayload.destination, eventPayload.event.uid, eventPayload.event.sequence, eventPayload.reason, eventPayload.event.start, eventPayload.event.end, Number(eventPayload.reason === 'cancelled' && eventPayload.event.cancelled === true), nowIso(dependencies), nowIso(dependencies), JSON.stringify(eligibleFrequencies(eventPayload, dependencies.now?.() ?? new Date())), JSON.stringify(dependencies.config.communitySlugs)]
          : [pointer.outboxId, pointer.version, 'claimed', token, nowIso(dependencies), payload.kind, payload.destination, capabilityDigest]
     const readAuthorization = () => dependencies.database.prepare(authorizationSql).bind(...authorizationValues()).first<NotificationDeliveryAuthorization>()
     authorization = await readAuthorization()
@@ -198,10 +231,10 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
       try {
         const current = await readAuthorization()
         if (!current) authorizationLost = true
-        if (current && eventPayload?.kind === 'event-email') {
-          // Reserve the sole email attempt at the final transport boundary. Recovery
-          // must not mistake an in-flight call for unsent work. A crash after this CAS
-          // is inherently ambiguous; we conservatively refuse a second submission.
+        if (current && eventPayload) {
+          // Reserve every event attempt before transport so recovery cannot mistake
+          // in-flight work for unsent work. Only an owned SMS/push transient result
+          // clears this reservation; a process crash remains deliberately ambiguous.
           const attempt = await dependencies.database.prepare(`UPDATE notification_event_deliveries SET submitted_at = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND submitted_at IS NULL AND EXISTS (${authorizationSql})`).bind(nowIso(dependencies), nowIso(dependencies), eventPayload.deliveryId, ...authorizationValues()).run()
           if (changed(attempt) !== 1) authorizationLost = true
         }
@@ -217,13 +250,13 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
   }
   if (!authorization) {
     await dependencies.database.prepare('UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE id = ? AND version = ? AND status = ? AND claim_token = ?').bind('invalidated', nowIso(dependencies), nowIso(dependencies), pointer.outboxId, pointer.version, 'claimed', token).run()
-    if (payload.kind === 'event-email') await dependencies.database.prepare("UPDATE notification_event_deliveries SET status = 'failed', updated_at = ? WHERE id = ? AND status = 'pending' AND submitted_at IS NOT NULL").bind(nowIso(dependencies), payload.deliveryId).run()
+    if ('deliveryId' in payload) await dependencies.database.prepare("UPDATE notification_event_deliveries SET status = 'failed', updated_at = ? WHERE id = ? AND expected_capability_generation = (SELECT expected_capability_generation FROM notification_outbox WHERE id = ?) AND status = 'pending' AND submitted_at IS NOT NULL").bind(nowIso(dependencies), payload.deliveryId, pointer.outboxId).run()
     return { delivered: false, stale: true }
   }
 
   try {
     // A manual switch-off is terminal, not retryable backlog: nothing reaches Brevo.
-    if ((payload.kind === 'event-email' && !(dependencies.config.emailSmsEnabled && dependencies.config.emailSmsEventDeliveryReady && dependencies.config.emailDeliveryReady)) || (payload.kind === 'event-sms' && !(dependencies.config.smsEnabled && dependencies.config.smsEventDeliveryReady && dependencies.config.smsDeliveryReady))) {
+    if ((payload.kind === 'event-email' && !(dependencies.config.emailSmsEnabled && dependencies.config.emailSmsEventDeliveryReady && dependencies.config.emailDeliveryReady)) || (payload.kind === 'event-sms' && !(dependencies.config.smsEnabled && dependencies.config.smsEventDeliveryReady && dependencies.config.smsDeliveryReady && dependencies.config.eventSmsOutboxSupported)) || (payload.kind === 'event-web-push' && !(dependencies.config.webPushEnabled && dependencies.config.webPushEventDeliveryReady && dependencies.config.webPushDeliveryReady && dependencies.config.eventWebPushOutboxSupported))) {
       await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
         .bind('failed', nowIso(dependencies), payload.deliveryId, 'pending').run()
     } else {
@@ -233,22 +266,24 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
         await failClaim(pointer, token, authorization, dependencies)
         return { delivered: false, stale: true }
       }
-      if (isProviderAttempt(result) && !result.attempted) throw new Error('Notification provider invocation is unavailable')
-      if ((payload.kind === 'event-email' || payload.kind === 'event-sms') && isProviderAttempt(result)) {
-        if (authorization.channel !== 'email' && retryableProviderStatuses.has(result.status)) throw new Error('Notification provider delivery is retryable')
+      if (isProviderAttempt(result) && !result.attempted && result.status !== 'invalid-request') throw new Error('Notification provider invocation is unavailable')
+      if (isProviderAttempt(result) && result.status === 'stale-endpoint' && authorization.channel === 'web-push') {
+        await removeStaleWebPushContact(pointer, token, authorization, dependencies)
+        return { delivered: false, stale: false }
+      }
+      if (isProviderAttempt(result) && authorization.channel !== 'email' && retryableProviderStatuses.has(result.status)) {
+        if ('deliveryId' in payload) await dependencies.database.prepare("UPDATE notification_event_deliveries SET submitted_at = NULL WHERE id = ? AND expected_capability_generation = ? AND status = 'pending' AND EXISTS (SELECT 1 FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id AND c.capability_generation = o.expected_capability_generation WHERE o.id = ? AND o.version = ? AND o.status = 'claimed' AND o.claim_token = ? AND o.expected_capability_generation = ?)").bind(payload.deliveryId, authorization.expected_capability_generation, pointer.outboxId, pointer.version, token, authorization.expected_capability_generation).run()
+        throw new Error('Notification provider delivery is retryable')
+      }
+      if ('deliveryId' in payload && isProviderAttempt(result)) {
         const status = result.status === 'submitted' ? 'submitted' : 'failed'
         const providerMessageId = 'providerMessageId' in result ? result.providerMessageId : undefined
         // A callback can commit inside the send promise. Its status and provider ID
         // are already evidence, not provisional values for the response to overwrite.
-        await dependencies.database.prepare("UPDATE notification_event_deliveries SET status = CASE WHEN status = 'pending' THEN ? ELSE status END, provider_message_id = COALESCE(provider_message_id, ?), submitted_at = COALESCE(submitted_at, ?), updated_at = ? WHERE id = ? AND (provider_message_id IS NULL OR ? IS NULL OR provider_message_id = ?)")
-          .bind(status, providerMessageId ?? null, nowIso(dependencies), nowIso(dependencies), payload.deliveryId, providerMessageId ?? null, providerMessageId ?? null).run()
+        await dependencies.database.prepare("UPDATE notification_event_deliveries SET status = CASE WHEN status = 'pending' THEN ? ELSE status END, provider_message_id = COALESCE(provider_message_id, ?), submitted_at = COALESCE(submitted_at, ?), updated_at = ? WHERE id = ? AND channel = ? AND expected_capability_generation = ? AND (provider_message_id IS NULL OR ? IS NULL OR provider_message_id = ?)")
+          .bind(status, providerMessageId ?? null, nowIso(dependencies), nowIso(dependencies), payload.deliveryId, authorization.channel, authorization.expected_capability_generation, providerMessageId ?? null, providerMessageId ?? null).run()
       } else if (isProviderAttempt(result) && result.status !== 'submitted') {
-        if (authorization.channel !== 'email' && retryableProviderStatuses.has(result.status)) throw new Error('Notification provider delivery is retryable')
-        if (result.status === 'stale-endpoint' && authorization.channel === 'web-push') {
-          await removeStaleWebPushContact(pointer, authorization, dependencies)
-        } else {
-          await failClaim(pointer, token, authorization, dependencies)
-        }
+        await failClaim(pointer, token, authorization, dependencies)
         return { delivered: false, stale: false }
       }
     }
