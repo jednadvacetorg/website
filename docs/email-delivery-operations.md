@@ -14,6 +14,14 @@ Before a separately authorized remote migration, inspect the generated Worker ta
 
 ## Verification sequence
 
+The existing package command also supports credential-free candidate verification:
+
+```bash
+npm run verify:email-delivery -- local-preflight --channels email,sms,web-push --target local --config .output/server/wrangler.json --expectations /tmp/email-review/expected.json --artifacts /tmp/email-review/artifacts.json --expect-switch false
+```
+
+This reads only the three named inputs and their artifact inventory. It does not read environment credentials, discover authentication, execute Wrangler, request metadata, call a provider, or accept live evidence. It emits `local-candidate`, matching config/bundle/ordered migration hashes and `artifacts: passed`; all live and human gates remain pending. This is byte identity, not a migration rehearsal or an assertion that inventory includes every generated module. Independently review the inventory and run the migration/bundle verifier. The joint SMS/push boundary and observation-only multichannel readiness review are described in [SMS and Web Push operations](sms-web-push-delivery-operations.md).
+
 Run the local checks with fresh `/tmp` Content and Nuxt build paths and an owned empty dotenv file. Existing failing compiler/runtime diagnostics are blockers even if a tool returns zero:
 
 ```bash

@@ -5,12 +5,17 @@ import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 import { sendBrevoEventEmail } from '../server/utils/brevoEmail.ts'
+import { operationalEvidence, optionalVapidConfiguration } from '../server/utils/notificationConfig.ts'
+import { sendBrevoLifecycleSms } from '../server/utils/brevoSms.ts'
+import { sendWebPush } from '../server/utils/webPush.ts'
+import { parseWebPushSubscription } from '../server/utils/webPushSubscriptions.ts'
+import type { NotificationChannel } from '../server/utils/notifications.ts'
 
-export type EmailVerificationMode = 'preflight' | 'sandbox' | 'callback' | 'live-canary' | 'readiness'
+export type EmailVerificationMode = 'preflight' | 'sandbox' | 'callback' | 'live-canary' | 'readiness' | 'local-preflight'
 type EvidenceKind = 'local-candidate' | 'production-observation'
 type Gate = 'artifacts' | 'deployment' | 'bindings' | 'migration' | 'sender' | 'dns' | 'callbackMetadata' | 'https' | 'switch' | 'publicReadiness' | 'sandbox' | 'callback' | 'liveCanary' | 'humanInbox' | 'humanCalendar' | 'humanLink' | 'humanLogs'
 const gates: Gate[] = ['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'switch', 'publicReadiness', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs']
-const modes = new Set<EmailVerificationMode>(['preflight', 'sandbox', 'callback', 'live-canary', 'readiness'])
+const modes = new Set<EmailVerificationMode>(['preflight', 'sandbox', 'callback', 'live-canary', 'readiness', 'local-preflight'])
 const day = 24 * 60 * 60 * 1000
 const maximumBytes = 16 * 1024 * 1024
 const timeoutMs = 15_000
@@ -18,7 +23,8 @@ const callbackEvents = ['delivered', 'softBounce', 'hardBounce', 'blocked', 'spa
 
 export interface EmailVerificationOptions {
   mode: EmailVerificationMode
-  target: 'production'
+  target: 'production' | 'local'
+  channels?: NotificationChannel[]
   configPath: string
   expectationsPath: string
   artifactsPath: string
@@ -38,7 +44,10 @@ export interface EmailVerificationDependencies {
 }
 
 export interface EmailVerificationEvidence {
-  channel: 'email'
+  channel: NotificationChannel
+  channels?: NotificationChannel[]
+  channelReadiness?: Partial<Record<NotificationChannel, boolean>>
+  probe?: { acceptance: 'submitted', liveReceipt: 'pending', sharedManagementStop: 'pending', deliveryCallback: 'not-configured' | 'pending' }
   targetIdentity: string
   deploymentId: string
   bundleHash: string
@@ -123,7 +132,7 @@ export const parseEmailVerificationArgs = (args: string[]): EmailVerificationOpt
   const mode = args[0] as EmailVerificationMode
   const values = new Map<string, string>()
   const switches = new Set(['--authorize-probe', '--approve-readiness'])
-  const flags = new Set(['--target', '--config', '--expectations', '--artifacts', '--expect-switch', '--evidence', ...switches])
+  const flags = new Set(['--target', '--channels', '--config', '--expectations', '--artifacts', '--expect-switch', '--evidence', ...switches])
   check(modes.has(mode), 'Usage')
   for (let index = 1; index < args.length; index++) {
     const flag = args[index]!
@@ -136,13 +145,50 @@ export const parseEmailVerificationArgs = (args: string[]): EmailVerificationOpt
   check(['true', 'false'].includes(values.get('--expect-switch')!), 'Usage')
   check(!values.has('--authorize-probe') || ['sandbox', 'callback', 'live-canary'].includes(mode), 'Usage')
   check(!values.has('--approve-readiness') || mode === 'readiness', 'Usage')
-  check(!values.has('--evidence') || mode === 'readiness', 'Usage')
+  const channels = values.get('--channels')?.split(',') as NotificationChannel[] | undefined
+  const channelProbe = mode === 'live-canary' && channels?.length === 1 && channels[0] !== 'email'
+  check(!values.has('--evidence') || mode === 'readiness' || channelProbe, 'Usage')
+  if (channels) check(channels.length > 0 && new Set(channels).size === channels.length && channels.every(channel => ['email', 'sms', 'web-push'].includes(channel)) && (channels.join(',') === 'email' || channels.join(',') === 'email,sms,web-push' || channelProbe), 'Usage')
+  if (mode === 'local-preflight') check(values.get('--target') === 'local' && channels?.join(',') === 'email,sms,web-push' && values.get('--expect-switch') === 'false', 'Usage')
+  else if (channels?.length === 3) check(mode === 'readiness', 'Usage')
+  if (channelProbe) check(values.has('--authorize-probe') && values.has('--evidence') && values.get('--expect-switch') === 'false', 'Usage')
   return {
-    mode, target: emailVerificationTarget(values.get('--target')),
+    mode, target: mode === 'local-preflight' ? 'local' : emailVerificationTarget(values.get('--target')), channels,
     configPath: values.get('--config')!, expectationsPath: values.get('--expectations')!, artifactsPath: values.get('--artifacts')!,
     expectedSwitch: values.get('--expect-switch') === 'true', authorizeProbe: values.has('--authorize-probe'),
     approveReadiness: values.has('--approve-readiness'), evidencePath: values.get('--evidence'),
   }
+}
+
+// Same candidate byte contract for offline preflight and authenticated email checks.
+const candidateArtifacts = async (options: EmailVerificationOptions, read: (path: string) => Promise<Uint8Array>, expected: Record<string, unknown>, config: Record<string, unknown>) => {
+  const inventory = record(json(await read(options.artifactsPath)))
+  const root = dirname(resolve(options.configPath))
+  const modules = rows(inventory.modules)
+  check(modules.length > 0 && modules.length <= 1000, 'artifacts')
+  const moduleHashes: [string, string][] = []
+  for (const module of modules) {
+    const name = text(module.name, /^[A-Za-z0-9_./-]{1,256}$/)
+    check(!name.split('/').includes('..') && !name.startsWith('/') && !moduleHashes.some(([key]) => key === name), 'artifacts')
+    moduleHashes.push([name, hash(await read(resolve(root, name)))])
+  }
+  const main = text(config.main, /^[A-Za-z0-9_./-]{1,256}$/).replace(/^\.\//, '')
+  check(moduleHashes.some(([name]) => name === main), 'artifacts')
+  moduleHashes.sort(([left], [right]) => left.localeCompare(right))
+  const assetsHash = hash(await read(text(inventory.assetsManifest, /^.{1,1024}$/)))
+  const bundleHash = hash(JSON.stringify({ modules: moduleHashes, assetsHash }))
+  const migrations = rows(inventory.migrations)
+  check(migrations.length > 0 && migrations.length <= 100, 'artifacts')
+  const migrationHashes: [string, string][] = []
+  for (const migration of migrations) {
+    const name = text(migration.name)
+    check(!migrationHashes.some(([key]) => key === name), 'artifacts')
+    migrationHashes.push([name, hash(await read(text(migration.path, /^.{1,1024}$/)))])
+  }
+  check(migrationHashes.every(([name], index) => index === 0 || migrationHashes[index - 1]![0] < name), 'migration-order')
+  const migrationHash = hash(JSON.stringify(migrationHashes))
+  check(bundleHash === digest(expected.bundleHash) && migrationHash === digest(expected.migrationHash), 'artifact-hash')
+  return { main, moduleHashes, bundleHash, migrationHashes, migrationHash }
 }
 
 /** The only command shape this verifier can construct: read-only D1 SQL, no shell or write commands. */
@@ -155,6 +201,96 @@ export const runEmailVerification = async (options: EmailVerificationOptions, de
   // Never forward adapter, provider, file or command errors across this boundary.
   let stage = 'configuration'
   try {
+    if (options.mode === 'local-preflight' || options.channels?.some(channel => channel !== 'email')) {
+      const local = options.mode === 'local-preflight'
+      const probeChannel = options.channels?.length === 1 && ['sms', 'web-push'].includes(options.channels[0]!) && options.mode === 'live-canary' ? options.channels[0] : undefined
+      check(probeChannel || options.channels?.join(',') === 'email,sms,web-push', 'channels')
+      check(local ? options.target === 'local' && options.expectedSwitch === false && !options.authorizeProbe && !options.approveReadiness && !options.evidencePath : probeChannel ? options.target === 'production' && options.authorizeProbe && !options.expectedSwitch && options.evidencePath && !options.approveReadiness : options.mode === 'readiness' && options.target === 'production' && options.expectedSwitch && options.approveReadiness && options.evidencePath && dependencies.evidenceKind === 'production-observation', 'authorization')
+      const read = async (path: string) => {
+        const bytes = await bounded(dependencies.readFile(resolve(path)))
+        check(bytes.byteLength <= maximumBytes, 'size')
+        return bytes
+      }
+      const expected = record(json(await read(options.expectationsPath)))
+      const configBytes = await read(options.configPath)
+      const config = record(json(configBytes))
+      const configHash = hash(configBytes)
+      check(configHash === digest(expected.configHash), 'config-hash')
+      validateNotificationDeploymentConfiguration(config, 'production', {
+        worker: text(expected.worker), d1Id: text(expected.d1Id), d1Name: text(expected.d1Name), queue: text(expected.queue), dlq: text(expected.dlq),
+      })
+      stage = 'artifacts'
+      const { bundleHash, migrationHash } = await candidateArtifacts(options, read, expected, config)
+      const targetIdentity = hash(JSON.stringify({ accountId: text(expected.accountId), worker: text(expected.worker), d1Id: text(expected.d1Id), d1Name: text(expected.d1Name), queue: text(expected.queue), queueId: text(expected.queueId), dlq: text(expected.dlq), dlqId: text(expected.dlqId), zoneId: text(expected.zoneId) }))
+      const deploymentId = text(expected.deploymentId, /^[a-f0-9-]{36}$/)
+      const outcomes = Object.fromEntries(gates.map(gate => [gate, 'pending'])) as EmailVerificationEvidence['gates']
+      outcomes.artifacts = 'passed'
+      const channelReadiness: Partial<Record<NotificationChannel, boolean>> = {}
+      let evidenceExpiry = dependencies.now() + day
+      let probe: EmailVerificationEvidence['probe']
+      if (probeChannel) {
+        stage = 'probe'
+        const observation = record(json(await read(options.evidencePath!)))
+        check(observation.channel === probeChannel && observation.manualSwitch === false && observation.evidenceKind === dependencies.evidenceKind, 'probe-kind')
+        for (const [field, value] of Object.entries({ targetIdentity, deploymentId, bundleHash, migrationHash, configHash })) check(observation[field] === value, 'probe-identity')
+        const verified = Date.parse(String(observation.verifiedAt))
+        const expiry = Date.parse(String(observation.expiresAt))
+        const now = dependencies.now()
+        check(Number.isFinite(verified) && verified <= now && now - verified <= day && expiry > now && expiry > verified && expiry - verified <= day, 'probe-time')
+        evidenceExpiry = Math.min(evidenceExpiry, expiry)
+        const observedGates = record(observation.gates)
+        for (const gate of probeChannel === 'sms' ? ['account', 'credits', 'country', 'compliance', 'sender', 'sharedManagementStop'] : ['vapid', 'protocol', 'https', 'sharedManagementStop']) check(observedGates[gate] === 'passed', 'probe-gate')
+        // No unspecified callback contract is accepted or probed.
+        check(probeChannel !== 'sms' || observation.deliveryCallbacksConfigured === undefined || observation.deliveryCallbacksConfigured === false, 'probe-callback-contract')
+        const env = dependencies.environment
+        const capability = text(required(env, 'NOTIFICATION_VERIFY_MANAGEMENT_TOKEN'), /^[A-Za-z0-9_-]{43}$/)
+        const fetcher = (async (url, init) => {
+          const response = await bounded(dependencies.fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) }))
+          // Brevo's adapter consumes a response body; bound it before handing off.
+          if (probeChannel === 'web-push') return response
+          const reader = response.body?.getReader()
+          check(reader, 'probe-body')
+          return bounded((async () => {
+            const chunks: Uint8Array[] = []
+            let size = 0
+            try {
+              while (true) {
+                const { value, done } = await bounded(reader.read())
+                if (done) break
+                size += value.length
+                check(size <= 16_384, 'probe-size')
+                chunks.push(value)
+              }
+            } finally { void reader.cancel().catch(() => {}) }
+            return new Response(Buffer.concat(chunks), { status: response.status, headers: response.headers })
+          })())
+        }) as typeof fetch
+        const cryptoApi = { subtle: crypto.subtle, randomBytes: (length: number) => crypto.getRandomValues(new Uint8Array(length)) }
+        const vapid = probeChannel === 'web-push' ? await optionalVapidConfiguration({ notificationVapidPrivateKey: required(env, 'NUXT_NOTIFICATION_VAPID_PRIVATE_KEY'), notificationVapidPublicKey: required(env, 'NUXT_PUBLIC_NOTIFICATION_VAPID_PUBLIC_KEY'), notificationVapidSubject: required(env, 'NUXT_NOTIFICATION_VAPID_SUBJECT') }, cryptoApi) : undefined
+        if (probeChannel === 'web-push') check(vapid, 'probe-vapid')
+        const result = probeChannel === 'sms'
+          ? await sendBrevoLifecycleSms({ apiKey: required(env, 'NUXT_BREVO_API_KEY'), sender: required(env, 'NUXT_BREVO_SENDER_NAME') }, { recipient: required(env, 'NOTIFICATION_VERIFY_RECIPIENT'), capability, kind: 'management-recovery' }, fetcher)
+          : await sendWebPush(parseWebPushSubscription(json(required(env, 'NOTIFICATION_VERIFY_PUSH_SUBSCRIPTION'))), { title: 'Jednadvacet', body: 'Nastavení upozornění', url: `https://jednadvacet.org/notifications/manage/${capability}` }, vapid!, fetcher, new Date(now), cryptoApi)
+        check(result.attempted && result.status === 'submitted', 'probe-result')
+        probe = { acceptance: 'submitted', liveReceipt: 'pending', sharedManagementStop: 'pending', deliveryCallback: probeChannel === 'sms' ? 'not-configured' : 'pending' }
+      } else if (!local) {
+        stage = 'evidence'
+        // Private operator observations are checked with the very same runtime contract.
+        // No provider call or guessed SMS callback contract is constructed here.
+        const observations = record(json(await read(options.evidencePath!)))
+        check(observations.notificationSmsEnabled === true && observations.notificationWebPushEnabled === true, 'joint-switch')
+        for (const [field, value] of Object.entries({ TargetIdentity: targetIdentity, DeploymentId: deploymentId, BundleHash: bundleHash, MigrationHash: migrationHash, ConfigHash: configHash })) check(observations[`notificationExpected${field}`] === value, 'evidence-identity')
+        for (const channel of options.channels!) {
+          channelReadiness[channel] = (await operationalEvidence(channel, observations, { subtle: crypto.subtle, randomBytes: length => crypto.getRandomValues(new Uint8Array(length)) }, dependencies.now))()
+          check(channelReadiness[channel], 'evidence-gate')
+          const name = channel === 'web-push' ? 'WebPush' : channel === 'sms' ? 'Sms' : 'Email'
+          evidenceExpiry = Math.min(evidenceExpiry, Date.parse(String(record(json(String(observations[`notification${name}Evidence`]))).expiresAt)))
+        }
+      }
+      const verifiedAt = dependencies.now()
+      check(Number.isFinite(verifiedAt) && verifiedAt < evidenceExpiry, 'clock')
+      return { channel: probeChannel ?? 'email', channels: options.channels, channelReadiness, ...(probe ? { probe } : {}), targetIdentity, deploymentId, bundleHash, migrationHash, configHash, manualSwitch: !local && !probeChannel, verifiedAt: new Date(verifiedAt).toISOString(), expiresAt: new Date(evidenceExpiry).toISOString(), evidenceKind: 'local-candidate', mode: options.mode, gates: outcomes }
+    }
     check(modes.has(options.mode) && options.target === 'production' && typeof options.expectedSwitch === 'boolean', stage)
     check(['local-candidate', 'production-observation'].includes(dependencies.evidenceKind), stage)
     if (['sandbox', 'callback', 'live-canary'].includes(options.mode)) check(options.authorizeProbe && options.expectedSwitch === false, 'probe-authorization')
@@ -195,33 +331,7 @@ export const runEmailVerification = async (options: EmailVerificationOptions, de
     logging(config)
 
     stage = 'artifacts'
-    const inventory = record(json(await read(options.artifactsPath)))
-    const root = dirname(resolve(options.configPath))
-    const modules = rows(inventory.modules)
-    check(modules.length > 0 && modules.length <= 1000, stage)
-    const moduleHashes: [string, string][] = []
-    for (const module of modules) {
-      const name = text(module.name, /^[A-Za-z0-9_./-]{1,256}$/)
-      check(!name.split('/').includes('..') && !name.startsWith('/') && !moduleHashes.some(([key]) => key === name), stage)
-      moduleHashes.push([name, hash(await read(resolve(root, name)))])
-    }
-    const main = text(config.main, /^[A-Za-z0-9_./-]{1,256}$/).replace(/^\.\//, '')
-    check(moduleHashes.some(([name]) => name === main), stage)
-    moduleHashes.sort(([left], [right]) => left.localeCompare(right))
-    // This is the emitted assets manifest, not a claim that the files were uploaded.
-    const assetsHash = hash(await read(text(inventory.assetsManifest, /^.{1,1024}$/)))
-    const bundleHash = hash(JSON.stringify({ modules: moduleHashes, assetsHash }))
-    const migrations = rows(inventory.migrations)
-    check(migrations.length > 0 && migrations.length <= 100, stage)
-    const migrationHashes: [string, string][] = []
-    for (const migration of migrations) {
-      const name = text(migration.name)
-      check(!migrationHashes.some(([key]) => key === name), stage)
-      migrationHashes.push([name, hash(await read(text(migration.path, /^.{1,1024}$/)))])
-    }
-    check(migrationHashes.every(([name], index) => index === 0 || migrationHashes[index - 1]![0] < name), 'migration-order')
-    const migrationHash = hash(JSON.stringify(migrationHashes))
-    check(bundleHash === digest(expected.bundleHash) && migrationHash === digest(expected.migrationHash), 'artifact-hash')
+    const { main, moduleHashes, bundleHash, migrationHashes, migrationHash } = await candidateArtifacts(options, read, expected, config)
 
     const fetchResponse = async (url: string, init: RequestInit = {}) => bounded(dependencies.fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(timeoutMs) }))
     const responseBytes = (response: Response) => bounded((async () => {

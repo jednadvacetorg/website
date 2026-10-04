@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${1:-}" == '--config-isolation' ]]; then
+if [[ -z "${1:-}" || "${1:-}" == '--config-isolation' ]]; then
   evidence_dir="$(mktemp -d /tmp/notification-config-isolation-XXXXXXXX)"
   mkdir "$evidence_dir/home"
   worker_pid=''
@@ -25,7 +25,7 @@ if [[ "${1:-}" == '--config-isolation' ]]; then
   # and Wrangler auth profiles cannot enter either build or local execution.
   clean_env=(env -i "PATH=$PATH" "HOME=$evidence_dir/home" "TMPDIR=/tmp" NODE_ENV=production NODE_USE_ENV_PROXY=1 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 WRANGLER_SEND_METRICS=false)
   while IFS= read -r variable; do clean_env+=("$variable"); done < <(node --input-type=module <<'JS'
-import { randomBytes, generateKeyPairSync } from 'node:crypto'
+import { randomBytes, generateKeyPairSync, createHash } from 'node:crypto'
 const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
 const key = pair.privateKey.export({ format: 'jwk' })
 const publicKey = Buffer.concat([Buffer.from([4]), Buffer.from(key.x, 'base64url'), Buffer.from(key.y, 'base64url')]).toString('base64url')
@@ -53,6 +53,15 @@ const vars = {
   NUXT_BREVO_SANDBOX_VERIFIED: 'true', NUXT_BREVO_LIVE_CANARY_VERIFIED: 'true', NUXT_NOTIFICATION_PRODUCTION_BINDINGS_VERIFIED: 'true', NUXT_NOTIFICATION_MIGRATION_VERIFIED: 'true',
   NOTIFICATION_SYNTHETIC_PUSH_CONTACT: JSON.stringify({ endpoint: 'https://push.example.test/local-proof', expirationTime: null, keys: { p256dh: publicKey, auth: randomBytes(16).toString('base64url') } }),
 }
+// Structurally complete local attestations must be rejected because of kind,
+// rather than merely because invalid JSON or missing prerequisite fields fail.
+const identities = { targetIdentity: '1'.repeat(64), bundleHash: '2'.repeat(64), migrationHash: '3'.repeat(64), configHash: '4'.repeat(64), deploymentId: '11111111-1111-1111-1111-111111111111' }
+for (const [field, value] of Object.entries(identities)) vars[`NUXT_NOTIFICATION_EXPECTED_${field.replace(/[A-Z]/g, letter => `_${letter}`).toUpperCase()}`] = value
+for (const [channel, field, material, gates] of [
+  ['email', 'EMAIL', [vars.NUXT_NOTIFICATION_ROOT_KEY, vars.NUXT_BREVO_API_KEY, vars.NUXT_BREVO_CALLBACK_SECRET, vars.NUXT_BREVO_SENDER_NAME, vars.NUXT_BREVO_SENDER_EMAIL], ['sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs']],
+  ['sms', 'SMS', [vars.NUXT_NOTIFICATION_ROOT_KEY, vars.NUXT_BREVO_API_KEY, vars.NUXT_BREVO_SENDER_NAME], ['sender', 'account', 'credits', 'country', 'compliance', 'sharedManagementStop']],
+  ['web-push', 'WEB_PUSH', [vars.NUXT_NOTIFICATION_ROOT_KEY, key.d, publicKey, vars.NUXT_NOTIFICATION_VAPID_SUBJECT], ['vapid', 'protocol', 'interoperability', 'browser:chromium', 'sharedManagementStop']],
+]) vars[`NUXT_NOTIFICATION_${field}_EVIDENCE`] = JSON.stringify({ ...identities, channel, evidenceKind: 'local-candidate', mode: 'readiness', manualSwitch: true, verifiedAt: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString(), keyHash: createHash('sha256').update(JSON.stringify(material)).digest('hex'), interoperability: ['chromium'], gates: Object.fromEntries(['artifacts', 'deployment', 'bindings', 'migration', 'firstMessage', 'eventDelivery', 'liveCanary', ...gates].map(gate => [gate, 'passed'])) })
 for (const [name, value] of Object.entries(vars)) console.log(`${name}=${value}`)
 JS
   )
@@ -60,6 +69,7 @@ JS
     mkdir "$evidence_dir/$profile"
     preview_env=()
     if [[ "$profile" == preview ]]; then preview_env=(PREVIEW_DEPLOY=1); fi
+    # The Cloudflare package command invokes npm run build; preserve its separator.
     if ! "${clean_env[@]}" "${preview_env[@]}" "NUXT_BUILD_DIR=$evidence_dir/$profile/nuxt" "CONTENT_LOCAL_DATABASE_PATH=$evidence_dir/$profile/content.sqlite" npm run build:cloudflare -- -- --dotenv /dev/null >"$evidence_dir/$profile/build.log" 2>&1; then
       echo "$profile build failed; see retained build.log." >&2; exit 1
     fi
@@ -125,9 +135,11 @@ for (const channel of ['email', 'sms', 'web-push']) {
   }
   assert.equal(results[0], results[1])
 }
-for (const token of ['active', 'pending-reactivation', 'stopped', 'old', 'unavailable']) {
-  const response = await fetch(`${base}/api/notifications/manage/notification-ui-management-${token}`)
+for (const token of ['notification-ui-management-active', 'notification-ui-management-pending-reactivation', 'notification-ui-management-stopped', 'notification-ui-management-old', 'notification-ui-management-unavailable', 'malformed', 'A'.repeat(43)]) {
+  const response = await fetch(`${base}/api/notifications/manage/${token}`)
   assert.deepEqual(await response.json(), { state: 'unavailable' })
+  const stopped = await fetch(`${base}/api/notifications/manage/${token}`, { method: 'POST', headers: headers(), body: JSON.stringify({ action: 'stop-channel' }) })
+  assert.deepEqual(await stopped.json(), { state: 'unavailable' })
 }
 const html = await (await fetch(`${base}/kalendar`)).text(); safe(html)
 assert.ok(html.includes(process.env.NUXT_PUBLIC_NOTIFICATION_VAPID_PUBLIC_KEY), 'public key positive control')
@@ -164,76 +176,15 @@ JS
   done
   # Error-bearing builds stay failed even when diagnostics later gates succeed.
   for profile in production preview; do
-    node --input-type=module - "$evidence_dir/$profile/build.log" <<'JS'
+    node --input-type=module - "$evidence_dir/$profile/build.log" "$evidence_dir/$profile/worker.log" <<'JS'
 import { readFileSync } from 'node:fs'
 if (/(?:\bERROR\b|\[500\]|Prerender Error)/.test(readFileSync(process.argv[2], 'utf8'))) throw new Error('Build errors retained; configuration isolation is not a clean gate')
+if (/(?:\bERROR\b|\[500\]|Uncaught|unhandled rejection)/i.test(readFileSync(process.argv[3], 'utf8'))) throw new Error('Local Worker runtime errors retained; safety gate failed')
 JS
   done
   echo 'Both generated profiles and actual built Workers passed configuration isolation.'
   exit 0
 fi
 
-port=8791
-base_url="http://127.0.0.1:${port}"
-worker_pid=""
-log_file="/tmp/notification-production-safety-${port}.log"
-
-cleanup() {
-  if [[ -n "$worker_pid" ]]; then
-    kill -- "-$worker_pid" >/dev/null 2>&1 || true
-    wait "$worker_pid" 2>/dev/null || true
-    for _ in {1..10}; do
-      if ! curl --silent --max-time 1 "$base_url/api/notifications/readiness" >/dev/null 2>&1; then return; fi
-      sleep 1
-    done
-    echo "Wrangler process group still owns port ${port}." >&2
-    return 1
-  fi
-}
-trap cleanup EXIT
-
-# Deliberately supply the development-only opt-in to the production build.
-NODE_ENV=production NUXT_NOTIFICATION_UI_VERIFICATION_FIXTURE=true \
-NUXT_PUBLIC_NOTIFICATION_TURNSTILE_SITE_KEY=notification-ui-verification-site-key \
-npm run build:cloudflare
-
-config_file=""
-for candidate in .output/server/wrangler.json .output/wrangler.json .output/server/wrangler.toml; do
-  if [[ -f "$candidate" ]]; then
-    config_file="$candidate"
-    break
-  fi
-done
-if [[ -z "$config_file" ]]; then
-  echo 'Generated Cloudflare Worker configuration was not found.' >&2
-  exit 1
-fi
-
-setsid npx wrangler dev --config "$config_file" --port "$port" --local >"$log_file" 2>&1 &
-worker_pid=$!
-for _ in {1..60}; do
-  if curl --silent --fail --max-time 1 "$base_url/api/notifications/readiness" >/dev/null; then break; fi
-  sleep 1
-done
-
-readiness="$(curl --silent --fail --max-time 2 "$base_url/api/notifications/readiness")"
-[[ "$readiness" == '{"email":false,"sms":false,"webPush":false}' ]] || { echo 'Production readiness was not fail-closed.' >&2; exit 1; }
-
-activation_status="$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST "$base_url/api/notifications/activate" --header 'content-type: application/json' --data '{"channel":"email","contact":"guide@example.test","communitySlugs":["brno"],"frequencies":["created"],"consentAt":"2026-09-17T00:00:00.000Z","consentVersion":"2026-09","turnstileToken":"notification-ui-verification-token"}')"
-[[ "$activation_status" != '200' && "$activation_status" != '202' ]] || { echo 'Production activation accepted the fixture.' >&2; exit 1; }
-
-recovery_without_token="$(curl --silent --show-error --max-time 2 --request POST "$base_url/api/notifications/manage-request" --header 'content-type: application/json' --data '{"channel":"email","contact":"guide@example.test"}')"
-recovery_with_token="$(curl --silent --show-error --max-time 2 --request POST "$base_url/api/notifications/manage-request" --header 'content-type: application/json' --data '{"channel":"email","contact":"guide@example.test","turnstileToken":"notification-ui-verification-token"}')"
-[[ "$recovery_without_token" == "$recovery_with_token" ]] || { echo 'Production recovery response changed for the fixture token.' >&2; exit 1; }
-
-for management_token in \
-  notification-ui-management-active \
-  notification-ui-management-pending-reactivation \
-  notification-ui-management-stopped \
-  notification-ui-management-old \
-  notification-ui-management-unavailable; do
-  management_result="$(curl --silent --fail --max-time 2 "$base_url/api/notifications/manage/$management_token")"
-  [[ "$management_result" == '{"state":"unavailable"}' ]] || { echo 'Production management fixture token was not neutral.' >&2; exit 1; }
-done
-
-echo 'Production notification fixture isolation verification passed.'
+echo 'Usage: verify-notification-production-safety.sh [--config-isolation]' >&2
+exit 1

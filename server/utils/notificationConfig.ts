@@ -65,7 +65,7 @@ const evidenceGates = {
 } as const
 
 /** Operator-owned observations use the 06-15 evidence envelope. Never accept local CLI/test proofs. */
-const operationalEvidence = async (channel: NotificationChannel, value: Record<string, unknown>, cryptoApi: NotificationCrypto, now: () => number) => {
+export const operationalEvidence = async (channel: NotificationChannel, value: Record<string, unknown>, cryptoApi: NotificationCrypto, now: () => number) => {
   try {
     const name = channel === 'web-push' ? 'WebPush' : channel === 'sms' ? 'Sms' : 'Email'
     const raw = value[`notification${name}Evidence`]
@@ -106,7 +106,7 @@ const operationalEvidence = async (channel: NotificationChannel, value: Record<s
   } catch { return () => false }
 }
 
-const optionalVapidConfiguration = async (value: Record<string, unknown>, cryptoApi: NotificationCrypto): Promise<VapidConfiguration | undefined> => {
+export const optionalVapidConfiguration = async (value: Record<string, unknown>, cryptoApi: NotificationCrypto): Promise<VapidConfiguration | undefined> => {
   const publicRuntime = value.public && typeof value.public === 'object' && !Array.isArray(value.public)
     ? value.public as Record<string, unknown>
     : undefined

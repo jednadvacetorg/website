@@ -231,3 +231,31 @@ test('reserved management tokens are inert when the development fixture guard is
     runtimeConfig = { notificationUiVerificationFixture: true }
   }
 })
+
+test('production fixture opt-in cannot activate SMS or native push and keeps recovery private', async () => {
+  const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const contact = { endpoint: 'https://push.example.test/private-device', expirationTime: null, keys: { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } }
+  const previous = runtimeConfig
+  process.env.NODE_ENV = 'production'
+  runtimeConfig = { notificationUiVerificationFixture: true }
+  try {
+    await withRoutes(async base => {
+      for (const [channel, destination] of [['sms', '+420777123456'], ['web-push', contact]]) {
+        const post = (path: string, body: unknown) => fetch(`${base}/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+        assert.equal((await post('activate', { ...activation, channel, contact: destination, turnstileToken: fixtureToken })).status, 503)
+        const bodies: string[] = []
+        for (const token of [undefined, fixtureToken]) {
+          const response = await post('recover', { channel, contact: destination, turnstileToken: token })
+          assert.equal(response.status, 202)
+          const text = await response.text()
+          assert.ok(!text.includes('+420777123456') && !text.includes(contact.endpoint) && !text.includes(contact.keys.auth))
+          bodies.push(text)
+        }
+        assert.equal(bodies[0], bodies[1])
+      }
+      for (const token of ['malformed', 'A'.repeat(43)]) {
+        assert.deepEqual(await (await fetch(`${base}/manage/${token}`)).json(), { state: 'unavailable' })
+      }
+    })
+  } finally { runtimeConfig = previous; process.env.NODE_ENV = 'development' }
+})

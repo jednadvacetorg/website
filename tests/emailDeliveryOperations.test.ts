@@ -203,6 +203,151 @@ test('operations rejects trailing, duplicate and ambiguous arguments', () => {
   assert.throws(() => operations.parseEmailVerificationArgs(['preflight', '--target', 'production', '--target', 'production']), /Usage/)
 })
 
+test('local multichannel preflight hashes candidate bytes without reading credentials or external observations', async t => {
+  const f = await fixture(t)
+  const options = operations.parseEmailVerificationArgs(['local-preflight', '--channels', 'email,sms,web-push', '--target', 'local', '--config', f.options.configPath, '--expectations', f.options.expectationsPath, '--artifacts', f.options.artifactsPath, '--expect-switch', 'false'])
+  const dependencies = { ...f.dependencies, environment: new Proxy({}, { get() { throw new Error('credential access') } }), fetch: (async () => { throw new Error('external I/O') }) as typeof fetch, command: async () => { throw new Error('external command') } }
+  const result = await operations.runEmailVerification(options, dependencies)
+  assert.equal(result.evidenceKind, 'local-candidate')
+  assert.equal(result.bundleHash, f.expected.bundleHash)
+  assert.equal(result.migrationHash, f.expected.migrationHash)
+  assert.deepEqual(result.channels, ['email', 'sms', 'web-push'])
+  assert.equal(result.gates.artifacts, 'passed')
+  assert.equal(result.gates.liveCanary, 'pending')
+  safe(result)
+  await f.save('chunk.mjs', 'changed candidate')
+  await assert.rejects(operations.runEmailVerification(options, dependencies), /artifacts/)
+})
+
+test('local multichannel arguments reject live authorization, switches and ambiguous channels', () => {
+  const flags = ['local-preflight', '--channels', 'email,sms,web-push', '--target', 'local', '--config', '/tmp/config', '--expectations', '/tmp/expected', '--artifacts', '/tmp/artifacts', '--expect-switch', 'false']
+  for (const extra of [['--authorize-probe'], ['--approve-readiness'], ['--evidence', '/tmp/evidence']]) assert.throws(() => operations.parseEmailVerificationArgs([...flags, ...extra]), /Usage/)
+  for (const channels of ['email,email', 'sms', 'email,sms,push', 'email,sms,web-push,']) assert.throws(() => operations.parseEmailVerificationArgs(flags.map(value => value === 'email,sms,web-push' ? channels : value)), /Usage/)
+  assert.throws(() => operations.parseEmailVerificationArgs(flags.map(value => value === 'false' ? 'true' : value)), /Usage/)
+})
+
+test('SMS operations probe submits once with private management link and never claims shared stop or live receipt', async t => {
+  const f = await fixture(t)
+  const flags = ['live-canary', '--channels', 'sms', '--target', 'production', '--config', f.options.configPath, '--expectations', f.options.expectationsPath, '--artifacts', f.options.artifactsPath, '--expect-switch', 'false', '--authorize-probe', '--evidence', join(f.directory, 'probe.json')]
+  const options = operations.parseEmailVerificationArgs(flags)
+  const identity = await operations.runEmailVerification({ ...f.options, mode: 'local-preflight', target: 'local', channels: ['email', 'sms', 'web-push'] }, f.dependencies)
+  const observation = { ...identity, channel: 'sms', manualSwitch: false, evidenceKind: 'local-candidate', gates: Object.fromEntries(['account', 'credits', 'country', 'compliance', 'sender', 'sharedManagementStop'].map(gate => [gate, 'passed'])) }
+  await f.save('probe.json', observation)
+  let calls = 0
+  const dependencies = { ...f.dependencies, environment: { NUXT_BREVO_API_KEY: 'private-api-key', NUXT_BREVO_SENDER_NAME: 'Jednadvacet', NOTIFICATION_VERIFY_RECIPIENT: '+420777123456', NOTIFICATION_VERIFY_MANAGEMENT_TOKEN: 'A'.repeat(43) }, command: async () => { throw Error('unexpected command') }, fetch: (async (url, init) => {
+    calls++
+    assert.equal(String(url), 'https://api.brevo.com/v3/transactionalSMS/send')
+    const body = JSON.parse(String(init?.body))
+    assert.equal(body.type, 'transactional')
+    assert.ok(body.content.includes(`/notifications/manage/${'A'.repeat(43)}`))
+    return Response.json({ messageId: 12345, private: 'private-provider-body' }, { status: 201 })
+  }) as typeof fetch }
+  const result = await operations.runEmailVerification(options, dependencies)
+  assert.equal(calls, 1)
+  assert.deepEqual(result.probe, { acceptance: 'submitted', liveReceipt: 'pending', sharedManagementStop: 'pending', deliveryCallback: 'not-configured' })
+  assert.equal(result.gates.liveCanary, 'pending')
+  safe(result)
+  for (const status of [400, 401, 429, 500]) {
+    calls = 0
+    await assert.rejects(operations.runEmailVerification(options, { ...dependencies, fetch: (async () => { calls++; return Response.json({ private: 'private-provider-body' }, { status }) }) as typeof fetch }), /probe/)
+    assert.equal(calls, 1)
+  }
+  calls = 0
+  await f.save('probe.json', { ...observation, gates: { ...observation.gates, sharedManagementStop: 'pending' } })
+  await assert.rejects(operations.runEmailVerification(options, dependencies), /probe/)
+  assert.equal(calls, 0)
+  for (const configured of [true, 'true', 'unknown']) {
+    await f.save('probe.json', { ...observation, deliveryCallbacksConfigured: configured })
+    await assert.rejects(operations.runEmailVerification(options, dependencies), /probe/)
+    assert.equal(calls, 0)
+  }
+  await f.save('probe.json', observation)
+  for (const body of ['not-json private-provider-body', 'x'.repeat(16_385)]) {
+    calls = 0
+    await assert.rejects(operations.runEmailVerification(options, { ...dependencies, fetch: (async () => { calls++; return new Response(body, { status: 201 }) }) as typeof fetch }), error => { safe(String(error)); return String(error).includes('probe') })
+    assert.equal(calls, 1)
+  }
+  calls = 0
+  await assert.rejects(operations.runEmailVerification(options, { ...dependencies, fetch: (async () => { calls++; throw Error('private-provider-body') }) as typeof fetch }), error => { safe(String(error)); return String(error).includes('probe') })
+  assert.equal(calls, 1)
+})
+
+test('native push operations probe uses matching VAPID and one encrypted request with honest acceptance-only output', async t => {
+  const f = await fixture(t)
+  const vapid = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const subscription = { endpoint: 'https://push.example.test/private-device', expirationTime: null, keys: { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } }
+  const options = operations.parseEmailVerificationArgs(['live-canary', '--channels', 'web-push', '--target', 'production', '--config', f.options.configPath, '--expectations', f.options.expectationsPath, '--artifacts', f.options.artifactsPath, '--expect-switch', 'false', '--authorize-probe', '--evidence', join(f.directory, 'probe.json')])
+  const identity = await operations.runEmailVerification({ ...f.options, mode: 'local-preflight', target: 'local', channels: ['email', 'sms', 'web-push'] }, f.dependencies)
+  const observation = { ...identity, channel: 'web-push', manualSwitch: false, gates: Object.fromEntries(['vapid', 'protocol', 'https', 'sharedManagementStop'].map(gate => [gate, 'passed'])) }
+  await f.save('probe.json', observation)
+  const environment = { NUXT_NOTIFICATION_VAPID_PRIVATE_KEY: (await crypto.subtle.exportKey('jwk', vapid.privateKey)).d!, NUXT_PUBLIC_NOTIFICATION_VAPID_PUBLIC_KEY: Buffer.from(await crypto.subtle.exportKey('raw', vapid.publicKey)).toString('base64url'), NUXT_NOTIFICATION_VAPID_SUBJECT: 'mailto:synthetic@example.test', NOTIFICATION_VERIFY_MANAGEMENT_TOKEN: 'A'.repeat(43), NOTIFICATION_VERIFY_PUSH_SUBSCRIPTION: JSON.stringify(subscription) }
+  let calls = 0
+  const dependencies = { ...f.dependencies, environment, fetch: (async (url, init) => {
+    calls++
+    assert.equal(String(url), subscription.endpoint)
+    assert.equal(new Headers(init?.headers).get('content-encoding'), 'aes128gcm')
+    assert.ok(init?.body instanceof Uint8Array)
+    assert.ok(!Buffer.from(init.body).includes(Buffer.from(environment.NOTIFICATION_VERIFY_MANAGEMENT_TOKEN)))
+    return new Response(null, { status: 201 })
+  }) as typeof fetch }
+  const result = await operations.runEmailVerification(options, dependencies)
+  assert.equal(calls, 1)
+  assert.equal(result.probe?.liveReceipt, 'pending')
+  assert.equal(result.evidenceKind, 'local-candidate')
+  safe(result)
+  assert.ok(!JSON.stringify(result).includes(subscription.endpoint))
+  for (const status of [400, 401, 404, 410, 429, 500]) {
+    calls = 0
+    await assert.rejects(operations.runEmailVerification(options, { ...dependencies, fetch: (async () => { calls++; return new Response(null, { status }) }) as typeof fetch }), /probe/)
+    assert.equal(calls, 1)
+  }
+  calls = 0
+  for (const mutation of [{ evidenceKind: 'production-observation' }, { bundleHash: 'f'.repeat(64) }, { expiresAt: new Date(now).toISOString() }, { gates: {} }]) {
+    await f.save('probe.json', { ...observation, ...mutation })
+    await assert.rejects(operations.runEmailVerification(options, dependencies), /probe/)
+  }
+  assert.equal(calls, 0)
+})
+
+test('multichannel observation review reuses runtime gates, joint switches and oldest expiry without promoting evidence', async t => {
+  const f = await fixture(t)
+  const local = { ...f.options, mode: 'local-preflight' as const, target: 'local' as const, channels: ['email', 'sms', 'web-push'] as const }
+  const options = { ...local, channels: [...local.channels] }
+  const identity = await operations.runEmailVerification(options, f.dependencies)
+  const runtime: Record<string, unknown> = {
+    notificationSmsEnabled: true, notificationWebPushEnabled: true,
+    notificationRootKey: 'private-root-material', brevoApiKey: 'private-api-key', brevoCallbackSecret: 'private-callback-bearer', brevoSenderName: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org',
+    notificationVapidPrivateKey: 'private-vapid-material', notificationVapidPublicKey: 'public-vapid', notificationVapidSubject: 'mailto:synthetic@example.test',
+  }
+  for (const field of ['targetIdentity', 'deploymentId', 'bundleHash', 'migrationHash', 'configHash'] as const) runtime[`notificationExpected${field[0]!.toUpperCase()}${field.slice(1)}`] = identity[field]
+  const allGates = ['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs', 'account', 'credits', 'country', 'compliance', 'sharedManagementStop', 'vapid', 'protocol', 'interoperability', 'browser:chromium', 'firstMessage', 'eventDelivery']
+  for (const [channel, name, material] of [
+    ['email', 'Email', [runtime.notificationRootKey, runtime.brevoApiKey, runtime.brevoCallbackSecret, runtime.brevoSenderName, runtime.brevoSenderEmail]],
+    ['sms', 'Sms', [runtime.notificationRootKey, runtime.brevoApiKey, runtime.brevoSenderName]],
+    ['web-push', 'WebPush', [runtime.notificationRootKey, runtime.notificationVapidPrivateKey, runtime.notificationVapidPublicKey, runtime.notificationVapidSubject]],
+  ] as const) runtime[`notification${name}Evidence`] = JSON.stringify({ ...identity, channel, evidenceKind: 'production-observation', mode: 'readiness', manualSwitch: true, verifiedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 60_000).toISOString(), keyHash: sha(JSON.stringify(material)), interoperability: ['chromium'], gates: Object.fromEntries(allGates.map(gate => [gate, 'passed'])) })
+  const review = { ...options, mode: 'readiness' as const, target: 'production' as const, expectedSwitch: true, approveReadiness: true, evidencePath: join(f.directory, 'observations.json') }
+  const dependencies = { ...f.dependencies, evidenceKind: 'production-observation' as const, fetch: (async () => { throw new Error('network') }) as typeof fetch, command: async () => { throw new Error('command') } }
+  const run = async (input: Record<string, unknown>) => { await f.save('observations.json', input); return operations.runEmailVerification(review, dependencies) }
+  const result = await run(runtime)
+  assert.deepEqual(result.channelReadiness, { email: true, sms: true, 'web-push': true })
+  assert.equal(result.evidenceKind, 'local-candidate')
+  assert.equal(result.expiresAt, new Date(now + 60_000).toISOString())
+  assert.equal(result.gates.liveCanary, 'pending', 'review does not perform live probes')
+  safe(result)
+  for (const field of ['notificationSmsEnabled', 'notificationWebPushEnabled']) await assert.rejects(run({ ...runtime, [field]: false }), /evidence/)
+  for (const name of ['Email', 'Sms', 'WebPush']) {
+    const field = `notification${name}Evidence`
+    const original = JSON.parse(runtime[field] as string)
+    for (const mutation of [{ evidenceKind: 'local-candidate' }, { targetIdentity: 'f'.repeat(64) }, { bundleHash: 'f'.repeat(64) }, { migrationHash: 'f'.repeat(64) }, { configHash: 'f'.repeat(64) }, { keyHash: 'f'.repeat(64) }, { expiresAt: new Date(now).toISOString() }, { verifiedAt: new Date(now + 1).toISOString() }, { gates: { ...original.gates, sharedManagementStop: 'pending', callbackMetadata: 'pending' } }]) await assert.rejects(run({ ...runtime, [field]: JSON.stringify({ ...original, ...mutation }) }), /evidence/)
+  }
+  await assert.rejects(run({ ...runtime, notificationSmsDeliveryCallbacksConfigured: true }), /evidence/)
+  await run({ ...runtime, notificationSmsDeliveryCallbacksConfigured: false })
+  const email = JSON.parse(runtime.notificationEmailEvidence as string)
+  await assert.rejects(run({ ...runtime, notificationSmsDeliveryCallbacksConfigured: false, notificationEmailEvidence: JSON.stringify({ ...email, gates: { ...email.gates, callbackMetadata: 'pending' } }) }), /evidence/)
+})
+
 test('operations exposes the injectable real dispatcher without executing main on import', () => {
   assert.equal(typeof Reflect.get(operations, 'runEmailVerification'), 'function')
 })
