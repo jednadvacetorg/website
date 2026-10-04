@@ -56,7 +56,7 @@ const requiredHostname = (value: unknown) => {
 const optionalPrivateText = (value: unknown) => typeof value === 'string' && value.trim() && value.length <= 4_096 ? value : undefined
 const exactTrue = (value: unknown) => value === true || value === 'true'
 
-const optionalVapidConfiguration = async (value: Record<string, unknown>): Promise<VapidConfiguration | undefined> => {
+const optionalVapidConfiguration = async (value: Record<string, unknown>, cryptoApi: NotificationCrypto): Promise<VapidConfiguration | undefined> => {
   const publicRuntime = value.public && typeof value.public === 'object' && !Array.isArray(value.public)
     ? value.public as Record<string, unknown>
     : undefined
@@ -67,17 +67,25 @@ const optionalVapidConfiguration = async (value: Record<string, unknown>): Promi
       : undefined
   const privateKey = typeof value.notificationVapidPrivateKey === 'string' ? value.notificationVapidPrivateKey : undefined
   const subject = typeof value.notificationVapidSubject === 'string' ? value.notificationVapidSubject : undefined
-  if (!publicKey || !privateKey || !subject || !/^(?:mailto:[^\s@]+@[^\s@]+|https:\/\/[^\s/]+(?:\/[^\s]*)?)$/.test(subject)) return undefined
+  if (!publicKey || !privateKey || !subject || !/^(?:mailto:[^\s@/?#]+@[^\s@/?#]+|https:\/\/[^\s/]+(?:\/[^\s]*)?)$/.test(subject)) return undefined
   try {
+    if (subject.startsWith('https:')) {
+      const url = new URL(subject)
+      if (url.username || url.password || url.hash) return undefined
+    }
+    const encode = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
     const decode = (encoded: string) => {
-      if (!/^[A-Za-z0-9_-]+$/.test(encoded)) throw new Error('VAPID key is malformed')
-      return Uint8Array.from(atob(encoded.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - encoded.length % 4) % 4)), character => character.charCodeAt(0))
+      if (!/^[A-Za-z0-9_-]+$/.test(encoded) || encoded.length > 128) throw new Error('VAPID key is malformed')
+      const bytes = Uint8Array.from(atob(encoded.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - encoded.length % 4) % 4)), character => character.charCodeAt(0))
+      if (encode(bytes) !== encoded) throw new Error('VAPID key is malformed')
+      return bytes
     }
     const publicBytes = decode(publicKey)
     const privateBytes = decode(privateKey)
     if (publicBytes.length !== 65 || publicBytes[0] !== 4 || privateBytes.length !== 32) return undefined
-    const encode = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
-    const imported = await crypto.subtle.importKey('jwk', {
+    const { subtle } = cryptoApi
+    const verificationKey = await subtle.importKey('raw', publicBytes as unknown as BufferSource, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify'])
+    const imported = await subtle.importKey('jwk', {
       kty: 'EC',
       crv: 'P-256',
       x: encode(publicBytes.slice(1, 33)),
@@ -86,6 +94,9 @@ const optionalVapidConfiguration = async (value: Record<string, unknown>): Promi
       ext: false,
       key_ops: ['sign'],
     }, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign'])
+    const challenge = cryptoApi.randomBytes(32) as unknown as BufferSource
+    const signature = await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, imported, challenge)
+    if (!await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, verificationKey, signature, challenge)) return undefined
     return { privateKey: imported, publicKey, subject }
   } catch {
     return undefined
@@ -126,7 +137,7 @@ const smsDelivery = (value: Record<string, unknown>) => {
 /** Loads only private runtime configuration into non-extractable Worker Web Crypto keys. */
 export const notificationConfig = async (value: Record<string, unknown>, cryptoApi = defaultCrypto()): Promise<NotificationLifecycleConfig> => {
   const email = emailDelivery(value)
-  const webPushDelivery = await optionalVapidConfiguration(value)
+  const webPushDelivery = await optionalVapidConfiguration(value, cryptoApi)
   return {
   communitySlugs: typeof value.notificationCommunitySlugs === 'string'
     ? value.notificationCommunitySlugs.split(',').map(slug => slug.trim()).filter(Boolean)

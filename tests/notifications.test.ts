@@ -85,6 +85,32 @@ const tokenForByte = (byte: number) => btoa(String.fromCharCode(...new Uint8Arra
 const fromBase64Url = (value: string) => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - value.length % 4) % 4)), character => character.charCodeAt(0))
 const input = { channel: 'email' as const, contact: 'Alice@Example.COM', communitySlugs: ['brno'], frequencies: ['created', 'day-before'] as ('created' | 'day-before')[], consentAt: '2026-09-15T12:00:00.000Z', consentVersion: '2026-09' }
 
+test('native push activation and recovery canonicalize device identity and reject direct-service bypasses', async () => {
+  const { database, query } = disposableDatabase()
+  const ready = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
+  const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const keys = { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.from(new Uint8Array(16).fill(2)).toString('base64url') }
+  const contact = { endpoint: 'https://push.example.test/device-one', expirationTime: null, keys }
+  const dependencies = { database, config: ready }
+  await activateNotificationChannel({ ...input, channel: 'web-push', contact }, dependencies)
+  await activateNotificationChannel({ ...input, channel: 'web-push', contact: JSON.stringify({ keys, endpoint: contact.endpoint }) }, dependencies)
+  await activateNotificationChannel({ ...input, channel: 'web-push', contact: { ...contact, endpoint: 'https://push.example.test/device-two' } }, dependencies)
+  await activateNotificationChannel(input, dependencies)
+  const before = query('SELECT id, channel, destination, management_token_digest, capability_generation FROM notification_contacts ORDER BY id') as Record<string, unknown>[]
+  assert.equal(before.length, 3)
+  await requestNotificationManagementRecovery({ channel: 'web-push', contact: { keys, expirationTime: null, endpoint: contact.endpoint } }, dependencies)
+  const after = query('SELECT id, channel, destination, management_token_digest, capability_generation FROM notification_contacts ORDER BY id') as Record<string, unknown>[]
+  assert.equal(after[0]!.capability_generation, 2)
+  assert.notEqual(after[0]!.management_token_digest, before[0]!.management_token_digest)
+  assert.deepEqual(after.slice(1), before.slice(1))
+  assert.equal(await requestNotificationManagementRecovery({ channel: 'web-push', contact: { ...contact, endpoint: 'https://push.example.test/unknown' } }, dependencies), undefined)
+  for (const invalid of ['arbitrary string', '{}', { ...contact, expirationTime: 1 }, { ...contact, keys: { ...keys, p256dh: Buffer.from(new Uint8Array(65).fill(4)).toString('base64url') } }]) {
+    await assert.rejects(activateNotificationChannel({ ...input, channel: 'web-push', contact: invalid }, dependencies))
+    await assert.rejects(requestNotificationManagementRecovery({ channel: 'web-push', contact: invalid }, dependencies))
+  }
+  assert.deepEqual(query('SELECT id, channel, destination, management_token_digest, capability_generation FROM notification_contacts ORDER BY id'), after)
+})
+
 test('activation stores one plaintext contact, one row per frequency, and an encrypted first-activation outbox row', async () => {
   const { database, query } = disposableDatabase()
   await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
@@ -114,7 +140,7 @@ test('fresh activation leaves no lifecycle rows when payload encryption fails', 
       digest: crypto.subtle.digest.bind(crypto.subtle),
       sign: crypto.subtle.sign.bind(crypto.subtle),
       encrypt: async () => { throw new Error('Injected payload encryption failure') },
-    } as SubtleCrypto,
+    } as unknown as SubtleCrypto,
   }
 
   await assert.rejects(activateNotificationChannel(input, { database, config, crypto: failingCrypto }), /Injected payload encryption failure/)
@@ -469,7 +495,9 @@ test('SMS stop and final-community removal use one scoped bearer and preserve em
   for (const action of ['stop', 'last-community'] as const) {
     const { database, query } = disposableDatabase()
     const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
-    for (const [channel, contact, byte] of [['email', 'Alice@example.com', 1], ['sms', '+420777123456', 2], ['web-push', '{}', 3]] as const) {
+    const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+    const push = JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.from(new Uint8Array(16)).toString('base64url') } })
+    for (const [channel, contact, byte] of [['email', 'Alice@example.com', 1], ['sms', '+420777123456', 2], ['web-push', push, 3]] as const) {
       await activateNotificationChannel({ ...input, channel, contact }, { database, config: ready, crypto: { randomBytes: length => new Uint8Array(length).fill(byte), subtle: crypto.subtle } })
     }
     const otherContacts = query("SELECT * FROM notification_contacts WHERE channel <> 'sms'")

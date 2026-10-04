@@ -375,7 +375,9 @@ test('Web Push transient provider outcomes retain the ciphertext for Queue retry
   for (const status of ['rate-limited', 'provider-5xx', 'transport'] as const) {
     const { database, query } = disposableDatabase()
     const ready = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
-    await activateNotificationChannel({ ...input, channel: 'web-push', contact: '{}' }, { database, config: ready, crypto: predictableCrypto })
+    const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+    const contact = JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: encode(new Uint8Array(await crypto.subtle.exportKey('raw', receiver.publicKey))), auth: encode(new Uint8Array(16)) } })
+    await activateNotificationChannel({ ...input, channel: 'web-push', contact }, { database, config: ready, crypto: predictableCrypto })
     await assert.rejects(consumeNotificationOutboxPointer(pointerFor(query), { database, config: ready }, async () => ({ attempted: true, status })), /retryable/)
     const [row] = query('SELECT status, payload_ciphertext, claim_token FROM notification_outbox')
     assert.equal(row!.status, 'queued')
@@ -407,7 +409,7 @@ test('real SMS signup/recovery dispatch carries a usable SMS-only management lin
     assert.equal(calls, 1)
     const management = await readNotificationManagement(token, { database, config: ready })
     assert.equal(management.state, 'active')
-    if (management.state !== 'unavailable') assert.equal(management.channel, 'sms')
+    assert.equal(management.channel, 'sms')
     if (kind === 'first-activation') firstToken = token
     else {
       assert.equal((await readNotificationManagement(firstToken, { database, config: ready })).state, 'unavailable')
@@ -611,7 +613,8 @@ test('SMS lifecycle provider failures retry transient results and retain termina
 test('a stale lifecycle Web Push endpoint is suppressed and removed', async () => {
   const { database, query } = disposableDatabase()
   const webPushConfig = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
-  const webPushInput = { ...input, channel: 'web-push' as const, contact: JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: 'key', auth: 'auth' } }) }
+  const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const webPushInput = { ...input, channel: 'web-push' as const, contact: JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: encode(new Uint8Array(await crypto.subtle.exportKey('raw', receiver.publicKey))), auth: encode(new Uint8Array(16)) } }) }
   await activateNotificationChannel(webPushInput, { database, config: webPushConfig, crypto: predictableCrypto })
   const pointer = pointerFor(query)
 

@@ -29,7 +29,7 @@ export default defineEventHandler(async (event) => {
   try {
     if (!database) throw new Error('Notification database is unavailable')
     const config = await notificationConfig(runtimeConfig)
-    const request = validateNotificationManagementRequest(input)
+    validateNotificationManagementRequest(input)
     const abuse = await evaluateNotificationAbuse(
       getRequestHeader(event, 'CF-Connecting-IP'),
       body?.turnstileToken,
@@ -39,7 +39,7 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, abuse.reason === 'rate-limited' ? 429 : 403)
       return { message: 'Požadavek na notifikace potřebuje ověření.' }
     }
-    await requestNotificationManagementRecovery(request, { database, config })
+    await requestNotificationManagementRecovery(input, { database, config })
   } catch (error) {
     if (error instanceof NotificationLifecycleError && error.statusCode === 400) {
       setResponseStatus(event, 400)

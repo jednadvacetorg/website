@@ -3,7 +3,6 @@ import { evaluateNotificationAbuse } from '../../utils/notificationAbuse.ts'
 import { activateNotificationChannel, NotificationLifecycleError, validateNotificationActivation, type NotificationDatabase, type NotificationLifecycleConfig } from '../../utils/notifications.ts'
 import { notificationConfig } from '../../utils/notificationConfig.ts'
 import { notificationUiVerificationDecision } from '../../utils/notificationUiVerificationFixture.ts'
-import { serializeWebPushSubscription } from '../../utils/webPushSubscriptions.ts'
 
 const isFixtureActivationInput = (value: Record<string, unknown>, channel: 'email' | 'sms') =>
   value.channel === channel
@@ -29,10 +28,7 @@ export default defineEventHandler(async (event) => {
   let config: NotificationLifecycleConfig
   try {
     config = await notificationConfig(runtimeConfig)
-    const normalizedInput = body?.channel === 'web-push'
-      ? { ...body, contact: serializeWebPushSubscription(body.contact) }
-      : input
-    validateNotificationActivation(normalizedInput, config)
+    validateNotificationActivation(input, config)
   } catch (error) {
     const statusCode = error instanceof NotificationLifecycleError ? error.statusCode : 503
     throw createError({ statusCode, statusMessage: 'Notification activation is unavailable' })
@@ -49,10 +45,7 @@ export default defineEventHandler(async (event) => {
     })
   }
   try {
-    const normalizedInput = body?.channel === 'web-push'
-      ? { ...body, contact: serializeWebPushSubscription(body.contact) }
-      : input
-    return await activateNotificationChannel(normalizedInput, { database, config })
+    return await activateNotificationChannel(input, { database, config })
   } catch (error) {
     const statusCode = error instanceof NotificationLifecycleError ? error.statusCode : 503
     throw createError({ statusCode, statusMessage: 'Notification activation is unavailable' })

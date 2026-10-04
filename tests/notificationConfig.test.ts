@@ -81,3 +81,35 @@ test('SMS provider readiness does not inherit email callback or DNS gates', asyn
   assert.equal(config.smsDeliveryReady, true)
   assert.equal(config.eventSmsOutboxSupported, false)
 })
+
+test('VAPID rejects mismatched pairs, noncanonical encodings and invalid subjects through injected crypto', async () => {
+  const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const other = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const jwk = await crypto.subtle.exportKey('jwk', pair.privateKey)
+  const publicKey = Buffer.from(await crypto.subtle.exportKey('raw', pair.publicKey)).toString('base64url')
+  const ready = { ...base, public: { notificationVapidPublicKey: publicKey }, notificationVapidPrivateKey: jwk.d, notificationVapidSubject: 'mailto:notifications@jednadvacet.org' }
+  const signCalls: string[] = []
+  const subtle = new Proxy(crypto.subtle, { get(target, property) { return property === 'sign' ? (...args: Parameters<SubtleCrypto['sign']>) => { signCalls.push(String((args[0] as Algorithm).name)); return target.sign(...args) } : Reflect.get(target, property).bind(target) } })
+  const config = await notificationConfig(ready, { subtle, randomBytes: length => new Uint8Array(length) })
+  assert.equal(config.webPushDeliveryReady, true)
+  assert.ok(signCalls.includes('ECDSA'))
+  const data = new TextEncoder().encode('independent correspondence')
+  const signature = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, config.webPushDelivery!.privateKey, data)
+  assert.equal(await crypto.subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, pair.publicKey, signature, data), true)
+  const last = publicKey.at(-1)!
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+  const noncanonical = publicKey.slice(0, -1) + alphabet[alphabet.indexOf(last) + 1]
+  for (const invalid of [
+    { notificationVapidPrivateKey: (await crypto.subtle.exportKey('jwk', other.privateKey)).d },
+    { public: { notificationVapidPublicKey: noncanonical } },
+    { public: { notificationVapidPublicKey: publicKey + '=' } },
+    { public: { notificationVapidPublicKey: Buffer.from(new Uint8Array(65).fill(4)).toString('base64url') } },
+    { notificationVapidPrivateKey: jwk.d + '=' },
+    { notificationVapidSubject: 'https://user:password@example.test/' },
+    { notificationVapidSubject: 'mailto:a@example.test\n' },
+  ]) {
+    const rejected = await notificationConfig({ ...ready, ...invalid })
+    assert.equal(rejected.webPushDeliveryReady, false)
+    assert.equal(rejected.webPushDelivery, undefined)
+  }
+})

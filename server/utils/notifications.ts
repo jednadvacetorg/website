@@ -1,9 +1,11 @@
+import { parseWebPushSubscription, validateWebPushSubscriptionPoint, type CanonicalWebPushSubscription } from './webPushSubscriptions.ts'
+
 export type NotificationChannel = 'email' | 'sms' | 'web-push'
 export type NotificationFrequency = 'created' | 'week-before' | 'day-before'
 
-export interface ActivationInput { channel: NotificationChannel, contact: string, communitySlugs: string[], frequencies: NotificationFrequency[], consentAt: string, consentVersion: string }
+export interface ActivationInput { channel: NotificationChannel, contact: string | CanonicalWebPushSubscription, communitySlugs: string[], frequencies: NotificationFrequency[], consentAt: string, consentVersion: string }
 export interface ActivationResult { state: 'active' | 'updated' | 'pending-reactivation' }
-export interface NotificationManagementRequestInput { channel: NotificationChannel, contact: string }
+export interface NotificationManagementRequestInput { channel: NotificationChannel, contact: string | CanonicalWebPushSubscription }
 export class NotificationLifecycleError extends Error {
   readonly statusCode: number
 
@@ -63,7 +65,13 @@ const asBufferSource = (value: Uint8Array) => value as unknown as BufferSource
 const nowIso = (dependencies: NotificationDependencies) => (dependencies.now?.() ?? new Date()).toISOString()
 const unavailable: NotificationManagementResult = { state: 'unavailable' }
 
-export const normalizeNotificationContact = (channel: NotificationChannel, value: unknown) => {
+export const normalizeNotificationContact = (channel: NotificationChannel, value: unknown, now = new Date()) => {
+  if (channel === 'web-push') {
+    try {
+      if (typeof value === 'string' && value.length > 4_096) throw new Error('Invalid push subscription')
+      return JSON.stringify(parseWebPushSubscription(typeof value === 'string' ? JSON.parse(value) : value, now))
+    } catch { throw new NotificationLifecycleError('Invalid notification activation') }
+  }
   if (typeof value !== 'string') throw new NotificationLifecycleError('Invalid notification activation')
   const contact = value.trim()
   if (!contact || controlPattern.test(contact)) throw new NotificationLifecycleError('Invalid notification activation')
@@ -73,7 +81,6 @@ export const normalizeNotificationContact = (channel: NotificationChannel, value
     return `${local}@${domain.toLowerCase()}`
   }
   if (channel === 'sms' && /^\+[1-9]\d{7,14}$/.test(contact)) return contact
-  if (channel === 'web-push' && contact.length <= 4_096) return contact
   throw new NotificationLifecycleError('Invalid notification activation')
 }
 
@@ -92,7 +99,7 @@ const encrypt = async (value: string, key: CryptoKey, cryptoApi: NotificationCry
 const opaqueId = (cryptoApi: NotificationCrypto) => toBase64Url(cryptoApi.randomBytes(24))
 const maskContact = (channel: NotificationChannel, contact: string) => channel === 'email' ? `${contact.slice(0, 1)}•••@${contact.split('@')[1]}` : channel === 'sms' ? `${contact.slice(0, 4)} ••• ••• •••` : 'Prohlížečové upozornění'
 
-export const validateNotificationActivation = (input: unknown, config: NotificationLifecycleConfig) => {
+export const validateNotificationActivation = (input: unknown, config: NotificationLifecycleConfig, now = new Date()) => {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new NotificationLifecycleError('Invalid notification activation')
   const activation = input as Partial<ActivationInput>
   if (!channels.has(activation.channel as NotificationChannel) || activation.consentVersion !== config.consentVersion || typeof activation.consentAt !== 'string' || Number.isNaN(Date.parse(activation.consentAt)) || !Array.isArray(activation.communitySlugs) || !Array.isArray(activation.frequencies)) throw new NotificationLifecycleError('Invalid notification activation')
@@ -100,7 +107,7 @@ export const validateNotificationActivation = (input: unknown, config: Notificat
   const communitySlugs = [...new Set(activation.communitySlugs)].sort()
   const selectedFrequencies = [...new Set(activation.frequencies)].sort()
   if (!communitySlugs.length || !selectedFrequencies.length || !communitySlugs.every(slug => config.communitySlugs.includes(slug)) || !selectedFrequencies.every(frequency => frequencies.has(frequency))) throw new NotificationLifecycleError('Invalid notification activation')
-  return { channel, contact: normalizeNotificationContact(channel, activation.contact), communitySlugs, selectedFrequencies, consentAt: activation.consentAt, consentVersion: activation.consentVersion }
+  return { channel, contact: normalizeNotificationContact(channel, activation.contact, now), communitySlugs, selectedFrequencies, consentAt: activation.consentAt, consentVersion: activation.consentVersion }
 }
 const outboxStatement = async (contact: ContactRow, token: string, kind: 'first-activation' | 'reactivation' | 'management-recovery', dependencies: NotificationDependencies, now: string) => {
   const cryptoApi = dependencies.crypto ?? defaultCrypto()
@@ -112,9 +119,13 @@ const outboxStatement = async (contact: ContactRow, token: string, kind: 'first-
 
 export const activateNotificationChannel = async (input: unknown, dependencies: NotificationDependencies): Promise<ActivationResult> => {
   const { config, database } = dependencies
-  const parsed = validateNotificationActivation(input, config)
+  const parsed = validateNotificationActivation(input, config, dependencies.now?.() ?? new Date())
   if (!isNotificationChannelReady(parsed.channel, config)) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
   const cryptoApi = dependencies.crypto ?? defaultCrypto()
+  if (parsed.channel === 'web-push') {
+    try { await validateWebPushSubscriptionPoint(JSON.parse(parsed.contact), cryptoApi.subtle) }
+    catch { throw new NotificationLifecycleError('Invalid notification activation') }
+  }
   const destinationHash = await keyedHash(parsed.contact, config.suppressionHashKey, cryptoApi)
   const now = nowIso(dependencies)
   const suppression = await database.prepare('SELECT id, destination_hash FROM notification_suppressions WHERE channel = ? AND destination_hash = ?').bind(parsed.channel, destinationHash).first<SuppressionRow>()
@@ -149,20 +160,25 @@ export const activateNotificationChannel = async (input: unknown, dependencies: 
 }
 
 /** Validates the public recovery payload before its shared abuse policy can reach subscriber state. */
-export const validateNotificationManagementRequest = (input: unknown): NotificationManagementRequestInput => {
+export const validateNotificationManagementRequest = (input: unknown, now = new Date()) => {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new NotificationLifecycleError('Invalid notification recovery')
   const request = input as Partial<NotificationManagementRequestInput>
   if (!channels.has(request.channel as NotificationChannel)) throw new NotificationLifecycleError('Invalid notification recovery')
   const channel = request.channel as NotificationChannel
-  return { channel, contact: normalizeNotificationContact(channel, request.contact) }
+  return { channel, contact: normalizeNotificationContact(channel, request.contact, now) }
 }
 
 /** Rotates an eligible contact's digest and capability generation with one encrypted recovery outbox row. */
-export const requestNotificationManagementRecovery = async (input: NotificationManagementRequestInput, dependencies: NotificationDependencies) => {
-  const existing = await dependencies.database.prepare('SELECT id, channel, destination, destination_hash, management_token_digest, state, capability_generation FROM notification_contacts WHERE channel = ? AND destination = ?')
-    .bind(input.channel, input.contact).first<ContactRow>()
-  if (!existing || (existing.state !== 'active' && existing.state !== 'pending-reactivation')) return
+export const requestNotificationManagementRecovery = async (input: unknown, dependencies: NotificationDependencies) => {
+  const parsed = validateNotificationManagementRequest(input, dependencies.now?.() ?? new Date())
   const cryptoApi = dependencies.crypto ?? defaultCrypto()
+  if (parsed.channel === 'web-push') {
+    try { await validateWebPushSubscriptionPoint(JSON.parse(parsed.contact), cryptoApi.subtle) }
+    catch { throw new NotificationLifecycleError('Invalid notification recovery') }
+  }
+  const existing = await dependencies.database.prepare('SELECT id, channel, destination, destination_hash, management_token_digest, state, capability_generation FROM notification_contacts WHERE channel = ? AND destination = ?')
+    .bind(parsed.channel, parsed.contact).first<ContactRow>()
+  if (!existing || (existing.state !== 'active' && existing.state !== 'pending-reactivation')) return
   const token = toBase64Url(cryptoApi.randomBytes(32))
   const tokenDigest = await digest(token, cryptoApi)
   const now = nowIso(dependencies)

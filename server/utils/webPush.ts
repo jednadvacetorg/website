@@ -1,3 +1,6 @@
+import type { NotificationCrypto } from './notifications.ts'
+import { parseWebPushSubscription } from './webPushSubscriptions.ts'
+
 export interface WebPushSubscription {
   endpoint: string
   keys: { p256dh: string, auth: string }
@@ -22,6 +25,7 @@ export type WebPushAttemptResult = {
 }
 
 const encoder = new TextEncoder()
+const defaultCrypto = (): NotificationCrypto => ({ subtle: crypto.subtle, randomBytes: length => crypto.getRandomValues(new Uint8Array(length)) })
 const base64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 const decode = (value: string) => {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error('Web Push key is invalid')
@@ -34,51 +38,68 @@ const concat = (...values: Uint8Array[]) => {
   for (const value of values) { result.set(value, offset); offset += value.length }
   return result
 }
-const hkdf = async (material: Uint8Array, salt: Uint8Array, info: Uint8Array, length: number) => {
-  const key = await crypto.subtle.importKey('raw', buffer(material), 'HKDF', false, ['deriveBits'])
-  return new Uint8Array(await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: buffer(salt), info: buffer(info) }, key, length * 8))
+const hkdf = async (material: Uint8Array, salt: Uint8Array, info: Uint8Array, length: number, subtle: SubtleCrypto) => {
+  const key = await subtle.importKey('raw', buffer(material), 'HKDF', false, ['deriveBits'])
+  return new Uint8Array(await subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: buffer(salt), info: buffer(info) }, key, length * 8))
 }
 
 /** Encrypts a single RFC 8291 aes128gcm record with fresh ECDH and salt material. */
-export const encryptWebPushPayload = async (subscription: WebPushSubscription, message: WebPushMessage) => {
+export const encryptWebPushPayload = async (input: WebPushSubscription, message: WebPushMessage | Uint8Array, cryptoApi = defaultCrypto()) => {
+  const subscription = parseWebPushSubscription(input)
   const endpoint = new URL(subscription.endpoint)
-  if (endpoint.protocol !== 'https:') throw new Error('Web Push endpoint is invalid')
+  const { subtle } = cryptoApi
   const receiverPublic = decode(subscription.keys.p256dh)
   const auth = decode(subscription.keys.auth)
   if (receiverPublic.length !== 65 || receiverPublic[0] !== 4 || auth.length !== 16) throw new Error('Web Push subscription is invalid')
-  const plaintext = encoder.encode(JSON.stringify(message))
+  const plaintext = message instanceof Uint8Array ? message : encoder.encode(JSON.stringify(message))
   if (plaintext.length > 3993) throw new Error('Web Push payload exceeds the RFC limit')
-  const receiver = await crypto.subtle.importKey('raw', buffer(receiverPublic), { name: 'ECDH', namedCurve: 'P-256' }, false, [])
-  const sender = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
-  const senderPublic = new Uint8Array(await crypto.subtle.exportKey('raw', sender.publicKey))
-  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: 'ECDH', public: receiver }, sender.privateKey, 256))
-  const ikm = await hkdf(shared, auth, concat(encoder.encode('WebPush: info'), new Uint8Array([0]), receiverPublic, senderPublic), 32)
-  const salt = crypto.getRandomValues(new Uint8Array(16))
-  const cek = await hkdf(ikm, salt, encoder.encode('Content-Encoding: aes128gcm\0'), 16)
-  const nonce = await hkdf(ikm, salt, encoder.encode('Content-Encoding: nonce\0'), 12)
-  const key = await crypto.subtle.importKey('raw', buffer(cek), { name: 'AES-GCM' }, false, ['encrypt'])
-  const encrypted = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: buffer(nonce) }, key, buffer(concat(plaintext, new Uint8Array([2])))))
+  const receiver = await subtle.importKey('raw', buffer(receiverPublic), { name: 'ECDH', namedCurve: 'P-256' }, false, [])
+  const sender = await subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const senderPublic = new Uint8Array(await subtle.exportKey('raw', sender.publicKey))
+  const shared = new Uint8Array(await subtle.deriveBits({ name: 'ECDH', public: receiver }, sender.privateKey, 256))
+  const ikm = await hkdf(shared, auth, concat(encoder.encode('WebPush: info'), new Uint8Array([0]), receiverPublic, senderPublic), 32, subtle)
+  const salt = cryptoApi.randomBytes(16)
+  if (salt.length !== 16) throw new Error('Web Push salt is invalid')
+  const cek = await hkdf(ikm, salt, encoder.encode('Content-Encoding: aes128gcm\0'), 16, subtle)
+  const nonce = await hkdf(ikm, salt, encoder.encode('Content-Encoding: nonce\0'), 12, subtle)
+  const key = await subtle.importKey('raw', buffer(cek), { name: 'AES-GCM' }, false, ['encrypt'])
+  const encrypted = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: buffer(nonce) }, key, buffer(concat(plaintext, new Uint8Array([2])))))
   const recordSize = new Uint8Array([0, 0, 16, 0])
   return { endpoint: endpoint.toString(), body: concat(salt, recordSize, new Uint8Array([senderPublic.length]), senderPublic, encrypted) }
 }
 
-const vapidAuthorization = async (endpoint: URL, config: VapidConfiguration, now: Date) => {
-  if (!/^mailto:.+@.+|^https:\/\/.+/.test(config.subject)) throw new Error('VAPID subject is invalid')
+const vapidAuthorization = async (endpoint: URL, config: VapidConfiguration, now: Date, subtle: SubtleCrypto) => {
+  if (!/^(?:mailto:[^\s@/?#]+@[^\s@/?#]+|https:\/\/[^\s/]+(?:\/[^\s]*)?)$/.test(config.subject) || !Number.isFinite(now.getTime())) throw new Error('VAPID subject or clock is invalid')
+  if (config.subject.startsWith('https:')) {
+    const subject = new URL(config.subject)
+    if (subject.username || subject.password || subject.hash) throw new Error('VAPID subject is invalid')
+  }
   const header = base64Url(encoder.encode(JSON.stringify({ typ: 'JWT', alg: 'ES256' })))
   const payload = base64Url(encoder.encode(JSON.stringify({ aud: endpoint.origin, exp: Math.floor(now.getTime() / 1000) + 23 * 60 * 60, sub: config.subject })))
-  const signature = new Uint8Array(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, config.privateKey, encoder.encode(`${header}.${payload}`)))
+  const publicBytes = decode(config.publicKey)
+  if (publicBytes.length !== 65 || publicBytes[0] !== 4 || base64Url(publicBytes) !== config.publicKey) throw new Error('VAPID public key is invalid')
+  const publicKey = await subtle.importKey('raw', buffer(publicBytes), { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify'])
+  const signed = encoder.encode(`${header}.${payload}`)
+  const signature = new Uint8Array(await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, config.privateKey, signed))
+  if (!await subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, publicKey, buffer(signature), signed)) throw new Error('VAPID keys do not match')
   return `vapid t=${header}.${payload}.${base64Url(signature)}, k=${config.publicKey}`
 }
 
 /** Performs one privacy-safe native Web Push submission without consuming provider response bodies. */
-export const sendWebPush = async (subscription: WebPushSubscription, message: WebPushMessage, config: VapidConfiguration, fetcher: typeof fetch = fetch, now = new Date()): Promise<WebPushAttemptResult> => {
+export const sendWebPush = async (subscription: WebPushSubscription, message: WebPushMessage, config: VapidConfiguration, fetcher: typeof fetch = fetch, now = new Date(), cryptoApi = defaultCrypto()): Promise<WebPushAttemptResult> => {
+  let encrypted: Awaited<ReturnType<typeof encryptWebPushPayload>>
+  let authorization: string
   try {
-    const encrypted = await encryptWebPushPayload(subscription, message)
-    const endpoint = new URL(encrypted.endpoint)
-    const response = await fetcher(endpoint, { method: 'POST', headers: new Headers({ authorization: await vapidAuthorization(endpoint, config, now), 'content-encoding': 'aes128gcm', ttl: '60', 'content-type': 'application/octet-stream' }), body: encrypted.body })
+    if (!message || ![message.title, message.body, message.url].every(value => typeof value === 'string') || !message.title) throw new Error('Invalid Web Push message')
+    encrypted = await encryptWebPushPayload(subscription, message, cryptoApi)
+    authorization = await vapidAuthorization(new URL(encrypted.endpoint), config, now, cryptoApi.subtle)
+  } catch { return { attempted: false, status: 'invalid-request' } }
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10_000)
+  try {
+    const response = await fetcher(new URL(encrypted.endpoint), { method: 'POST', redirect: 'error', signal: controller.signal, headers: new Headers({ authorization, 'content-encoding': 'aes128gcm', ttl: '60', 'content-type': 'application/octet-stream' }), body: buffer(encrypted.body) })
     if (response.status >= 200 && response.status < 300) return { attempted: true, status: 'submitted', httpStatus: response.status }
     return { attempted: true, status: response.status === 404 || response.status === 410 ? 'stale-endpoint' : response.status === 429 ? 'rate-limited' : response.status === 401 || response.status === 403 ? 'auth' : response.status >= 500 ? 'provider-5xx' : 'invalid-request', httpStatus: response.status }
-  } catch (error) {
-    return error instanceof TypeError ? { attempted: true, status: 'transport' } : { attempted: false, status: 'invalid-request' }
-  }
+  } catch { return { attempted: true, status: 'transport' } }
+  finally { clearTimeout(timeout) }
 }

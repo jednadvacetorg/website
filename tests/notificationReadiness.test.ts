@@ -29,12 +29,14 @@ test('every channel readiness prerequisite independently rejects direct activati
     sms: ['smsEnabled', 'smsFirstMessageReady', 'smsEventDeliveryReady', 'smsDeliveryReady', 'eventSmsOutboxSupported'],
     'web-push': ['webPushEnabled', 'webPushFirstMessageReady', 'webPushEventDeliveryReady', 'webPushDeliveryReady'],
   } as const
+  const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+  const push = JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.from(new Uint8Array(16)).toString('base64url') } })
   for (const channel of ['email', 'sms', 'web-push'] as const) {
     assert.equal(isNotificationChannelReady(channel, base), true)
     for (const gate of gates[channel]) {
       const config = { ...base, [gate]: false }
       assert.equal(isNotificationChannelReady(channel, config), false, gate)
-      await assert.rejects(activateNotificationChannel({ channel, contact: channel === 'email' ? 'test@example.test' : channel === 'sms' ? '+420777123456' : '{}', communitySlugs: ['brno'], frequencies: ['created'], consentAt: '2026-09-17T00:00:00Z', consentVersion: '2026-09' }, { database, config }), error => (error as { statusCode: number }).statusCode === 503)
+      await assert.rejects(activateNotificationChannel({ channel, contact: channel === 'email' ? 'test@example.test' : channel === 'sms' ? '+420777123456' : push, communitySlugs: ['brno'], frequencies: ['created'], consentAt: '2026-09-17T00:00:00Z', consentVersion: '2026-09' }, { database, config }), error => (error as { statusCode: number }).statusCode === 503)
     }
   }
   assert.equal((await notificationConfig(runtime)).eventSmsOutboxSupported, false)
