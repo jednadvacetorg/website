@@ -48,6 +48,9 @@ const vars = {
   NUXT_NOTIFICATION_SMS_ENABLED: 'true', NUXT_NOTIFICATION_SMS_FIRST_MESSAGE_READY: 'true', NUXT_NOTIFICATION_SMS_EVENT_DELIVERY_READY: 'true',
   NUXT_NOTIFICATION_WEB_PUSH_ENABLED: 'true', NUXT_NOTIFICATION_WEB_PUSH_FIRST_MESSAGE_READY: 'true', NUXT_NOTIFICATION_WEB_PUSH_EVENT_DELIVERY_READY: 'true',
   NUXT_BREVO_SENDER_NAME: 'Jednadvacet', NUXT_BREVO_SENDER_EMAIL: 'noreply@jednadvacet.org',
+  // Old asserted gates are also true: their defaults must not explain rejection.
+  NUXT_BREVO_SENDER_VERIFIED: 'true', NUXT_BREVO_SPF_VERIFIED: 'true', NUXT_BREVO_DKIM_VERIFIED: 'true', NUXT_BREVO_DMARC_VERIFIED: 'true', NUXT_BREVO_CALLBACK_VERIFIED: 'true',
+  NUXT_BREVO_SANDBOX_VERIFIED: 'true', NUXT_BREVO_LIVE_CANARY_VERIFIED: 'true', NUXT_NOTIFICATION_PRODUCTION_BINDINGS_VERIFIED: 'true', NUXT_NOTIFICATION_MIGRATION_VERIFIED: 'true',
   NOTIFICATION_SYNTHETIC_PUSH_CONTACT: JSON.stringify({ endpoint: 'https://push.example.test/local-proof', expirationTime: null, keys: { p256dh: publicKey, auth: randomBytes(16).toString('base64url') } }),
 }
 for (const [name, value] of Object.entries(vars)) console.log(`${name}=${value}`)
