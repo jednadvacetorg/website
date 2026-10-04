@@ -1,4 +1,4 @@
-import type { NotificationCrypto, NotificationLifecycleConfig } from './notifications.ts'
+import type { NotificationChannel, NotificationCrypto, NotificationLifecycleConfig } from './notifications.ts'
 import type { VapidConfiguration } from './webPush.ts'
 
 export class NotificationConfigurationError extends Error {
@@ -56,6 +56,56 @@ const requiredHostname = (value: unknown) => {
 const optionalPrivateText = (value: unknown) => typeof value === 'string' && value.trim() && value.length <= 4_096 ? value : undefined
 const exactTrue = (value: unknown) => value === true || value === 'true'
 
+const day = 86_400_000
+const hashPattern = /^[a-f0-9]{64}$/
+const evidenceGates = {
+  email: ['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs'],
+  sms: ['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'account', 'credits', 'country', 'compliance', 'sharedManagementStop', 'liveCanary'],
+  'web-push': ['artifacts', 'deployment', 'bindings', 'migration', 'vapid', 'protocol', 'interoperability', 'sharedManagementStop', 'liveCanary'],
+} as const
+
+/** Operator-owned observations use the 06-15 evidence envelope. Never accept local CLI/test proofs. */
+const operationalEvidence = async (channel: NotificationChannel, value: Record<string, unknown>, cryptoApi: NotificationCrypto, now: () => number) => {
+  try {
+    const name = channel === 'web-push' ? 'WebPush' : channel === 'sms' ? 'Sms' : 'Email'
+    const raw = value[`notification${name}Evidence`]
+    if (typeof raw !== 'string' || raw.length > 16_384) return () => false
+    const evidence: unknown = JSON.parse(raw)
+    if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return () => false
+    const row = evidence as Record<string, unknown>
+    if (row.channel !== channel || row.evidenceKind !== 'production-observation' || row.mode !== 'readiness' || row.manualSwitch !== true) return () => false
+    for (const field of ['targetIdentity', 'bundleHash', 'migrationHash', 'configHash'] as const) {
+      const expected = value[`notificationExpected${field[0]!.toUpperCase()}${field.slice(1)}`]
+      if (typeof expected !== 'string' || !hashPattern.test(expected) || row[field] !== expected) return () => false
+    }
+    const deployment = value.notificationExpectedDeploymentId
+    if (typeof deployment !== 'string' || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/.test(deployment) || row.deploymentId !== deployment) return () => false
+    // Changes to the root/provider/VAPID identity invalidate previously observed evidence.
+    const publicConfig = value.public as Record<string, unknown> | undefined
+    const material = channel === 'email'
+      ? [value.notificationRootKey, value.brevoApiKey, value.brevoCallbackSecret, value.brevoSenderName, value.brevoSenderEmail]
+      : channel === 'sms' ? [value.notificationRootKey, value.brevoApiKey, value.brevoSenderName]
+        : [value.notificationRootKey, value.notificationVapidPrivateKey, publicConfig?.notificationVapidPublicKey ?? value.notificationVapidPublicKey, value.notificationVapidSubject]
+    const keyHash = Array.from(new Uint8Array(await cryptoApi.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(material)))), byte => byte.toString(16).padStart(2, '0')).join('')
+    if (row.keyHash !== keyHash) return () => false
+    const gates = row.gates as Record<string, unknown> | undefined
+    if (!gates || [...evidenceGates[channel], 'firstMessage', 'eventDelivery'].some(gate => gates[gate] !== 'passed')) return () => false
+    if (channel === 'sms' && exactTrue(value.notificationSmsDeliveryCallbacksConfigured) && gates.deliveryCallbackAuth !== 'passed') return () => false
+    // Each claimed browser family has its own observation, rather than a single asserted compatibility flag.
+    if (channel === 'web-push') {
+      const browsers = row.interoperability
+      if (!Array.isArray(browsers) || !browsers.length || browsers.length > 8 || new Set(browsers).size !== browsers.length || !browsers.every(browser => ['chromium', 'firefox', 'safari-macos', 'ios-home-screen'].includes(browser) && gates[`browser:${browser}`] === 'passed')) return () => false
+    }
+    const verifiedAt = typeof row.verifiedAt === 'string' ? Date.parse(row.verifiedAt) : NaN
+    const expiresAt = typeof row.expiresAt === 'string' ? Date.parse(row.expiresAt) : NaN
+    // Re-evaluate on every gate read; a long-lived Queue request cannot retain expired authority.
+    return () => {
+      const current = now()
+      return Number.isFinite(verifiedAt) && Number.isFinite(expiresAt) && verifiedAt <= current && current - verifiedAt <= day && expiresAt > current && expiresAt > verifiedAt && expiresAt - verifiedAt <= day
+    }
+  } catch { return () => false }
+}
+
 const optionalVapidConfiguration = async (value: Record<string, unknown>, cryptoApi: NotificationCrypto): Promise<VapidConfiguration | undefined> => {
   const publicRuntime = value.public && typeof value.public === 'object' && !Array.isArray(value.public)
     ? value.public as Record<string, unknown>
@@ -112,15 +162,6 @@ const emailDelivery = (value: Record<string, unknown>) => {
     && brevoCallbackSecret && brevoCallbackSecret.length >= 24
     && brevoSenderName && brevoSenderName.length <= 96
     && value.brevoSenderEmail === 'noreply@jednadvacet.org'
-    && exactTrue(value.brevoSenderVerified)
-    && exactTrue(value.brevoSpfVerified)
-    && exactTrue(value.brevoDkimVerified)
-    && exactTrue(value.brevoDmarcVerified)
-    && exactTrue(value.brevoCallbackVerified)
-    && exactTrue(value.notificationProductionBindingsVerified)
-    && exactTrue(value.notificationMigrationVerified)
-    && exactTrue(value.brevoSandboxVerified)
-    && exactTrue(value.brevoLiveCanaryVerified)
     && exactTrue(value.notificationEmailManualEnabled),
   )
   return { brevoApiKey, brevoCallbackSecret, brevoSenderName, ready: complete }
@@ -130,14 +171,18 @@ const smsDelivery = (value: Record<string, unknown>) => {
   const apiKey = optionalPrivateText(value.brevoApiKey)
   const sender = optionalPrivateText(value.brevoSenderName)
   return Boolean(apiKey && apiKey.length >= 24
-    && sender && /^(?:[A-Za-z0-9]{1,11}|\d{1,15})$/.test(sender)
-    && exactTrue(value.notificationProductionBindingsVerified))
+    && sender && /^(?:[A-Za-z0-9]{1,11}|\d{1,15})$/.test(sender))
 }
 
 /** Loads only private runtime configuration into non-extractable Worker Web Crypto keys. */
-export const notificationConfig = async (value: Record<string, unknown>, cryptoApi = defaultCrypto()): Promise<NotificationLifecycleConfig> => {
+export const notificationConfig = async (value: Record<string, unknown>, cryptoApi = defaultCrypto(), now = Date.now): Promise<NotificationLifecycleConfig> => {
   const email = emailDelivery(value)
   const webPushDelivery = await optionalVapidConfiguration(value, cryptoApi)
+  const [emailEvidence, smsEvidence, pushEvidence] = await Promise.all([
+    operationalEvidence('email', value, cryptoApi, now),
+    operationalEvidence('sms', value, cryptoApi, now),
+    operationalEvidence('web-push', value, cryptoApi, now),
+  ])
   return {
   communitySlugs: typeof value.notificationCommunitySlugs === 'string'
     ? value.notificationCommunitySlugs.split(',').map(slug => slug.trim()).filter(Boolean)
@@ -162,9 +207,10 @@ export const notificationConfig = async (value: Record<string, unknown>, cryptoA
    smsEnabled: asBoolean(value.notificationSmsEnabled),
    smsFirstMessageReady: asBoolean(value.notificationSmsFirstMessageReady),
    smsEventDeliveryReady: asBoolean(value.notificationSmsEventDeliveryReady),
-   smsDeliveryReady: smsDelivery(value),
-   eventSmsOutboxSupported: false,
-  emailDeliveryReady: email.ready,
+    get smsDeliveryReady() { return smsDelivery(value) && smsEvidence() },
+    get eventSmsOutboxSupported() { return smsEvidence() },
+    get eventWebPushOutboxSupported() { return pushEvidence() },
+   get emailDeliveryReady() { return email.ready && emailEvidence() },
   brevoApiKey: email.brevoApiKey,
   brevoSenderName: email.brevoSenderName,
   brevoCallbackSecret: email.brevoCallbackSecret,
@@ -172,6 +218,6 @@ export const notificationConfig = async (value: Record<string, unknown>, cryptoA
    webPushFirstMessageReady: asBoolean(value.notificationWebPushFirstMessageReady),
    webPushEventDeliveryReady: asBoolean(value.notificationWebPushEventDeliveryReady),
    webPushDelivery,
-   webPushDeliveryReady: Boolean(webPushDelivery),
+    get webPushDeliveryReady() { return Boolean(webPushDelivery) && pushEvidence() },
    }
 }

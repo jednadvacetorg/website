@@ -32,9 +32,9 @@ export interface NotificationLifecycleConfig {
   smsFirstMessageReady: boolean
   smsEventDeliveryReady: boolean
   smsDeliveryReady: boolean
-  /** False until a separately reviewed D1 migration adds event-sms to the outbox kind constraint. */
+  /** Target-bound migration evidence; the supplied D1 is also probed at authorization. */
   eventSmsOutboxSupported: boolean
-  /** Unattested/absent is false until target-bound schema readiness is implemented. */
+  /** Unattested/absent is false. The supplied D1 is also probed at authorization. */
   eventWebPushOutboxSupported?: boolean
   /** Complete, private, deployment-bound authority for external event email. */
   emailDeliveryReady: boolean
@@ -91,6 +91,18 @@ export const isNotificationChannelReady = (channel: NotificationChannel, config:
   : channel === 'sms'
     ? config.smsEnabled && config.smsFirstMessageReady && config.smsEventDeliveryReady && config.smsDeliveryReady && config.eventSmsOutboxSupported
     : config.emailSmsEnabled && config.emailSmsFirstMessageReady && config.emailSmsEventDeliveryReady && config.emailDeliveryReady
+
+/** Read the supplied binding, not a schema file or a claimed migration boolean. No subscriber data is loaded. */
+export const notificationSchemaReady = async (database: NotificationDatabase) => {
+  try {
+    await database.prepare(`SELECT d.channel, d.community_slug, d.eligibility_frequency, d.expected_capability_generation,
+      o.kind, o.version, o.claim_token, o.claim_expires_at, c.capability_generation,
+      cap.token_digest, cap.expires_at, e.notification_revision
+      FROM notification_event_deliveries d, notification_outbox o, notification_contacts c,
+      notification_management_capabilities cap, notification_event_state e WHERE 0`).all()
+    return true
+  } catch { return false }
+}
 const keyedHash = async (value: string, key: CryptoKey, cryptoApi: NotificationCrypto) => toBase64Url(new Uint8Array(await cryptoApi.subtle.sign('HMAC', key, encoder.encode(value))))
 const digest = async (value: string, cryptoApi: NotificationCrypto) => toBase64Url(new Uint8Array(await cryptoApi.subtle.digest('SHA-256', encoder.encode(value))))
 const encrypt = async (value: string, key: CryptoKey, cryptoApi: NotificationCrypto) => {
@@ -122,7 +134,7 @@ const outboxStatement = async (contact: ContactRow, token: string, kind: 'first-
 export const activateNotificationChannel = async (input: unknown, dependencies: NotificationDependencies): Promise<ActivationResult> => {
   const { config, database } = dependencies
   const parsed = validateNotificationActivation(input, config, dependencies.now?.() ?? new Date())
-  if (!isNotificationChannelReady(parsed.channel, config)) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
+  if (!isNotificationChannelReady(parsed.channel, config) || !await notificationSchemaReady(database)) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
   const cryptoApi = dependencies.crypto ?? defaultCrypto()
   if (parsed.channel === 'web-push') {
     try { await validateWebPushSubscriptionPoint(JSON.parse(parsed.contact), cryptoApi.subtle) }

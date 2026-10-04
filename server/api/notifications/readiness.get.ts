@@ -1,6 +1,6 @@
 import { defineEventHandler, setResponseHeader } from 'h3'
 import { notificationConfig } from '../../utils/notificationConfig.ts'
-import { isNotificationChannelReady, type NotificationDatabase } from '../../utils/notifications.ts'
+import { isNotificationChannelReady, notificationSchemaReady, type NotificationDatabase } from '../../utils/notifications.ts'
 import { notificationUiVerificationFixtureEnabled } from '../../utils/notificationUiVerificationFixture.ts'
 
 export interface NotificationReadiness {
@@ -16,7 +16,7 @@ export const projectNotificationReadiness = async (runtimeConfig: Record<string,
   try {
     if (notificationUiVerificationFixtureEnabled(runtimeConfig)) return { email: true, sms: true, webPush: false }
     const config = await notificationConfig(runtimeConfig)
-    if (!database) return unavailable
+    if (!database || !await notificationSchemaReady(database)) return unavailable
     return { email: isNotificationChannelReady('email', config), sms: isNotificationChannelReady('sms', config), webPush: isNotificationChannelReady('web-push', config) }
   } catch {
     return unavailable

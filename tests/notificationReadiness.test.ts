@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { createRequire } from 'node:module'
+import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 
 import readinessHandler, { projectNotificationReadiness } from '../server/api/notifications/readiness.get.ts'
 import { createApp, toWebHandler } from 'h3'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
-import { activateNotificationChannel, isNotificationChannelReady, type NotificationDatabase } from '../server/utils/notifications.ts'
+import { activateNotificationChannel, isNotificationChannelReady, notificationSchemaReady, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 
 test('public readiness fails closed without a database or private configuration', async () => {
   const readiness = await projectNotificationReadiness({})
@@ -22,7 +25,7 @@ const runtime = {
 }
 
 test('every channel readiness prerequisite independently rejects direct activation before database access', async () => {
-  const base = { ...await notificationConfig(runtime), smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
+  const base = { ...await notificationConfig(runtime), emailDeliveryReady: true, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
   const database: NotificationDatabase = { prepare: () => { throw new Error('Unexpected database access') }, batch: async () => { throw new Error('Unexpected database writes') } }
   const gates = {
     email: ['emailSmsEnabled', 'emailSmsFirstMessageReady', 'emailSmsEventDeliveryReady', 'emailDeliveryReady'],
@@ -42,12 +45,35 @@ test('every channel readiness prerequisite independently rejects direct activati
   assert.equal((await notificationConfig(runtime)).eventSmsOutboxSupported, false)
 })
 
-test('public email readiness agrees with complete private gates and SMS schema stays unsupported', async () => {
+test('public readiness rejects boolean-only evidence and an object pretending to be D1', async () => {
   const database = {} as NotificationDatabase
-  assert.deepEqual(await projectNotificationReadiness(runtime, database), { email: true, sms: false, webPush: false })
-  for (const gate of ['notificationEmailSmsEnabled', 'notificationEmailSmsFirstMessageReady', 'notificationEmailSmsEventDeliveryReady', 'brevoSenderVerified', 'brevoSpfVerified', 'brevoDkimVerified', 'brevoDmarcVerified', 'brevoCallbackVerified', 'notificationProductionBindingsVerified', 'notificationMigrationVerified', 'brevoSandboxVerified', 'brevoLiveCanaryVerified', 'notificationEmailManualEnabled']) {
-    assert.deepEqual(await projectNotificationReadiness({ ...runtime, [gate]: false }, database), { email: false, sms: false, webPush: false }, gate)
+  assert.deepEqual(await projectNotificationReadiness(runtime, database), { email: false, sms: false, webPush: false })
+})
+
+test('real applied migration probe rejects old or unavailable D1 before direct activation writes', async t => {
+  const Database = createRequire(import.meta.url)('better-sqlite3') as new (filename: string) => { close(): void, exec(sql: string): void, prepare(sql: string): { all(): unknown[] } }
+  const sqlite = new Database(':memory:')
+  t.after(() => sqlite.close())
+  sqlite.exec(readFileSync(new URL('../server/db/migrations/sqlite/0000_majestic_lightspeed.sql', import.meta.url), 'utf8'))
+  let writes = 0
+  const database: NotificationDatabase = {
+    prepare: sql => ({ all: async () => ({ results: sqlite.prepare(sql).all() }) } as NotificationStatement),
+    batch: async () => { writes++; throw new Error('Unexpected write') },
   }
+  const config = { ...await notificationConfig(runtime), emailDeliveryReady: true }
+  assert.equal(await notificationSchemaReady(database), false)
+  await assert.rejects(activateNotificationChannel({ channel: 'email', contact: 'test@example.test', communitySlugs: ['brno'], frequencies: ['created'], consentAt: '2026-10-04', consentVersion: '2026-09' }, { database, config }), error => (error as { statusCode: number }).statusCode === 503)
+  assert.equal(writes, 0)
+  for (const name of ['0001_phase_7_columns', '0002_phase_7_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+  assert.equal(await notificationSchemaReady(database), true)
+  const observed = { ...runtime, notificationExpectedTargetIdentity: '1'.repeat(64), notificationExpectedBundleHash: '2'.repeat(64), notificationExpectedMigrationHash: '3'.repeat(64), notificationExpectedConfigHash: '4'.repeat(64), notificationExpectedDeploymentId: '11111111-1111-1111-1111-111111111111' }
+  const now = Date.now()
+  const evidence = { channel: 'email', evidenceKind: 'production-observation', mode: 'readiness', manualSwitch: true, targetIdentity: observed.notificationExpectedTargetIdentity, bundleHash: observed.notificationExpectedBundleHash, migrationHash: observed.notificationExpectedMigrationHash, configHash: observed.notificationExpectedConfigHash, deploymentId: observed.notificationExpectedDeploymentId, verifiedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 60_000).toISOString(),
+    keyHash: createHash('sha256').update(JSON.stringify([runtime.notificationRootKey, runtime.brevoApiKey, runtime.brevoCallbackSecret, runtime.brevoSenderName, runtime.brevoSenderEmail])).digest('hex'),
+    gates: Object.fromEntries(['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs', 'firstMessage', 'eventDelivery'].map(gate => [gate, 'passed'])) }
+  assert.deepEqual(await projectNotificationReadiness({ ...observed, notificationEmailEvidence: JSON.stringify(evidence) }, database), { email: true, sms: false, webPush: false })
+  assert.deepEqual(await projectNotificationReadiness({ ...observed, notificationEmailEvidence: JSON.stringify({ ...evidence, evidenceKind: 'local-candidate' }) }, database), { email: false, sms: false, webPush: false })
+  assert.equal(await notificationSchemaReady({ prepare() { throw new Error('D1 down') }, batch: database.batch }), false)
 })
 
 test('actual readiness handler returns only three booleans with no-store', async () => {
