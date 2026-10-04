@@ -1,4 +1,4 @@
-import type { NotificationCrypto, NotificationDatabase, NotificationLifecycleConfig } from './notifications.ts'
+import { isNotificationChannelReady, notificationSchemaReady, type NotificationCrypto, type NotificationDatabase, type NotificationLifecycleConfig } from './notifications.ts'
 import type { BrevoAttemptResult } from './brevoEmail.ts'
 import type { BrevoSmsAttemptResult } from './brevoSms.ts'
 import type { WebPushAttemptResult } from './webPush.ts'
@@ -229,9 +229,13 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
     authorization = await readAuthorization()
     authorize = async () => {
       try {
+        // Probes must precede the final subscriber read: awaiting one afterwards
+        // would let a concurrent stop invalidate the authority we just read.
+        if (!await notificationSchemaReady(dependencies.database)) { authorizationLost = true; return false }
         const current = await readAuthorization()
+        if (current && !isNotificationChannelReady(current.channel, dependencies.config)) authorizationLost = true
         if (!current) authorizationLost = true
-        if (current && eventPayload) {
+        if (current && !authorizationLost && eventPayload) {
           // Reserve every event attempt before transport so recovery cannot mistake
           // in-flight work for unsent work. Only an owned SMS/push transient result
           // clears this reservation; a process crash remains deliberately ambiguous.
@@ -256,9 +260,11 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
 
   try {
     // A manual switch-off is terminal, not retryable backlog: nothing reaches Brevo.
-    if ((payload.kind === 'event-email' && !(dependencies.config.emailSmsEnabled && dependencies.config.emailSmsEventDeliveryReady && dependencies.config.emailDeliveryReady)) || (payload.kind === 'event-sms' && !(dependencies.config.smsEnabled && dependencies.config.smsEventDeliveryReady && dependencies.config.smsDeliveryReady && dependencies.config.eventSmsOutboxSupported)) || (payload.kind === 'event-web-push' && !(dependencies.config.webPushEnabled && dependencies.config.webPushEventDeliveryReady && dependencies.config.webPushDeliveryReady && dependencies.config.eventWebPushOutboxSupported))) {
-      await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
+    if (!isNotificationChannelReady(authorization.channel, dependencies.config) || !await notificationSchemaReady(dependencies.database)) {
+      if ('deliveryId' in payload) await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
         .bind('failed', nowIso(dependencies), payload.deliveryId, 'pending').run()
+      await failClaim(pointer, token, authorization, dependencies)
+      return { delivered: false, stale: true }
     } else {
       const result = await deliver(payload, authorization, authorize)
       if (authorizationError) throw authorizationError

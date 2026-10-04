@@ -791,17 +791,54 @@ test('SMS lifecycle provider failures retry transient results and retain termina
   await activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: smsConfig, crypto: predictableCrypto })
   const pointer = pointerFor(query)
 
-  await assert.rejects(consumeNotificationOutboxPointer(pointer, { database, config, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'provider-5xx' })))
+  await assert.rejects(consumeNotificationOutboxPointer(pointer, { database, config: smsConfig, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'provider-5xx' })))
   const [retryable] = query('SELECT status, payload_ciphertext, claim_token FROM notification_outbox')
   assert.equal(retryable!.status, 'queued')
   assert.equal(typeof retryable!.payload_ciphertext, 'string')
   assert.equal(retryable!.claim_token, null)
 
-  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'auth' })), { delivered: false, stale: false })
+  assert.deepEqual(await consumeNotificationOutboxPointer(pointer, { database, config: smsConfig, crypto: predictableCrypto }, async () => ({ attempted: true, status: 'auth' })), { delivered: false, stale: false })
   const [terminal] = query('SELECT status, payload_ciphertext, terminal_at FROM notification_outbox')
   assert.equal(terminal!.status, 'invalidated')
   assert.equal(terminal!.payload_ciphertext, null)
   assert.equal(typeof terminal!.terminal_at, 'string')
+})
+
+test('lifecycle delivery rechecks independent readiness after composition before transport', async () => {
+  for (const changeAfterComposition of [false, true]) {
+    const { database, query } = disposableDatabase()
+    const ready = { ...config }
+    await activateNotificationChannel(input, { database, config: ready, crypto: predictableCrypto })
+    if (!changeAfterComposition) ready.emailDeliveryReady = false
+    let transports = 0
+    const result = await consumeNotificationOutboxPointer(pointerFor(query), { database, config: ready }, async (_payload, _authority, authorize) => {
+      ready.emailDeliveryReady = false
+      if (await authorize()) transports++
+    })
+    assert.equal(result.delivered, false)
+    assert.equal(transports, 0)
+    assert.equal(query('SELECT payload_ciphertext FROM notification_outbox')[0]!.payload_ciphertext, null)
+  }
+})
+
+test('a stop committed during the awaited schema probe precedes the final transport authority read', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+  let probes = 0
+  const interrupted: NotificationDatabase = { ...database, prepare(sql) {
+    const statement = database.prepare(sql)
+    if (!sql.startsWith('SELECT d.channel, d.community_slug')) return statement
+    return { ...statement, all: async <T>() => {
+      const results = await statement.all<T>()
+      if (++probes === 2) await stopNotificationChannel(initialToken, { database, config })
+      return results
+    } }
+  } }
+  let calls = 0
+  const result = await dispatchNotificationQueueMessage({ id: 'probe-stop', body: pointerFor(query) }, { database: interrupted, config }, syntheticRuntime, async () => { calls++; return new Response(null, { status: 201 }) })
+  assert.equal(probes, 2)
+  assert.equal(calls, 0)
+  assert.deepEqual(result, { delivered: false, stale: true })
 })
 
 test('a stale lifecycle Web Push endpoint is suppressed and removed', async () => {
@@ -818,7 +855,7 @@ test('a stale lifecycle Web Push endpoint is suppressed and removed', async () =
   assert.deepEqual(query('SELECT id FROM notification_contacts'), [])
 })
 
-test('SMS activation is blocked by the actual unsupported event schema despite provider flags', async () => {
+test('SMS activation rejects missing migration evidence despite provider flags', async () => {
   const { database, query } = disposableDatabase()
   const smsConfig = { ...config, emailSmsEnabled: false, emailSmsEventDeliveryReady: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true }
   await assert.rejects(activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: smsConfig, crypto: predictableCrypto }), error => (error as { statusCode: number }).statusCode === 503)
