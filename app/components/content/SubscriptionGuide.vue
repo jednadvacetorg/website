@@ -39,8 +39,17 @@ const challengeRequired = ref(false)
 const turnstileToken = ref('')
 const recoveryChallengeRequired = ref(false)
 const recoveryTurnstileToken = ref('')
-const webPushState = ref<'active' | 'unsupported' | 'denied' | 'install' | 'error' | null>(null)
+const webPushState = ref<'active' | 'updated' | 'pending-reactivation' | 'default' | 'unsupported' | 'denied' | 'install' | 'error' | 'rate-limited' | null>(null)
 const isWebPushActivating = ref(false)
+const pushChallengeRequired = ref(false)
+const pushTurnstileToken = ref('')
+const pushRecoveryState = ref<'success' | 'error' | 'rate-limited' | null>(null)
+const isPushRecovering = ref(false)
+const pushRecoveryChallengeRequired = ref(false)
+const pushRecoveryTurnstileToken = ref('')
+// A challenge retries this same device/request, never a fresh permission prompt.
+let pushActivationRequest: { channel: 'web-push', contact: PushSubscriptionJSON, communitySlugs: string[], frequencies: FrequencyValue[], consentAt: string, consentVersion: string } | undefined
+let pushRecoveryContact: PushSubscriptionJSON | undefined
 
 const { data: communities, status, refresh } = await useAsyncData('subscription-guide-communities', () => {
   return queryCollection('communities')
@@ -166,19 +175,65 @@ const vapidPublicKey = computed(() => {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{80,120}$/.test(value) ? value : null
 })
 const enableWebPush = async () => {
-  if (!isMethodReady('web-push') || !hasSelectedScope.value || !vapidPublicKey.value) return
-  if (!window.isSecureContext || !('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { webPushState.value = 'unsupported'; return }
-  if (/iP(?:hone|ad|od)/.test(navigator.userAgent) && !window.matchMedia('(display-mode: standalone)').matches) { webPushState.value = 'install'; return }
+  if (!isMethodReady('web-push') || !hasSelectedScope.value || !vapidPublicKey.value || isWebPushActivating.value) return
   isWebPushActivating.value = true
+  webPushState.value = null
   try {
-    const registration = await navigator.serviceWorker.register('/notification-sw.js', { scope: '/' })
-    const permission = await Notification.requestPermission()
-    if (permission !== 'granted') { webPushState.value = permission === 'denied' ? 'denied' : 'unsupported'; return }
-    const bytes = Uint8Array.from(atob(vapidPublicKey.value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - vapidPublicKey.value.length % 4) % 4)), character => character.charCodeAt(0))
-    const subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes })
-    await $fetch('/api/notifications/activate', { method: 'POST', body: { channel: 'web-push', contact: subscription.toJSON(), communitySlugs: notificationScope.value, frequencies: selectedFrequencies.value, consentAt: new Date().toISOString(), consentVersion: '2026-09' } })
-    webPushState.value = 'active'
-  } catch { webPushState.value = 'error' } finally { isWebPushActivating.value = false }
+    if (pushActivationRequest && 'Notification' in window && Notification.permission !== 'granted') {
+      webPushState.value = Notification.permission === 'denied' ? 'denied' : 'default'
+      pushActivationRequest = undefined
+      pushChallengeRequired.value = false
+      return
+    }
+    if (!pushChallengeRequired.value || !pushActivationRequest) {
+      const iosHint = /iP(?:hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+      const installed = window.matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true
+      if (iosHint && !installed && !('PushManager' in window)) { webPushState.value = 'install'; return }
+      if (!window.isSecureContext || !('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) { webPushState.value = 'unsupported'; return }
+      if (Notification.permission === 'denied') { webPushState.value = 'denied'; return }
+      // requestPermission starts synchronously in the click handler, before any await.
+      const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission()
+      if (permission !== 'granted') { webPushState.value = permission === 'denied' ? 'denied' : 'default'; return }
+      await navigator.serviceWorker.register('/notification-sw.js', { scope: '/' })
+      const registration = await navigator.serviceWorker.ready
+      const bytes = Uint8Array.from(atob(vapidPublicKey.value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - vapidPublicKey.value.length % 4) % 4)), character => character.charCodeAt(0))
+      const subscription = await registration.pushManager.getSubscription() ?? await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes })
+      pushActivationRequest = { channel: 'web-push', contact: subscription.toJSON(), communitySlugs: [...notificationScope.value], frequencies: [...selectedFrequencies.value], consentAt: new Date().toISOString(), consentVersion: '2026-09' }
+    }
+    const result = await $fetch<{ state: 'active' | 'updated' | 'pending-reactivation' }>('/api/notifications/activate', { method: 'POST', body: { ...pushActivationRequest, ...(pushTurnstileToken.value ? { turnstileToken: pushTurnstileToken.value } : {}) } })
+    if (!['active', 'updated', 'pending-reactivation'].includes(result.state)) throw new Error('Unexpected activation response')
+    webPushState.value = result.state
+    pushChallengeRequired.value = false
+    pushActivationRequest = undefined
+  } catch (error) {
+    const code = (error as { statusCode?: number }).statusCode
+    pushChallengeRequired.value = code === 403
+    webPushState.value = code === 429 ? 'rate-limited' : 'error'
+    if (!pushChallengeRequired.value) pushActivationRequest = undefined
+  } finally { pushTurnstileToken.value = ''; isWebPushActivating.value = false }
+}
+const requestPushRecovery = async () => {
+  if (!isMethodReady('web-push') || isPushRecovering.value) return
+  isPushRecovering.value = true
+  pushRecoveryState.value = null
+  try {
+    if (!pushRecoveryChallengeRequired.value || !pushRecoveryContact) {
+      pushRecoveryContact = undefined
+      if (window.isSecureContext && 'serviceWorker' in navigator) {
+        const registration = await navigator.serviceWorker.getRegistration('/')
+        pushRecoveryContact = (await registration?.pushManager.getSubscription())?.toJSON()
+      }
+    }
+    if (pushRecoveryContact) await $fetch('/api/notifications/manage-request', { method: 'POST', body: { channel: 'web-push', contact: pushRecoveryContact, ...(pushRecoveryTurnstileToken.value ? { turnstileToken: pushRecoveryTurnstileToken.value } : {}) } })
+    pushRecoveryState.value = 'success'
+    pushRecoveryChallengeRequired.value = false
+    pushRecoveryContact = undefined
+  } catch (error) {
+    const code = (error as { statusCode?: number }).statusCode
+    pushRecoveryChallengeRequired.value = code === 403
+    pushRecoveryState.value = code === 429 ? 'rate-limited' : 'error'
+    if (!pushRecoveryChallengeRequired.value) pushRecoveryContact = undefined
+  } finally { pushRecoveryTurnstileToken.value = ''; isPushRecovering.value = false }
 }
 const expressSmsInterest = () => {
   $counterscale.trackSmsIntent()
@@ -387,11 +442,25 @@ onMounted(() => {
           <template v-else>
             <template v-if="isMethodReady('web-push') && vapidPublicKey">
               <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isWebPushActivating" :disabled="!hasSelectedScope || isWebPushActivating" @click="enableWebPush">Aktivovat oznámení v prohlížeči</UButton>
-              <UAlert v-if="webPushState === 'active'" color="success" title="Oznámení jsou pro tento prohlížeč aktivní." role="status" />
+              <UButton color="neutral" variant="link" :loading="isPushRecovering" :disabled="isPushRecovering" @click="requestPushRecovery">Poslat odkaz pro správu tohoto prohlížeče</UButton>
+              <UAlert v-if="webPushState === 'active'" color="success" title="Oznámení jsou pro tento prohlížeč aktivní. Odkaz pro správu ti pošleme v první zprávě." role="status" />
+              <UAlert v-else-if="webPushState === 'updated'" color="success" title="Nastavení oznámení jsme aktualizovali." role="status" />
+              <UAlert v-else-if="webPushState === 'pending-reactivation'" color="warning" title="Obnovení potvrď přes odkaz pro správu. Do té doby ti upozornění na akce neposíláme." role="status" />
+              <UAlert v-else-if="webPushState === 'default'" color="neutral" title="Oznámení jsi zatím nepovolil. Nic jsme neaktivovali; můžeš to zkusit znovu." role="status" />
               <UAlert v-else-if="webPushState === 'denied'" color="warning" title="Oznámení máš v prohlížeči zakázaná. Povol je v jeho nastavení a pak to zkus znovu." role="alert" />
               <UAlert v-else-if="webPushState === 'install'" color="neutral" title="Na iPhonu nebo iPadu si nejdřív přidej web na plochu a otevři ho jako aplikaci." role="status" />
-              <UAlert v-else-if="webPushState === 'unsupported'" color="neutral" title="Tento prohlížeč teď oznámení nepodporuje nebo je nemůžeš povolit." role="status" />
-              <UAlert v-else-if="webPushState === 'error'" color="error" title="Oznámení se teď nepodařilo aktivovat. Nic jsme neuložili; zkus to prosím později." role="alert" />
+              <UAlert v-else-if="webPushState === 'unsupported'" color="neutral" title="Tento prohlížeč teď oznámení nepodporuje. Můžeš odebírat kalendář přes iCalendar." role="status" />
+              <UAlert v-else-if="webPushState === 'rate-limited'" color="warning" title="Počkej prosím alespoň minutu, než to zkusíš znovu." role="alert" />
+              <UAlert v-else-if="webPushState === 'error'" color="error" :title="pushChallengeRequired ? 'Nejdřív ověř požadavek a pak aktivaci zkus znovu.' : 'Aktivaci se teď nepodařilo potvrdit. Zkus to prosím později.'" role="alert" />
+              <UFormField v-if="pushChallengeRequired && publicConfig.notificationTurnstileSiteKey" label="Ověřovací kód pro oznámení" name="push-turnstile-token">
+                <UInput v-model="pushTurnstileToken" autocomplete="off" />
+              </UFormField>
+              <UAlert v-if="pushRecoveryState === 'success'" color="neutral" title="Pokud pro tento prohlížeč existuje správa oznámení, pošleme ti odkaz. Bez uloženého odběru není co obnovit." role="status" />
+              <UAlert v-else-if="pushRecoveryState === 'rate-limited'" color="warning" title="Počkej prosím alespoň minutu, než požádáš o odkaz znovu." role="alert" />
+              <UAlert v-else-if="pushRecoveryState === 'error'" color="error" :title="pushRecoveryChallengeRequired ? 'Nejdřív ověř požadavek a pak požádej o odkaz znovu.' : 'Odkaz se teď nepodařilo vyžádat. Zkus to prosím později.'" role="alert" />
+              <UFormField v-if="pushRecoveryChallengeRequired && publicConfig.notificationTurnstileSiteKey" label="Ověřovací kód pro správu prohlížeče" name="push-recovery-turnstile-token">
+                <UInput v-model="pushRecoveryTurnstileToken" autocomplete="off" />
+              </UFormField>
             </template>
             <template v-else>
               <UButton color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope" @click="expressWebInterest">Mám zájem o oznámení ve webu</UButton>

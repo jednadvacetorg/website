@@ -2,8 +2,8 @@
 set -euo pipefail
 
 mode="${1:---all}"
-if [[ "$mode" != "--all" && "$mode" != "--fake-doors" && "$mode" != "--guide" && "$mode" != "--management" && "$mode" != "--manual-management" && "$mode" != "--test-manual-management" ]]; then
-  echo "Usage: $0 [--all|--fake-doors|--guide|--management|--manual-management|--test-manual-management]" >&2
+if [[ "$mode" != "--all" && "$mode" != "--push" && "$mode" != "--fake-doors" && "$mode" != "--guide" && "$mode" != "--management" && "$mode" != "--manual-management" && "$mode" != "--test-manual-management" ]]; then
+  echo "Usage: $0 [--all|--push|--fake-doors|--guide|--management|--manual-management|--test-manual-management]" >&2
   exit 64
 fi
 
@@ -12,6 +12,7 @@ ready_port=2105
 manual_port=2106
 server_pids=()
 browser_session=""
+push_init=""
 temporary_dir="${TMPDIR:-/tmp}"
 screenshot_dir="${AGENT_BROWSER_SCREENSHOT_DIR:-/tmp/screenshots}"
 
@@ -32,6 +33,7 @@ case "$mode" in
   --all|--guide) ports=("$guide_port" "$ready_port") ;;
   --management) ports=("$guide_port") ;;
   --fake-doors) ports=("$guide_port") ;;
+  --push) ports=("$guide_port") ;;
   --manual-management|--test-manual-management) ports=("$manual_port") ;;
 esac
 for port in "${ports[@]}"; do assert_port_free "$port"; done
@@ -67,6 +69,7 @@ cleanup() {
     agent-browser --session "$browser_session" close >/dev/null 2>&1 || true
   fi
   stop_servers
+  if [[ -n "$push_init" ]]; then rm -f "$push_init"; fi
 }
 
 start_server() {
@@ -76,11 +79,15 @@ start_server() {
   assert_port_free "$port"
   local log_file
   log_file="$(mktemp "${temporary_dir%/}/notification-lifecycle-ui-${port}-XXXXXX.log")"
+  local owned_dir
+  owned_dir="$(mktemp -d "${temporary_dir%/}/notification-lifecycle-cache-${port}-XXXXXXXX")"
+  mkdir "$owned_dir/home"
+  local isolated_env=(env -i "PATH=$PATH" "HOME=$owned_dir/home" "NUXT_BUILD_DIR=$owned_dir/nuxt" "CONTENT_LOCAL_DATABASE_PATH=$owned_dir/content.sqlite" NODE_USE_ENV_PROXY=1 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1)
 
   if [[ "$fixture" == true ]]; then
-    setsid env NUXT_NOTIFICATION_UI_VERIFICATION_FIXTURE=true NUXT_PUBLIC_NOTIFICATION_TURNSTILE_SITE_KEY=notification-ui-verification-site-key npm run dev -- --port "$port" >"$log_file" 2>&1 &
+    setsid "${isolated_env[@]}" NUXT_NOTIFICATION_UI_VERIFICATION_FIXTURE=true NUXT_PUBLIC_NOTIFICATION_TURNSTILE_SITE_KEY=notification-ui-verification-site-key npm run dev -- --port "$port" --dotenv /dev/null >"$log_file" 2>&1 &
   else
-    setsid npm run dev -- --port "$port" >"$log_file" 2>&1 &
+    setsid "${isolated_env[@]}" npm run dev -- --port "$port" --dotenv /dev/null >"$log_file" 2>&1 &
   fi
   server_pids+=("$!")
   local server_pid="${server_pids[-1]}"
@@ -109,6 +116,147 @@ start_server() {
 
 trap cleanup EXIT
 trap 'cleanup; exit 0' INT TERM
+
+if [[ "$mode" == '--push' ]]; then
+  if [[ -n "${NOTIFICATION_UI_BASE_URL:-}" ]]; then
+    [[ "$NOTIFICATION_UI_BASE_URL" == http://127.0.0.1:* || "$NOTIFICATION_UI_BASE_URL" == http://localhost:* ]] || { echo 'Push verification requires an owned loopback server.' >&2; exit 1; }
+    base_url="$NOTIFICATION_UI_BASE_URL"
+  else
+    [[ -f .output/server/wrangler.json ]] || { echo 'Build the actual Cloudflare Worker before --push.' >&2; exit 1; }
+    node --experimental-strip-types --input-type=module <<'JS'
+import { readFileSync } from 'node:fs'
+import { validateNotificationDeploymentConfiguration } from './scripts/verify-email-delivery.ts'
+const config = JSON.parse(readFileSync('.output/server/wrangler.json', 'utf8'))
+validateNotificationDeploymentConfiguration(config, config.d1_databases?.[0]?.database_name === 'web-preview' ? 'preview' : 'production')
+JS
+    owned_push_dir="$(mktemp -d "${temporary_dir%/}/notification-push-worker-XXXXXXXX")"
+    mkdir "$owned_push_dir/home"
+    base_url="http://127.0.0.1:$guide_port"
+    setsid env -i "PATH=$PATH" "HOME=$owned_push_dir/home" "NOTIFICATION_PUSH_STORAGE=$owned_push_dir/storage" NODE_USE_ENV_PROXY=1 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 WRANGLER_SEND_METRICS=false node --input-type=module >"$owned_push_dir/worker.log" 2>&1 <<'JS' &
+import { unstable_startWorker } from 'wrangler'
+const worker = await unstable_startWorker({ config: '.output/server/wrangler.json', dev: { remote: false, watch: false, persist: process.env.NOTIFICATION_PUSH_STORAGE, server: { hostname: '127.0.0.1', port: 2104 }, outboundService() { throw new Error('External network denied by push UI verification') } } })
+process.on('SIGTERM', async () => { await worker.dispose(); process.exit(0) })
+await worker.ready
+await new Promise(() => {})
+JS
+    server_pids+=("$!")
+    ready=false
+    for _ in {1..60}; do
+      if curl --silent --fail --max-time 1 "$base_url/lide" >/dev/null; then ready=true; break; fi
+      if ! kill -0 "${server_pids[-1]}" 2>/dev/null; then break; fi
+      sleep 1
+    done
+    [[ "$ready" == true ]] || { echo "Built Worker startup failed; inspect $owned_push_dir/worker.log and stop for a tooling decision." >&2; exit 1; }
+    echo "Owned built Worker: process_group=${server_pids[-1]} evidence=$owned_push_dir"
+  fi
+  mkdir -p "$screenshot_dir"
+  push_init="$(mktemp "${temporary_dir%/}/notification-push-init-XXXXXXXX.js")"
+  cat >"$push_init" <<'JS'
+const proof = window.__pushProof = { permission: 'default', outcome: 'granted', permissionCalls: 0, registers: 0, subscribes: 0, existing: false, activation: 'active', status: 200, recoveryStatus: 202, posts: [], analytics: [] }
+const subscription = { toJSON: () => ({ endpoint: 'https://push.example.test/browser-proof', expirationTime: null, keys: { p256dh: 'synthetic-point', auth: 'synthetic-auth' } }) }
+const registration = { pushManager: { getSubscription: async () => proof.existing ? subscription : null, subscribe: async () => { proof.subscribes++; proof.existing = true; return subscription } } }
+Object.defineProperty(window, 'PushManager', { configurable: true, value: function() {} })
+Object.defineProperty(window, 'Notification', { configurable: true, value: { get permission() { return proof.permission }, requestPermission() { if (!navigator.userActivation.isActive) throw Error('Permission lost user gesture'); proof.permissionCalls++; proof.permission = proof.outcome; return Promise.resolve(proof.outcome) } } })
+Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { register: async () => { proof.registers++; if (proof.permission !== 'granted') throw Error('Registration before permission'); return registration }, ready: Promise.resolve(registration), getRegistration: async () => registration } })
+const originalFetch = window.fetch.bind(window)
+window.fetch = async (input, options = {}) => {
+  const url = typeof input === 'string' ? input : input.url ?? String(input)
+  if (url.includes('/api/notifications/readiness')) return new Response(JSON.stringify({ email: false, sms: false, webPush: true }), { headers: { 'content-type': 'application/json' } })
+  if (url.includes('/api/notifications/activate') || url.includes('/api/notifications/manage-request')) {
+    const body = JSON.parse(options.body); proof.posts.push({ url, body })
+    const status = url.includes('activate') ? proof.status : proof.recoveryStatus
+    return new Response(JSON.stringify(status >= 400 ? { statusCode: status } : url.includes('activate') ? { state: proof.activation } : { message: 'Pokud pro tento prohlížeč existuje správa oznámení, pošleme ti odkaz.' }), { status, headers: { 'content-type': 'application/json' } })
+  }
+  return originalFetch(input, options)
+}
+JS
+  ab() { agent-browser --session "$browser_session" --init-script "$push_init" --allowed-domains localhost,127.0.0.1 --screenshot-dir "$screenshot_dir" "$@"; }
+  check_push() { ab wait --fn "$1" >/dev/null; }
+  for width in 1280 320; do
+    for surface in kalendar brno; do
+      ab set viewport "$width" 900 >/dev/null
+      ab open "$base_url/lide" >/dev/null
+      check_push 'document.getElementById("__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false'
+      # A prerendered false-ready payload would suppress the client readiness
+      # request. Drop only that cached payload so the real useFetch boundary runs.
+      ab network route '**/_payload.json*' --abort >/dev/null
+      ab network route '**/api/notifications/readiness' --body '{"email":false,"sms":false,"webPush":true}' >/dev/null
+      ab eval --stdin <<'JS' >/dev/null
+const nuxt = document.getElementById('__nuxt').__vue_app__.config.globalProperties.$nuxt
+if (!nuxt.$config.public.notificationVapidPublicKey) nuxt.$config.public.notificationVapidPublicKey = 'B' + 'A'.repeat(86)
+nuxt.$config.public.notificationTurnstileSiteKey = 'synthetic-site-key'
+for (const name of ['trackWebIntent', 'trackSmsIntent', 'trackEmailIntent', 'trackSubscriptionGuide', 'trackICalendarCopy']) nuxt.$counterscale[name] = (...args) => { if (args.length) throw Error('Sensitive analytics arguments'); window.__pushProof.analytics.push(name) }
+JS
+      ab eval "document.getElementById('__nuxt').__vue_app__.config.globalProperties.\$router.push('/$surface')" >/dev/null
+      if [[ "$surface" == brno ]]; then
+        ab wait --text 'Nadcházející události' >/dev/null
+        ab find role button click --name 'Sledovat události' >/dev/null
+      fi
+      ab wait --text 'Aktivovat oznámení v prohlížeči' >/dev/null
+      check_push 'window.__pushProof.permissionCalls === 0 && window.__pushProof.posts.length === 0'
+      activate_push() { ab find role button click --name 'Aktivovat oznámení v prohlížeči' >/dev/null; }
+      # Dismissed permission is distinct from unsupported and never posts.
+      ab eval 'window.__pushProof.outcome = "default"' >/dev/null
+      activate_push
+      ab wait --text 'Oznámení jsi zatím nepovolil' >/dev/null
+      check_push 'window.__pushProof.posts.length === 0 && window.__pushProof.subscribes === 0'
+      ab eval 'window.__pushProof.permission = "denied"' >/dev/null
+      activate_push
+      ab wait --text 'Oznámení máš v prohlížeči zakázaná' >/dev/null
+      check_push 'window.__pushProof.permissionCalls === 1'
+      # The challenge reuses one canonical native JSON body and subscription.
+      ab eval 'Object.assign(window.__pushProof,{permission:"default",outcome:"granted",status:403})' >/dev/null
+      activate_push
+      ab wait --text 'Ověřovací kód pro oznámení' >/dev/null
+      check_push 'window.__pushProof.subscribes === 1 && window.__pushProof.registers === 1 && window.__pushProof.permissionCalls === 2'
+      ab find label 'Ověřovací kód pro oznámení' fill 'synthetic-body-token' >/dev/null
+      ab eval 'Object.assign(window.__pushProof,{status:200,activation:"pending-reactivation"})' >/dev/null
+      activate_push
+      ab wait --text 'Obnovení potvrď přes odkaz pro správu' >/dev/null
+      check_push 'window.__pushProof.posts.length === 2 && JSON.stringify(window.__pushProof.posts[0].body.contact) === JSON.stringify(window.__pushProof.posts[1].body.contact) && window.__pushProof.posts[1].body.turnstileToken === "synthetic-body-token" && window.__pushProof.permissionCalls === 2 && window.__pushProof.subscribes === 1'
+      for state in updated active; do
+        ab eval "window.__pushProof.activation = '$state'" >/dev/null
+        activate_push
+        if [[ "$state" == updated ]]; then ab wait --text 'Nastavení oznámení jsme aktualizovali' >/dev/null
+        else ab wait --text 'Oznámení jsou pro tento prohlížeč aktivní' >/dev/null; fi
+        check_push '!window.__pushProof.posts.at(-1).body.turnstileToken && window.__pushProof.subscribes === 1'
+      done
+      ab eval 'window.__pushProof.status = 429' >/dev/null
+      activate_push
+      ab wait --text 'Počkej prosím alespoň minutu' >/dev/null
+      check_push 'window.__pushProof.posts.filter(p=>p.url.includes("activate")).length === 5'
+      ab eval 'window.__pushProof.recoveryStatus = 403' >/dev/null
+      ab find role button click --name 'Poslat odkaz pro správu tohoto prohlížeče' >/dev/null
+      ab wait --text 'Ověřovací kód pro správu prohlížeče' >/dev/null
+      ab find label 'Ověřovací kód pro správu prohlížeče' fill 'synthetic-recovery-token' >/dev/null
+      ab eval 'window.__pushProof.recoveryStatus = 202' >/dev/null
+      ab find role button click --name 'Poslat odkaz pro správu tohoto prohlížeče' >/dev/null
+      ab wait --text 'Pokud pro tento prohlížeč existuje správa oznámení' >/dev/null
+      check_push 'window.__pushProof.posts.at(-1).body.turnstileToken === "synthetic-recovery-token" && window.__pushProof.posts.at(-1).body.contact.expirationTime === null && window.__pushProof.permissionCalls === 2 && window.__pushProof.subscribes === 1'
+      ab eval 'window.__pushProof.existing = false; window.__pushProof.beforeRecovery = window.__pushProof.posts.length' >/dev/null
+      ab find role button click --name 'Poslat odkaz pro správu tohoto prohlížeče' >/dev/null
+      check_push 'window.__pushProof.posts.length === window.__pushProof.beforeRecovery && document.documentElement.scrollWidth <= innerWidth'
+      ab eval 'window.__pushProof.status = 503' >/dev/null
+      activate_push
+      ab wait --text 'Aktivaci se teď nepodařilo potvrdit' >/dev/null
+      ab eval 'delete window.PushManager' >/dev/null
+      activate_push
+      ab wait --text 'Tento prohlížeč teď oznámení nepodporuje' >/dev/null
+      ab eval 'Object.defineProperty(navigator,"userAgent",{configurable:true,value:"iPhone"})' >/dev/null
+      activate_push
+      ab wait --text 'Na iPhonu nebo iPadu si nejdřív přidej web na plochu' >/dev/null
+      # A desktop-mode iPad with actual capabilities is not rejected by UA alone.
+      ab eval 'Object.defineProperty(navigator,"userAgent",{configurable:true,value:"Macintosh"});Object.defineProperty(navigator,"platform",{configurable:true,value:"MacIntel"});Object.defineProperty(navigator,"maxTouchPoints",{configurable:true,value:5});Object.defineProperty(window,"PushManager",{configurable:true,value:function(){}});window.__pushProof.status=200' >/dev/null
+      activate_push
+      ab wait --text 'Oznámení jsou pro tento prohlížeč aktivní' >/dev/null
+      ab screenshot "$screenshot_dir/notification-push-$surface-$width.png" >/dev/null
+      ab eval 'JSON.stringify(window.__pushProof)' --json >"$screenshot_dir/notification-push-$surface-$width.json"
+      ab close >/dev/null
+    done
+  done
+  echo 'Push permission/challenge/pending/recovery browser boundary verification passed (synthetic browser/route I/O only).'
+  exit 0
+fi
 
 if [[ "$mode" == "--manual-management" ]]; then
   start_server "$manual_port" true
