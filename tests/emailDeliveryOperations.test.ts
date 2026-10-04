@@ -343,6 +343,8 @@ test('multichannel observation review reuses runtime gates, joint switches and o
     for (const mutation of [{ evidenceKind: 'local-candidate' }, { targetIdentity: 'f'.repeat(64) }, { bundleHash: 'f'.repeat(64) }, { migrationHash: 'f'.repeat(64) }, { configHash: 'f'.repeat(64) }, { keyHash: 'f'.repeat(64) }, { expiresAt: new Date(now).toISOString() }, { verifiedAt: new Date(now + 1).toISOString() }, { gates: { ...original.gates, sharedManagementStop: 'pending', callbackMetadata: 'pending' } }]) await assert.rejects(run({ ...runtime, [field]: JSON.stringify({ ...original, ...mutation }) }), /evidence/)
   }
   await assert.rejects(run({ ...runtime, notificationSmsDeliveryCallbacksConfigured: true }), /evidence/)
+  const sms = JSON.parse(runtime.notificationSmsEvidence as string)
+  await run({ ...runtime, notificationSmsDeliveryCallbacksConfigured: true, notificationSmsEvidence: JSON.stringify({ ...sms, gates: { ...sms.gates, deliveryCallbackAuth: 'passed' } }) })
   await run({ ...runtime, notificationSmsDeliveryCallbacksConfigured: false })
   const email = JSON.parse(runtime.notificationEmailEvidence as string)
   await assert.rejects(run({ ...runtime, notificationSmsDeliveryCallbacksConfigured: false, notificationEmailEvidence: JSON.stringify({ ...email, gates: { ...email.gates, callbackMetadata: 'pending' } }) }), /evidence/)
