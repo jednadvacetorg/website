@@ -84,6 +84,36 @@ const bounded = async <T>(operation: Promise<T>, milliseconds = timeoutMs): Prom
   } finally { if (timer) clearTimeout(timer) }
 }
 
+/** Validates generated JSON, shared by the CLI and the local built-Worker safety gate. */
+export const validateNotificationDeploymentConfiguration = (input: unknown, profile: 'production' | 'preview', expected = { worker: 'jednadvacetorg-web', d1Id: '76d271b2-5335-40ba-81dd-bf7e1ef79522', d1Name: 'web', queue: 'notification-messages', dlq: 'notification-messages-dlq' }) => {
+  const config = record(input)
+  check(config.name === expected.worker && typeof config.main === 'string', 'worker')
+  const databases = rows(config.d1_databases)
+  const d1 = databases.filter(binding => binding.binding === 'DB')
+  check(d1.length === 1, 'd1')
+  // Every binding is local-only in this gate, including non-notification bindings.
+  for (const field of ['d1_databases', 'kv_namespaces', 'r2_buckets', 'services', 'dispatch_namespaces']) for (const binding of rows(config[field] ?? [])) check(binding.remote !== true, 'remote-binding')
+  check(!config.services || rows(config.services).length === 0, 'service-binding')
+  const queues = config.queues ? record(config.queues) : {}
+  const producers = rows(queues.producers ?? [])
+  const consumers = rows(queues.consumers ?? [])
+  for (const binding of producers) check(binding.remote !== true, 'remote-binding')
+  check(!config.ai && !config.browser && !config.images && rows(config.hyperdrive ?? []).length === 0 && rows(config.vectorize ?? []).length === 0 && rows(config.dispatch_namespaces ?? []).length === 0, 'external-binding')
+  const crons = config.triggers ? record(config.triggers).crons : []
+  check(Array.isArray(crons), 'cron')
+  if (profile === 'preview') {
+    check(databases.length === 1 && d1[0]!.database_name === 'web-preview' && !d1[0]!.database_id, 'preview-d1')
+    check(rows(config.kv_namespaces ?? []).length === 0 && rows(config.r2_buckets ?? []).length === 0 && producers.length === 0 && consumers.length === 0 && crons.length === 0, 'preview-production-binding')
+  } else {
+    check(d1[0]!.database_id === expected.d1Id && d1[0]!.database_name === expected.d1Name, 'd1')
+    check(producers.filter(binding => binding.binding === 'NOTIFICATION_MESSAGES_QUEUE' && binding.queue === expected.queue).length === 1, 'queue')
+    check(consumers.filter(binding => binding.queue === expected.queue && binding.dead_letter_queue === expected.dlq).length === 1, 'dlq')
+    check(crons.includes('13 * * * *'), 'cron')
+  }
+  const logs = record(record(config.observability).logs)
+  check(logs.enabled === true && logs.persist === true && logs.invocation_logs === true, 'observability')
+}
+
 export const emailVerificationTarget = (value: unknown): 'production' => {
   check(value === 'production', 'target production')
   return value
@@ -157,12 +187,7 @@ export const runEmailVerification = async (options: EmailVerificationOptions, de
     const config = record(json(configBytes))
     const configHash = hash(configBytes)
     check(configHash === digest(expected.configHash), 'config-hash')
-    const configD1 = rows(config.d1_databases).filter(binding => binding.binding === 'DB')
-    check(config.name === target.worker && configD1.length === 1 && configD1[0]!.database_id === target.d1Id && configD1[0]!.database_name === target.d1Name, 'd1')
-    const queues = record(config.queues)
-    check(rows(queues.producers).filter(binding => binding.binding === 'NOTIFICATION_MESSAGES_QUEUE' && binding.queue === target.queue).length === 1, 'queue')
-    check(rows(queues.consumers).filter(binding => binding.queue === target.queue && binding.dead_letter_queue === target.dlq).length === 1, 'dlq')
-    check(Array.isArray(record(config.triggers).crons) && (record(config.triggers).crons as unknown[]).includes('13 * * * *'), 'cron')
+    validateNotificationDeploymentConfiguration(config, 'production', target)
     const logging = (settings: Record<string, unknown>) => {
       const logs = record(record(settings.observability).logs)
       check(logs.enabled === true && logs.persist === true && logs.invocation_logs === true, 'observability')

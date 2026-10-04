@@ -89,6 +89,17 @@ export default defineNuxtConfig({
     notificationTurnstileSecret: '',
     notificationTurnstileExpectedHostname: '',
     notificationConsentVersion: '',
+    // Operator-owned production observations, bound to the reviewed deployment and
+    // artifacts. Local-candidate records never authorize runtime delivery.
+    notificationExpectedTargetIdentity: '',
+    notificationExpectedDeploymentId: '',
+    notificationExpectedBundleHash: '',
+    notificationExpectedMigrationHash: '',
+    notificationExpectedConfigHash: '',
+    notificationEmailEvidence: '',
+    notificationSmsEvidence: '',
+    notificationWebPushEvidence: '',
+    notificationSmsDeliveryCallbacksConfigured: false,
     notificationEmailSmsEnabled: false,
     notificationEmailSmsFirstMessageReady: false,
     notificationEmailSmsEventDeliveryReady: false,
@@ -97,7 +108,7 @@ export default defineNuxtConfig({
     notificationSmsEnabled: false,
     notificationSmsFirstMessageReady: false,
     notificationSmsEventDeliveryReady: false,
-    // All email evidence is private and defaults false: a deploy can never enable Brevo.
+    // Legacy assertions alone cannot enable delivery; bounded observations are required.
     brevoApiKey: '',
     brevoCallbackSecret: '',
     brevoSenderName: '',

@@ -28,6 +28,30 @@ const sha = (value: string) => createHash('sha256').update(value).digest('hex')
 const sentinels = ['private-api-key', 'private-callback-bearer', 'private-cloudflare-token', 'suppression@example.test', 'final@example.test', 'private-provider-body', 'private-command-error', 'A'.repeat(43), 'message_123456789', 'callback_event_123456', 'final_delivery_123456']
 const safe = (value: unknown) => { for (const sentinel of sentinels) assert.ok(!String(typeof value === 'string' ? value : JSON.stringify(value)).includes(sentinel), sentinel) }
 
+if (process.env.NOTIFICATION_CONFIG_ISOLATION === 'true') test('generated notification configuration production/preview isolation and negative controls', async () => {
+  assert.ok(process.env.NOTIFICATION_PRODUCTION_CONFIG, 'actual production artifact path is required')
+  assert.ok(process.env.NOTIFICATION_PREVIEW_CONFIG, 'actual preview artifact path is required')
+  const production = JSON.parse(await readFile(process.env.NOTIFICATION_PRODUCTION_CONFIG, 'utf8'))
+  const preview = JSON.parse(await readFile(process.env.NOTIFICATION_PREVIEW_CONFIG, 'utf8'))
+  operations.validateNotificationDeploymentConfiguration(production, 'production')
+  operations.validateNotificationDeploymentConfiguration(preview, 'preview')
+  const withoutDlq = structuredClone(production)
+  delete withoutDlq.queues.consumers.find((binding: { queue: string }) => binding.queue === 'notification-messages').dead_letter_queue
+  assert.throws(() => operations.validateNotificationDeploymentConfiguration(withoutDlq, 'production'), /dlq/)
+  const withProductionDatabase = structuredClone(preview)
+  withProductionDatabase.d1_databases = structuredClone(production.d1_databases)
+  assert.throws(() => operations.validateNotificationDeploymentConfiguration(withProductionDatabase, 'preview'), /preview-d1/)
+  for (const field of ['queues', 'kv_namespaces', 'r2_buckets', 'triggers']) {
+    assert.throws(() => operations.validateNotificationDeploymentConfiguration({ ...preview, [field]: structuredClone(production[field]) }, 'preview'), /preview-production-binding/, field)
+  }
+  const withRemoteDatabase = structuredClone(production)
+  withRemoteDatabase.d1_databases[0].remote = true
+  assert.throws(() => operations.validateNotificationDeploymentConfiguration(withRemoteDatabase, 'production'), /remote-binding/)
+  const withoutLogs = structuredClone(production)
+  withoutLogs.observability.logs.invocation_logs = false
+  assert.throws(() => operations.validateNotificationDeploymentConfiguration(withoutLogs, 'production'), /observability/)
+})
+
 const fixture = async (t: TestContext) => {
   const directory = await mkdtemp('/tmp/email-operations-')
   t.after(() => rm(directory, { recursive: true, force: true }))
