@@ -119,7 +119,7 @@ function downloadImage(url: string, filename: string) {
               />
             </div>
 
-            <div class="mt-3 flex gap-2 items-center">
+            <div class="mt-3 flex gap-2 items-start">
               <UButton
                 color="primary"
                 variant="subtle"
@@ -138,13 +138,19 @@ function downloadImage(url: string, filename: string) {
               >
                 Stáhnout
               </UButton>
-              <img
-                :src="preview.url"
-                :alt="`Malý náhled ${preview.label}`"
-                class="ml-auto rounded border border-gray-200 dark:border-gray-700"
-                width="160"
-                loading="lazy"
-              />
+              <figure v-if="preview.typicalPreview" class="ml-auto text-right">
+                <img
+                  :src="preview.url"
+                  :alt="`${preview.typicalPreview.label} (${preview.typicalPreview.width}×${preview.typicalPreview.height})`"
+                  class="rounded border border-gray-200 dark:border-gray-700"
+                  :width="preview.typicalPreview.width"
+                  :style="{ aspectRatio: `${preview.width} / ${preview.height}` }"
+                  loading="lazy"
+                />
+                <figcaption class="text-xs text-gray-500 mt-1">
+                  {{ preview.typicalPreview.label }} · {{ preview.typicalPreview.width }}×{{ preview.typicalPreview.height }}
+                </figcaption>
+              </figure>
             </div>
           </div>
         </div>

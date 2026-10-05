@@ -63,6 +63,7 @@ const contentJustify = computed(() => props.layout === 'host' ? 'center' : 'spac
             lineHeight: 1.15,
             fontWeight: 700,
             fontStyle: 'italic',
+            textTransform: 'uppercase',
             textShadow: '0 2px 24px rgba(0,0,0,0.6)',
           }"
         >
