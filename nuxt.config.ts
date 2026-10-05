@@ -282,7 +282,9 @@ export default defineNuxtConfig({
     },
     prerender: {
       routes: ['/'],
-      ignore: ['/_studio'],
+      // Debug OG previews render on demand; prerendering all variants
+      // for every article would pointlessly slow down the build.
+      ignore: ['/_studio', '/debug/**'],
       crawlLinks: true,
     },
     preset: 'cloudflare_module',

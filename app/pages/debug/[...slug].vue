@@ -28,11 +28,20 @@ const ogImage = buildOgImageCall({
 })
 
 // Same template and settings as the public article; URLs are in variant order.
-const urls = defineOgImage('Article', ogImage.sharedProps, ogImage.allOptions)
+//
+// defineOgImage() returns [] during client hydration by design, so the
+// server-computed URLs are carried over in payload state. Recomputing them
+// on the client would cause hydration mismatches and broken images.
+const urls = useState<string[]>(`debug-og-urls:${articlePath}`, () => {
+  if (import.meta.server) {
+    return defineOgImage('Article', ogImage.sharedProps, ogImage.allOptions)
+  }
+  return []
+})
 
 const previews = ogImageVariants.map((variant, index) => ({
   ...variant,
-  url: urls[index] ?? '',
+  url: urls.value[index] ?? '',
 }))
 
 function downloadImage(url: string, filename: string) {

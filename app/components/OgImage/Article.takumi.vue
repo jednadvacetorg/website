@@ -43,7 +43,7 @@ const contentJustify = computed(() => props.layout === 'host' ? 'center' : 'spac
 </script>
 
 <template>
-  <div style="position: relative; width: 100%; height: 100%; overflow: hidden; background-color: #111827; display: flex; font-family: 'Ubuntu', sans-serif;">
+  <div style="position: relative; width: 100%; height: 100%; overflow: hidden; background-color: #111827; display: flex; font-family: 'Ubuntu';">
     <img
       :src="image"
       :alt="title"
