@@ -66,7 +66,7 @@ const communityMapSrc = (variant: 'sm' | 'md' | 'lg') => import.meta.dev
     </template>
   </UPageHero>
 
-  <UContainer v-if="community.body || community.organizers?.length" class="pb-12">
+  <UContainer v-if="community.body || community.organizers?.length" class="max-w-3xl pb-12">
     <div v-if="community.body" class="prose dark:prose-invert">
       <ContentRenderer :value="community" />
     </div>
