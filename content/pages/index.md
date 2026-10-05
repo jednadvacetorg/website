@@ -11,8 +11,6 @@ redirect_from:
 
 :homepage-hero
 
-:homepage-topics
-
 ::u-page-section
 ---
 id: pribehy
