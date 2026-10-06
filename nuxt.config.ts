@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { navigationItems } from './shared/data/navigation'
 
 const isPreviewDeploy = Boolean(process.env.PREVIEW_DEPLOY)
@@ -52,6 +53,13 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  alias: {
+    // Redirects only the nuxt-og-image Tailwind theme resolution to a
+    // dedicated stylesheet (see app/assets/css/og-image.css). Nothing else
+    // imports this specifier, so the site build is unaffected.
+    '#tailwindcss': fileURLToPath(new URL('./app/assets/css/og-image.css', import.meta.url)),
+  },
+
   devtools: { enabled: true },
 
   modules: [
@@ -69,7 +77,7 @@ export default defineNuxtConfig({
 
   fonts: {
     families: [
-      { name: 'Ubuntu', weights: [400, 700], styles: ['italic'], global: true },
+      { name: 'Ubuntu Sans', weights: [400, 800], styles: ['normal'], global: true },
     ],
   },
 
