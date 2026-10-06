@@ -7,11 +7,9 @@ const props = withDefaults(defineProps<{
   image: string
   layout?: OgImageLayout
   format?: OgImageFormat
-  scale?: number
 }>(), {
   layout: 'default',
   format: 'landscape',
-  scale: 1,
 })
 
 interface FormatStyle {
@@ -25,17 +23,20 @@ const formatStyles: Record<OgImageFormat, FormatStyle> = {
   landscape: { padding: 64, titleSize: 64, titleMaxWidth: 760, logoHeight: 56 },
   square: { padding: 48, titleSize: 48, titleMaxWidth: 640, logoHeight: 48 },
   portrait: { padding: 56, titleSize: 56, titleMaxWidth: 880, logoHeight: 52 },
-  youtube: { padding: 80, titleSize: 84, titleMaxWidth: 1200, logoHeight: 72 },
+  // Stories display fullscreen on phones, so the title is doubled for legibility.
+  story: { padding: 56, titleSize: 112, titleMaxWidth: 880, logoHeight: 52 },
+  // YouTube thumbnails are mostly seen at search-result size, so the title
+  // and logo are enlarged by 70% compared to a plain 16:9 layout.
+  youtube: { padding: 80, titleSize: 143, titleMaxWidth: 1200, logoHeight: 122 },
 }
 
 const style = computed<FormatStyle>(() => {
   const base = formatStyles[props.format]
-  const scale = props.scale
   return {
-    padding: base.padding * scale,
-    titleSize: base.titleSize * scale * (props.layout === 'host' ? 1.15 : 1),
-    titleMaxWidth: base.titleMaxWidth * scale,
-    logoHeight: base.logoHeight * scale,
+    padding: base.padding,
+    titleSize: base.titleSize * (props.layout === 'host' ? 1.15 : 1),
+    titleMaxWidth: base.titleMaxWidth,
+    logoHeight: base.logoHeight,
   }
 })
 

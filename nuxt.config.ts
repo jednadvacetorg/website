@@ -87,10 +87,6 @@ export default defineNuxtConfig({
     },
     // Czech titles need latin-ext glyphs (ě, š, č, ř, ž, ý, á, í, é, ú, ů, ó, ď, ť, ň).
     fontSubsets: ['latin', 'latin-ext'],
-    security: {
-      // Must cover the 3840px YouTube 4K export (default limit is 2048px).
-      maxDimension: 3840,
-    },
   },
 
   site: {

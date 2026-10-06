@@ -107,19 +107,21 @@ function downloadImage(url: string, filename: string) {
               </div>
             </div>
 
-            <div
-              class="bg-gray-100 dark:bg-gray-800 rounded overflow-hidden"
-              :style="{ aspectRatio: `${preview.width} / ${preview.height}` }"
-            >
+            <figure>
               <img
                 :src="preview.url"
-                :alt="`Náhled ${preview.label}`"
-                class="w-full h-full object-cover"
+                :alt="`${preview.typicalPreview.label} (${preview.typicalPreview.width}×${preview.typicalPreview.height})`"
+                class="rounded border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800"
+                :width="preview.typicalPreview.width"
+                :style="{ aspectRatio: `${preview.width} / ${preview.height}` }"
                 loading="lazy"
               />
-            </div>
+              <figcaption class="text-xs text-gray-500 mt-1">
+                Typické zobrazení: {{ preview.typicalPreview.label }} · {{ preview.typicalPreview.width }}×{{ preview.typicalPreview.height }}
+              </figcaption>
+            </figure>
 
-            <div class="mt-3 flex gap-2 items-start">
+            <div class="mt-3 flex gap-2 items-center">
               <UButton
                 color="primary"
                 variant="subtle"
@@ -128,7 +130,7 @@ function downloadImage(url: string, filename: string) {
                 target="_blank"
                 external
               >
-                Otevřít
+                Otevřít plnou velikost
               </UButton>
               <UButton
                 color="neutral"
@@ -138,19 +140,6 @@ function downloadImage(url: string, filename: string) {
               >
                 Stáhnout
               </UButton>
-              <figure v-if="preview.typicalPreview" class="ml-auto text-right">
-                <img
-                  :src="preview.url"
-                  :alt="`${preview.typicalPreview.label} (${preview.typicalPreview.width}×${preview.typicalPreview.height})`"
-                  class="rounded border border-gray-200 dark:border-gray-700"
-                  :width="preview.typicalPreview.width"
-                  :style="{ aspectRatio: `${preview.width} / ${preview.height}` }"
-                  loading="lazy"
-                />
-                <figcaption class="text-xs text-gray-500 mt-1">
-                  {{ preview.typicalPreview.label }} · {{ preview.typicalPreview.width }}×{{ preview.typicalPreview.height }}
-                </figcaption>
-              </figure>
             </div>
           </div>
         </div>
