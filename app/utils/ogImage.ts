@@ -28,10 +28,10 @@ export const ogImageVariants: OgImageVariant[] = [
   { key: 'twitter', label: 'X Card', description: 'Twitter/X karta, poměr 2 : 1', width: 1200, height: 600, format: 'landscape', isPublic: true, typicalPreview: { width: 360, height: 180, label: 'X – karta v timeline' } },
   { key: 'square', label: 'Square Preview', description: 'Doplňkový čtvercový OG obrázek, zejména WhatsApp', width: 800, height: 800, format: 'square', isPublic: true, typicalPreview: { width: 300, height: 300, label: 'WhatsApp – náhled v chatu (mobil)' } },
   { key: 'linkedin', label: 'LinkedIn', description: 'Sdílení na LinkedIn', width: 1200, height: 627, format: 'landscape', isPublic: false, typicalPreview: { width: 360, height: 188, label: 'LinkedIn – náhled odkazu' } },
-  { key: 'social-square', label: 'Social Square', description: 'Instagram/Facebook příspěvek, čtvercový podcastový obal', width: 1080, height: 1080, format: 'square', isPublic: false, typicalPreview: { width: 390, height: 390, label: 'Instagram – příspěvek (mobil)' } },
-  { key: 'social-portrait', label: 'Social Portrait', description: 'Příspěvky na výšku, poměr 4 : 5', width: 1080, height: 1350, format: 'portrait', isPublic: false, typicalPreview: { width: 390, height: 488, label: 'Instagram – příspěvek na výšku (mobil)' } },
-  { key: 'social-vertical', label: 'Social Vertical', description: 'Stories, Reels, TikTok a Shorts', width: 1080, height: 1920, format: 'story', isPublic: false, typicalPreview: { width: 360, height: 640, label: 'Stories – fullscreen (mobil)' } },
-  { key: 'youtube', label: 'YouTube', description: 'Video náhledovka', width: 1920, height: 1080, format: 'youtube', isPublic: false, typicalPreview: { width: 360, height: 202, label: 'YouTube – výsledky vyhledávání' } },
+  { key: 'social-square', label: 'Social Square', description: 'Instagram/Facebook příspěvek, čtvercový podcastový obal', width: 1080, height: 1080, format: 'square', isPublic: false, typicalPreview: { width: 507, height: 507, label: 'Instagram – příspěvek (mobil)' } },
+  { key: 'social-portrait', label: 'Social Portrait', description: 'Příspěvky na výšku, poměr 4 : 5', width: 1080, height: 1350, format: 'portrait', isPublic: false, typicalPreview: { width: 429, height: 537, label: 'Instagram – příspěvek na výšku (mobil)' } },
+  { key: 'social-vertical', label: 'Social Vertical', description: 'Stories, Reels, TikTok a Shorts', width: 1080, height: 1920, format: 'story', isPublic: false, typicalPreview: { width: 396, height: 704, label: 'Stories – fullscreen (mobil)' } },
+  { key: 'youtube', label: 'YouTube', description: 'Video náhledovka', width: 1920, height: 1080, format: 'youtube', isPublic: false, typicalPreview: { width: 468, height: 263, label: 'YouTube – výsledky vyhledávání' } },
 ]
 
 export interface OgImageSource {

@@ -26,8 +26,9 @@ const formatStyles: Record<OgImageFormat, FormatStyle> = {
   // Stories display fullscreen on phones, so the title is doubled for legibility.
   story: { padding: 56, titleSize: 112, titleMaxWidth: 880, logoHeight: 52 },
   // YouTube thumbnails are mostly seen at search-result size, so the title
-  // and logo are enlarged by 70% compared to a plain 16:9 layout.
-  youtube: { padding: 80, titleSize: 143, titleMaxWidth: 1200, logoHeight: 122 },
+  // is enlarged by 70% compared to a plain 16:9 layout. The logo stays
+  // the same size in every format.
+  youtube: { padding: 80, titleSize: 143, titleMaxWidth: 1200, logoHeight: 72 },
 }
 
 const style = computed<FormatStyle>(() => {
