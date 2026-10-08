@@ -84,9 +84,22 @@ export default defineNuxtConfig({
   ogImage: {
     defaults: {
       extension: 'png',
+      // Cache keys and URLs are content-addressed (props + component hash +
+      // module version), so entries never go stale and can live in KV
+      // indefinitely. The same value also controls `cache-control` for
+      // `/_og/d/*`, which already carries `immutable`.
+      cacheMaxAgeSeconds: 60 * 60 * 24 * 365 * 10,
     },
     // Czech titles need latin-ext glyphs (ě, š, č, ř, ž, ý, á, í, é, ú, ů, ó, ď, ť, ň).
     fontSubsets: ['latin', 'latin-ext'],
+    // Runtime-rendered images (/_og/d, used by /debug/**) persist in KV.
+    // Preview builds compile no KV binding, so they render fresh every time.
+    runtimeCacheStorage: isPreviewDeploy
+      ? false
+      : {
+          driver: 'cloudflare-kv-binding',
+          binding: 'OG_IMAGE_CACHE',
+        },
   },
 
   site: {
@@ -233,13 +246,17 @@ export default defineNuxtConfig({
               }
             ],
         // Temporary PR previews run in an unrelated Cloudflare account and
-        // must never receive the production event snapshot namespace.
+        // must never receive the production namespaces.
         kv_namespaces: isPreviewDeploy
           ? []
           : [
               {
                 binding: 'PORTAL_EVENT_SNAPSHOTS',
                 id: 'fc1c8f97503145fd8f6563fd22358ab6',
+              },
+              {
+                binding: 'OG_IMAGE_CACHE',
+                id: '14ec9a559f0c430799b5e7f74d176e57',
               },
             ],
         queues: isPreviewDeploy
