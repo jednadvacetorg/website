@@ -113,9 +113,9 @@ description: Kvíz pro týmy, které se orientují v historii Bitcoinu, miningu,
 
 Kategorie mají oddělené otázky, žebříčky i ceny.
 
-**Startovné se platí přednostně v bitcoinu přes Lightning** — přes QR kód nebo na **donate@jednadvacet.org**. S Lightningem zatím nemáš zkušenost? **Moderátor ti na místě pomůže**, případně od tebe přijme hotovost a převod přes Lightning zařídí za tebe.
+**Startovné se platí přednostně v bitcoinu přes Lightning** – přes QR kód nebo na **donate@jednadvacet.org**. S Lightningem zatím nemáš zkušenost? **Moderátor ti na místě pomůže**, případně od tebe přijme hotovost a převod přes Lightning zařídí za tebe.
 
-Nejsi si jistý, jestli patříš mezi Nováčky nebo Pokročilé? Podívej se do [kompletních pravidel BTC Ligy](/liga-pravidla), konkrétně na **§ 8 — Edice: kdo je nováček a kdo pokročilý**.
+Nejsi si jistý, jestli patříš mezi Nováčky nebo Pokročilé? Podívej se do [kompletních pravidel BTC Ligy](/liga-pravidla), konkrétně na **§ 8 – Edice: kdo je Nováček a kdo Pokročilý**.
 ::
 
 ::u-page-section
@@ -134,13 +134,13 @@ Registrovat se můžeš e-mailem na **liga@jednadvacet.org** nebo přímo na mí
 
 Doporučujeme registraci předem, protože kapacita jednotlivých míst může být omezená.
 
-### Co od tebe potřebujeme
+### Co od tebe potřebujeme:
 
-- název týmu,
-- jména nebo přezdívky hráčů,
-- kontaktní e-mail na kapitána týmu,
-- zvolenou edici — **Nováčci** nebo **Pokročilí**,
-- město, ve kterém chcete dané kolo odehrát.
+- Název týmu
+- Jména nebo přezdívky hráčů
+- Kontaktní e-mail na kapitána týmu
+- Zvolenou edici – **Nováčci** nebo **Pokročilí**
+- Město, ve kterém chcete dané kolo odehrát
 ::
 
 ::u-page-section
@@ -153,12 +153,12 @@ description: Na konci sezóny odměníme první 3 týmy mezi Nováčky i první 
 
 Mezi připravenými cenami jsou například:
 
-- **Braiins BMM 101, Braiins Deck a další bitcoinový hardware**,
-- **HW peněženky Trezor**,
-- vouchery od **Invity, Anycoin a Coinmate**,
-- vstupenky na **BTC Prague, ChainCamp a CryptoByte**,
-- merch, produkty a slevy od **Firefish, Bitcoin by Satoshi a Štosuj**,
-- další ceny a speciální překvapení v průběhu sezóny.
+- **Braiins BMM 101**, **Braiins Deck** a **další bitcoinový hardware**
+- **HW peněženky Trezor**
+- Vouchery od **Invity**, **Anycoin** a **Coinmate**
+- Vstupenky na **BTC Prague**, **ChainCamp** a **CryptoByte**
+- Merch, produkty a slevy od **Firefish**, **Bitcoin by Satoshi** a **Štosuj**
+- Další ceny a speciální překvapení v průběhu sezóny
 
 Konkrétní složení balíčků a rozdělení cen se může průběžně měnit podle finálních příspěvků partnerů.
 ::
@@ -208,8 +208,8 @@ Podrobnosti najdeš v [kompletních pravidlech BTC Ligy](/liga-pravidla).
 
 ::u-page-section
 ---
-title: Máš dotaz? Přidej se do Signal skupiny
-description: V Signal skupině BTC Ligy zodpovíme dotazy k registraci, termínům, pravidlům, výběru edice i pořádání ligy ve tvém městě.
+title: Máš dotaz? Přidej se do Signal skupiny!
+description: V Signal skupině BTC Ligy rádi zodpovíme dotazy k registraci, termínům, pravidlům, výběru edice i pořádání ligy ve tvém městě.
 ---
 
 #body
@@ -236,11 +236,11 @@ Pokud se ve tvém městě BTC Liga ještě nehraje, můžeš to změnit právě 
 
 Nemusíš připravovat otázky ani vymýšlet pravidla. Dostaneš od nás:
 
-- kompletní kvíz a prezentaci,
-- odpovědní a výsledkové archy,
-- správné odpovědi a podklady pro moderování,
-- pravidla,
-- podporu organizátorů.
+- Kompletní kvíz a prezentaci
+- Odpovědní a výsledkové archy
+- Správné odpovědi a podklady pro moderování
+- Pravidla
+- Podporu organizátorů
 
 Ty zajistíš místo, domluvíš termín a provedeš týmy soutěží. Můžeš se také domluvit s dalšími zapojenými městy a uspořádat BTC Ligu společně nebo se v pořádání jednotlivých kol střídat.
 
