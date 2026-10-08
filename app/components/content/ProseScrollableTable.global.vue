@@ -5,7 +5,7 @@
     aria-label="Tabulka s vodorovným posouváním"
     tabindex="0"
   >
-    <table class="whitespace-nowrap">
+    <table class="min-w-full whitespace-nowrap">
       <slot />
     </table>
   </div>
