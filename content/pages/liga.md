@@ -175,13 +175,18 @@ description: Body ze všech potvrzených kol se sčítají do společného žeb�
 
 | Pořadí | Tým | Město | Body |
 | --- | --- | --- | --- |
-| - | Žebříček zveřejníme po prvním kole | - | - |
+| 1 | Pokec o Svobodě | Praha | 21 |
+| 2 | NO A CO | Praha | 20 |
+| 3 | MFF Fuckboyz | Praha | 19 |
 
 ### Pokročilí
 
 | Pořadí | Tým | Město | Body |
 | --- | --- | --- | --- |
-| - | Žebříček zveřejníme po prvním kole | - | - |
+| 1 | Eddiesons | Praha | 21 |
+| 2 | TBD | Praha | 19 |
+| 3 | BEZE JMÉNA | Praha | 18 |
+| 4 | Twentyone.world | Praha | 16 |
 
 Aktuální výsledky zveřejníme po ověření pořadatelem. Veřejný žebříček neobsahuje kontaktní ani platební údaje týmů.
 ::
