@@ -1,0 +1,12 @@
+@import "./main.css";
+
+/* Dedicated Tailwind theme input for the nuxt-og-image renderer.
+   The module resolves its theme (including --font-sans, which it always
+   merges into template font requirements) from the file behind the
+   `#tailwindcss` alias (see nuxt.config.ts) instead of main.css.
+   Keep this file in sync with main.css imports; only the font stack below
+   intentionally differs so the site font stays untouched while OG images
+   resolve just the fonts they actually use. */
+@theme static {
+  --font-sans: "Ubuntu Sans", ui-sans-serif, system-ui, sans-serif;
+}

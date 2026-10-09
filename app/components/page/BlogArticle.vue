@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import type { BlogArticlesCollectionItem } from '@nuxt/content'
 
-defineProps<{
+const props = defineProps<{
   article: BlogArticlesCollectionItem
 }>()
 
-const config = useRuntimeConfig()
+const ogImage = buildOgImageCall({
+  title: props.article.title,
+  image: props.article.thumbnail,
+})
+
+defineOgImage('Article', ogImage.sharedProps, ogImage.publicOptions)
 </script>
 
 <template>
@@ -15,7 +20,6 @@ const config = useRuntimeConfig()
     <Meta name="description" :content="article.description" />
     <Meta property="og:title" :content="article.title" />
     <Meta property="og:description" :content="article.description" />
-    <Meta property="og:image" :content="article.thumbnail" />
     <Meta property="og:type" content="article" />
   </Head>
 
