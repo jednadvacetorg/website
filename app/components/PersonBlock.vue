@@ -37,6 +37,7 @@ const lightningUrl = computed(() => {
 <template>
   <div v-if="person" class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-8 py-6">
     <UAvatar :src="person.avatar" :alt="person.title" size="3xl"
+      :width="144" :height="144" sizes="64px sm:80px md:144px"
       :ui="{ root: 'col-start-1 row-start-1 size-16 sm:size-20 md:size-36 sm:row-span-3 md:self-center' }" />
 
     <div class="col-start-2 row-start-1 flex gap-4 flex-wrap items-center min-w-0">
