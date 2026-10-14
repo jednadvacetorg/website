@@ -3,7 +3,9 @@ const route = useRoute()
 const articlePath = route.path.replace(/^\/debug/, '') || '/'
 
 const { data: article } = await useAsyncData(`debug-${articlePath}`, async () => {
-  return queryCollection('blogArticles').path(articlePath).first()
+  return articlePath.startsWith('/podcast/')
+    ? queryCollection('podcast').path(articlePath).first()
+    : queryCollection('blogArticles').path(articlePath).first()
 })
 
 if (!article.value) {
@@ -25,6 +27,7 @@ useHead({
 const ogImage = buildOgImageCall({
   title: article.value.title,
   image: article.value.thumbnail,
+  podcast: articlePath.startsWith('/podcast/'),
 })
 
 // Same template and settings as the public article; URLs are in variant order.

@@ -27,6 +27,7 @@ export const ogImageVariants: OgImageVariant[] = [
   { key: 'og', label: 'OG Landscape', description: 'Facebook, obecné sdílení odkazů', width: 1200, height: 630, format: 'landscape', isPublic: true, typicalPreview: { width: 500, height: 261, label: 'Facebook – odkaz ve feedu' } },
   { key: 'twitter', label: 'X Card', description: 'Twitter/X karta, poměr 2 : 1', width: 1200, height: 600, format: 'landscape', isPublic: true, typicalPreview: { width: 360, height: 180, label: 'X – karta v timeline' } },
   { key: 'square', label: 'Square Preview', description: 'Doplňkový čtvercový OG obrázek, zejména WhatsApp', width: 800, height: 800, format: 'square', isPublic: true, typicalPreview: { width: 300, height: 300, label: 'WhatsApp – náhled v chatu (mobil)' } },
+  { key: 'podcast', label: 'Podcast', description: 'Čtvercový obal pro podcastové aplikace', width: 1400, height: 1400, format: 'square', isPublic: false, typicalPreview: { width: 300, height: 300, label: 'Podcast – obal epizody' } },
   { key: 'linkedin', label: 'LinkedIn', description: 'Sdílení na LinkedIn', width: 1200, height: 627, format: 'landscape', isPublic: false, typicalPreview: { width: 360, height: 188, label: 'LinkedIn – náhled odkazu' } },
   { key: 'social-square', label: 'Social Square', description: 'Instagram/Facebook příspěvek, čtvercový podcastový obal', width: 1080, height: 1080, format: 'square', isPublic: false, typicalPreview: { width: 507, height: 507, label: 'Instagram – příspěvek (mobil)' } },
   { key: 'social-portrait', label: 'Social Portrait', description: 'Příspěvky na výšku, poměr 4 : 5', width: 1080, height: 1350, format: 'portrait', isPublic: false, typicalPreview: { width: 429, height: 537, label: 'Instagram – příspěvek na výšku (mobil)' } },
@@ -38,6 +39,7 @@ export interface OgImageSource {
   title: string
   image: string
   layout?: OgImageLayout
+  podcast?: boolean
 }
 
 export interface OgImageCall {
@@ -64,6 +66,7 @@ export function buildOgImageCall(source: OgImageSource): OgImageCall {
       title: source.title,
       image: source.image,
       layout: source.layout ?? 'default',
+      podcast: source.podcast ?? false,
     },
     allOptions: ogImageVariants.map(variantOptions),
     publicOptions: ogImageVariants.filter(variant => variant.isPublic).map(variantOptions),

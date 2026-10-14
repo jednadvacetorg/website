@@ -7,6 +7,7 @@ const props = withDefaults(defineProps<{
   image: string
   layout?: OgImageLayout
   format?: OgImageFormat
+  podcast?: boolean
 }>(), {
   layout: 'default',
   format: 'landscape',
@@ -59,10 +60,10 @@ const logoDropShadow = 'drop-shadow(0 2px 12px rgba(0,0,0,0.55)) drop-shadow(0 4
     <img
       :src="image"
       :alt="title"
-      style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;"
+      style="position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 66% center;"
     />
 
-    <div style="position: absolute; inset: 0; background-image: linear-gradient(to bottom, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0.15) 40%, rgba(0,0,0,0.15) 55%, rgba(0,0,0,0.7) 100%);" />
+    <div style="position: absolute; inset: 0; background-image: linear-gradient(to bottom, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0) 40%, rgba(0,0,0,0) 55%, rgba(0,0,0,0.7) 100%);" />
 
     <div
       :style="{ position: 'relative', display: 'flex', flexDirection: 'column', width: '100%', height: '100%', padding: `${style.padding}px`, justifyContent: contentJustify }"
@@ -82,12 +83,13 @@ const logoDropShadow = 'drop-shadow(0 2px 12px rgba(0,0,0,0.55)) drop-shadow(0 4
         {{ title }}
       </h1>
 
-      <div :style="layout === 'host' ? { display: 'flex', position: 'absolute', bottom: `${style.padding}px`, left: `${style.padding}px` } : { display: 'flex' }">
+      <div :style="{ display: 'flex', alignItems: 'center', gap: `${style.logoHeight / 4}px`, ...(layout === 'host' ? { position: 'absolute', bottom: `${style.padding}px`, left: `${style.padding}px` } : {}) }">
         <img
           src="/images/app/logo-dark.svg"
           alt="Jednadvacet"
           :style="{ height: `${style.logoHeight}px`, filter: logoDropShadow }"
         />
+        <span v-if="podcast" :style="{ color: '#ffffff', fontSize: `${style.logoHeight * 1.5}px`, fontWeight: 400, fontStyle: 'italic', textShadow: titleTextShadow }">podcast</span>
       </div>
     </div>
   </div>

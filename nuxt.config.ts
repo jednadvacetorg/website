@@ -77,7 +77,7 @@ export default defineNuxtConfig({
 
   fonts: {
     families: [
-      { name: 'Ubuntu Sans', weights: [400, 800], styles: ['normal'], global: true },
+      { name: 'Ubuntu Sans', weights: [400, 800], styles: ['normal', 'italic'], global: true },
     ],
   },
 
@@ -153,7 +153,7 @@ export default defineNuxtConfig({
         item.children?.flatMap(child => child.icon ? [child.icon] : []) ?? [],
       ),
       scan: {
-        globInclude: ['app/**/*.{vue,ts}', 'content/**/*.{md,yml,yaml}'],
+        globInclude: ['app/**/*.{vue,ts}', 'shared/data/**/*.ts', 'content/**/*.{md,yml,yaml}'],
         globExclude: ['node_modules'],
         additionalCollections: studioIconLibraries,
       },
@@ -216,6 +216,7 @@ export default defineNuxtConfig({
             '/api/*',
             '/ical/*',
             '/feed/*',
+            '/podcast.xml',
             '/cntrsclc',
             '/_studio/*',
             '!/_nuxt/*',
@@ -305,7 +306,7 @@ export default defineNuxtConfig({
       routes: ['/'],
       // Debug OG previews render on demand; prerendering all variants
       // for every article would pointlessly slow down the build.
-      ignore: ['/_studio', '/debug/**'],
+      ignore: ['/_studio', '/debug/**', '/podcast.xml'],
       crawlLinks: true,
     },
     preset: 'cloudflare_module',

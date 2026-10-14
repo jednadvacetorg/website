@@ -12,6 +12,18 @@ const commonSchema = {
 
 const exclude = ['README.md']
 
+const articleSchema = {
+  ...commonSchema,
+  published: property(z.string().optional()).editor({ hidden: true }),
+  thumbnail: z.string(),
+  audio: z.string().url().optional(),
+  audioDuration: property(z.number().int().positive().optional()).editor({ description: 'Délka audia v sekundách.' }),
+  audioLength: property(z.number().int().positive().optional()).editor({ description: 'Velikost audio souboru v bajtech.' }),
+  cover: property(z.string().optional()).editor({ description: 'Volitelný čtvercový obal podcastu. Bez něj se obal vygeneruje z náhledového obrázku.' }),
+  categories: z.array(z.string()).optional(),
+  authors: z.array(z.string()).optional(),
+}
+
 export default defineContentConfig({
   collections: {
     blogArticles: defineCollection({
@@ -23,13 +35,23 @@ export default defineContentConfig({
         prefix: routedContentSources.blogArticles.prefix,
       },
       schema: z.object({
-        ...commonSchema,
-        published: property(z.string().optional()).editor({ hidden: true }),
-        thumbnail: z.string(),
-        audio: z.string().url().optional(),
-        categories: z.array(z.string()).optional(),
-        authors: z.array(z.string()).optional(),
+        ...articleSchema,
       }).passthrough()
+    }),
+
+    podcast: defineCollection({
+      type: 'page',
+      indexes: [{ columns: ['path'] }],
+      source: {
+        include: `${routedContentSources.podcast.directory}/**`,
+        exclude,
+        prefix: routedContentSources.podcast.prefix,
+      },
+      schema: z.object({
+        ...articleSchema,
+        audio: z.string().url(),
+        video: z.string().url(),
+      }).passthrough(),
     }),
 
     blogCategories: defineCollection({
