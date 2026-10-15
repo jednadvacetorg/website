@@ -38,7 +38,6 @@ const displayedPartners = computed<readonly Partner[]>(() => {
           :height="partner.logoHeight"
           sizes="160px"
           class="h-10 w-full object-contain"
-          :style="{ transform: `scale(${partner.logoScale ?? 1})` }"
           :class="partner.logoDark ? 'dark:hidden' : undefined"
           aria-hidden="true"
         />
@@ -50,7 +49,6 @@ const displayedPartners = computed<readonly Partner[]>(() => {
           :height="partner.logoHeight"
           sizes="160px"
           class="hidden h-10 w-full object-contain dark:block"
-          :style="{ transform: `scale(${partner.logoScale ?? 1})` }"
           aria-hidden="true"
         />
       </ULink>
@@ -70,7 +68,6 @@ const displayedPartners = computed<readonly Partner[]>(() => {
           :height="partner.logoHeight"
           sizes="160px"
           class="h-12 w-full object-contain"
-          :style="{ transform: `scale(${partner.logoScale ?? 1})` }"
           :class="partner.logoDark ? 'dark:hidden' : undefined"
           aria-hidden="true"
         />
@@ -82,7 +79,6 @@ const displayedPartners = computed<readonly Partner[]>(() => {
           :height="partner.logoHeight"
           sizes="160px"
           class="hidden h-12 w-full object-contain dark:block"
-          :style="{ transform: `scale(${partner.logoScale ?? 1})` }"
           aria-hidden="true"
         />
         <span class="mt-4 flex items-center gap-1.5 text-sm text-muted group-hover:underline">
