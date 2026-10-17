@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { navigationItems } from './shared/data/navigation'
 
 const isPreviewDeploy = Boolean(process.env.PREVIEW_DEPLOY)
@@ -52,18 +53,54 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  alias: {
+    // Redirects only the nuxt-og-image Tailwind theme resolution to a
+    // dedicated stylesheet (see app/assets/css/og-image.css). Nothing else
+    // imports this specifier, so the site build is unaffected.
+    '#tailwindcss': fileURLToPath(new URL('./app/assets/css/og-image.css', import.meta.url)),
+  },
+
   devtools: { enabled: true },
 
   modules: [
     '@nuxt/content',
     '@nuxt/ui',
     '@nuxt/image',
+    '@nuxt/fonts',
+    'nuxt-og-image',
     '@nuxthub/core',
     '@nuxtjs/sitemap',
     '@vueuse/nuxt',
     './shared/contentRedirectsModule',
     'nuxt-studio'
   ],
+
+  fonts: {
+    families: [
+      { name: 'Ubuntu Sans', weights: [400, 800], styles: ['normal', 'italic'], global: true },
+    ],
+  },
+
+  ogImage: {
+    defaults: {
+      extension: 'png',
+      // Cache keys and URLs are content-addressed (props + component hash +
+      // module version), so entries never go stale and can live in KV
+      // indefinitely. The same value also controls `cache-control` for
+      // `/_og/d/*`, which already carries `immutable`.
+      cacheMaxAgeSeconds: 60 * 60 * 24 * 365 * 10,
+    },
+    // Czech titles need latin-ext glyphs (ě, š, č, ř, ž, ý, á, í, é, ú, ů, ó, ď, ť, ň).
+    fontSubsets: ['latin', 'latin-ext'],
+    // Runtime-rendered images (/_og/d, used by /debug/**) persist in KV.
+    // Preview builds compile no KV binding, so they render fresh every time.
+    runtimeCacheStorage: isPreviewDeploy
+      ? false
+      : {
+          driver: 'cloudflare-kv-binding',
+          binding: 'OG_IMAGE_CACHE',
+        },
+  },
 
   site: {
     url: 'https://jednadvacet.org',
@@ -116,7 +153,7 @@ export default defineNuxtConfig({
         item.children?.flatMap(child => child.icon ? [child.icon] : []) ?? [],
       ),
       scan: {
-        globInclude: ['app/**/*.{vue,ts}', 'content/**/*.{md,yml,yaml}'],
+        globInclude: ['app/**/*.{vue,ts}', 'shared/data/**/*.ts', 'content/**/*.{md,yml,yaml}'],
         globExclude: ['node_modules'],
         additionalCollections: studioIconLibraries,
       },
@@ -179,6 +216,7 @@ export default defineNuxtConfig({
             '/api/*',
             '/ical/*',
             '/feed/*',
+            '/podcast.xml',
             '/cntrsclc',
             '/_studio/*',
             '!/_nuxt/*',
@@ -209,13 +247,17 @@ export default defineNuxtConfig({
               }
             ],
         // Temporary PR previews run in an unrelated Cloudflare account and
-        // must never receive the production event snapshot namespace.
+        // must never receive the production namespaces.
         kv_namespaces: isPreviewDeploy
           ? []
           : [
               {
                 binding: 'PORTAL_EVENT_SNAPSHOTS',
                 id: 'fc1c8f97503145fd8f6563fd22358ab6',
+              },
+              {
+                binding: 'OG_IMAGE_CACHE',
+                id: '14ec9a559f0c430799b5e7f74d176e57',
               },
             ],
         queues: isPreviewDeploy
@@ -262,7 +304,9 @@ export default defineNuxtConfig({
     },
     prerender: {
       routes: ['/'],
-      ignore: ['/_studio'],
+      // Debug OG previews render on demand; prerendering all variants
+      // for every article would pointlessly slow down the build.
+      ignore: ['/_studio', '/debug/**', '/podcast.xml'],
       crawlLinks: true,
     },
     preset: 'cloudflare_module',

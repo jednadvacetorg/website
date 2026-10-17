@@ -7,11 +7,17 @@
       "skillPath": "skills/jednadvacet-copywriter/SKILL.md",
       "computedHash": "21379f5ad39571bfe5c1436af4784e23f6e6e06aa7f6ac9c424c422e129f7d02"
     },
+    "jednadvacet-image-style": {
+      "source": "jednadvacetorg/skills",
+      "sourceType": "github",
+      "skillPath": "skills/jednadvacet-image-style/SKILL.md",
+      "computedHash": "188ba8b9ab4ae16029a9665ba9043f569481a6e3560f46a9da5f0c35b2e00eaa"
+    },
     "nuxt": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/nuxt/SKILL.md",
-      "computedHash": "48b941815cebc7c8057249e8c4a1caf7416c059b71dca1dd67a2f8972f4cccd6"
+      "computedHash": "fe1e046ff8a01c55d1b1ea68711cadf9161ed846ca0fb27ff883c027d8f3c180"
     },
     "nuxt-content": {
       "source": "onmax/nuxt-skills",
@@ -35,19 +41,19 @@
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/nuxt-ui/SKILL.md",
-      "computedHash": "72acbf25ef51d20a455b96ec834592855b2982964fe87f7d8620291c95a53301"
+      "computedHash": "d177489e1be5f8acd2cfbf986781694b9a3a3cbad23649d0d83b5288e53d7f20"
     },
     "nuxthub": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/nuxthub/SKILL.md",
-      "computedHash": "8084d61fbfbd7839575c9fffb9d2f4811abbcd373c7d76e2abd0ef921eeae8f0"
+      "computedHash": "98c0729aa0f636e45f72f092816b22be12df5b491d49725112ed82c856c389b7"
     },
     "vue": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",
       "skillPath": "skills/vue/SKILL.md",
-      "computedHash": "cc98196493d27aab872c40163ea65d241acda5d48b503f8f51891cd5fd200f75"
+      "computedHash": "e3471effe01c99c7524d5890737cb02a33d0933bdf7266bb09924e969cf4e837"
     },
     "vueuse-functions": {
       "source": "vueuse/skills",

@@ -19,15 +19,16 @@
 <script setup lang="ts">
 import { cs } from '@nuxt/ui/locale'
 
-const { path } = useRoute()
+const route = useRoute()
+const site = useSiteConfig()
 
-useHead({
+useHead(() => ({
   htmlAttrs: {
     lang: 'cs',
   },
   titleTemplate: '%s | Jednadvacet',
   link: [
-    { rel: 'canonical', href: 'https://jednadvacet.org' + path.replace(/\/$/, '') || '/' },
+    { rel: 'canonical', href: new URL(route.path.replace(/\/$/, '') || '/', site.url).href },
   ],
-})
+}))
 </script>
