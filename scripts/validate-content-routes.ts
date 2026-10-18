@@ -1,4 +1,4 @@
-// This build guard rejects content files that resolve to the same public URL or invade /blog.
+// Reject duplicate public URLs and root content invading explicitly routed namespaces.
 // It is necessary because Nuxt Content validates each collection separately and cannot catch these cross-collection conflicts.
 import { readdir } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
@@ -78,19 +78,21 @@ const parseContentRoot = (): string => {
 }
 
 const entries = await scanContentRoutes(parseContentRoot())
-const reservedBlogRoutes = entries
-  .filter(entry => (
-    (entry.collection === 'pages' || entry.collection === 'communities')
-    && (entry.path === '/blog' || entry.path.startsWith('/blog/'))
-  ))
-  .sort((a, b) => a.path.localeCompare(b.path) || a.collection.localeCompare(b.collection))
+for (const namespace of ['/blog', '/podcast']) {
+  const reservedRoutes = entries
+    .filter(entry => (
+      (entry.collection === 'pages' || entry.collection === 'communities')
+      && (entry.path === namespace || entry.path.startsWith(`${namespace}/`))
+    ))
+    .sort((a, b) => a.path.localeCompare(b.path) || a.collection.localeCompare(b.collection))
 
-if (reservedBlogRoutes.length) {
-  throw new Error([
-    'Root content uses the reserved /blog route namespace:',
-    ...reservedBlogRoutes.map(entry => `- ${entry.path}: ${entry.collection}`),
-    'Move these documents outside /blog; the explicit blog router owns this namespace.',
-  ].join('\n'))
+  if (reservedRoutes.length) {
+    throw new Error([
+      `Root content uses the reserved ${namespace} route namespace:`,
+      ...reservedRoutes.map(entry => `- ${entry.path}: ${entry.collection}`),
+      `Move these documents outside ${namespace}; the explicit router owns this namespace.`,
+    ].join('\n'))
+  }
 }
 
 const collisions = findContentRouteCollisions(entries)

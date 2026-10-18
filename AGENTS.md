@@ -12,6 +12,8 @@
 
 5. **Run relevant verification** - After changes, run the checks described below. Do not treat typechecking alone as sufficient verification for content routing, UI behavior, or deployment configuration.
 
+6. **Load the image workflow before manipulating assets** - When a task requires inspecting, editing, preparing, or generating photographs or raster image assets, load `jednadvacet-image-style` (or read `.agents/skills/jednadvacet-image-style/SKILL.md` if no skill loader is available) before running image commands or calling image APIs. This includes cropping, resizing, upscaling, background removal, grading, retouching, outpainting, and preparing or verifying article/podcast, OG/social, or YouTube images. Before any modification or generation, ask the user to choose available local algorithmic tools, individual suitable remote AI models with estimated prices, or all suitable options with result comparison; proceed directly only when that choice and relevant paid scope are already explicit. Read-only inspection may precede the question. Follow the skill's tool-selection and fidelity rules. Merely referencing an unchanged image, configuring an image provider, or changing icons does not require this skill.
+
 ## Working Tree and Git Safety
 
 - Inspect the working tree before editing. Treat existing dirty paths as unrelated user work unless the task explicitly assigns them.
