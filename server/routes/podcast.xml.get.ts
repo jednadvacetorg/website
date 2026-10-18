@@ -23,7 +23,7 @@ export default defineEventHandler(async (event) => {
 
   const coverUrl = (path: string, title: string, image: string) => getOgImageUrl(event, path, {
     component: 'Article', width: 1400, height: 1400, extension: 'png',
-    props: { title, image, format: 'square', podcast: path === '/podcast' || path.startsWith('/podcast/') },
+    props: { title, image, format: 'podcast', podcast: path === '/podcast' || path.startsWith('/podcast/') },
   })
   const channelImage = episodes[0]?.thumbnail ?? items[0]?.thumbnail
   const channelCover = podcast.cover ? absoluteUrl(podcast.cover)

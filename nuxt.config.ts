@@ -78,6 +78,8 @@ export default defineNuxtConfig({
   fonts: {
     families: [
       { name: 'Ubuntu Sans', weights: [400, 800], styles: ['normal', 'italic'], global: true },
+      // Article OG image titles; the family has a single weight.
+      { name: 'Ubuntu Condensed', weights: [400], styles: ['normal'], global: true },
     ],
   },
 

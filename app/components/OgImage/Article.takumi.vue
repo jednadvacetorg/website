@@ -23,6 +23,9 @@ interface FormatStyle {
 const formatStyles: Record<OgImageFormat, FormatStyle> = {
   landscape: { padding: 64, titleSize: 64, titleMaxWidth: 760, logoHeight: 56 },
   square: { padding: 48, titleSize: 48, titleMaxWidth: 640, logoHeight: 48 },
+  // Podcast covers are the 800 px square scaled to 1400 px (×1.75), so text
+  // and logo keep the same proportions.
+  podcast: { padding: 84, titleSize: 84, titleMaxWidth: 1120, logoHeight: 84 },
   portrait: { padding: 56, titleSize: 56, titleMaxWidth: 880, logoHeight: 52 },
   // Stories display fullscreen on phones, so the title is doubled for legibility.
   story: { padding: 56, titleSize: 112, titleMaxWidth: 880, logoHeight: 52 },
@@ -73,7 +76,9 @@ const logoDropShadow = 'drop-shadow(0 2px 12px rgba(0,0,0,0.55)) drop-shadow(0 4
           color: '#ffffff',
           fontSize: `${style.titleSize}px`,
           lineHeight: 1.15,
-          fontWeight: 800,
+          // Ubuntu Condensed is published in a single weight.
+          fontFamily: 'Ubuntu Condensed',
+          fontWeight: 400,
           fontStyle: 'normal',
           textTransform: 'uppercase',
           maxWidth: `${style.titleMaxWidth}px`,

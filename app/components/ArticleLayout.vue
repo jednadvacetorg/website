@@ -11,7 +11,7 @@ const ogImage = buildOgImageCall({
   podcast: props.item.path.startsWith('/podcast/'),
 })
 
-const podcastArtwork = { key: 'podcast', width: 1400, height: 1400, extension: 'png' as const, props: { ...ogImage.sharedProps, format: 'square' as const } }
+const podcastArtwork = { key: 'podcast', width: 1400, height: 1400, extension: 'png' as const, props: { ...ogImage.sharedProps, format: 'podcast' as const } }
 defineOgImage('Article', ogImage.sharedProps, [
   ...ogImage.publicOptions,
   ...(props.item.audio && !props.item.cover ? [podcastArtwork] : []),
