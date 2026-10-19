@@ -27,6 +27,7 @@ const socialPatterns: Array<{ pattern: RegExp, icon: string | (() => VNode), lab
   { pattern: /^https?:\/\/(www\.)?youtube\.com\//, icon: 'i-simple-icons-youtube', label: 'YouTube' },
   { pattern: /^https?:\/\/github\.com\//, icon: 'i-simple-icons-github', label: 'GitHub' },
   { pattern: /^https?:\/\/chat\.whatsapp\.com\//, icon: 'i-simple-icons-whatsapp', label: 'WhatsApp' },
+  { pattern: /^https?:\/\/signal\.(me|group)\//, icon: 'i-simple-icons:signal', label: 'Signal' },
   { pattern: /^[^@]+@[^@]+\.[^@]+$/, icon: 'i-streamline-mail-send-envelope', label: 'Email', transform: (link) => `mailto:${link}` },
   { pattern: /^https?:\/\//, icon: 'i-streamline-web', label: 'Web' },
 ]
