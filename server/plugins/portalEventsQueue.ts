@@ -45,10 +45,7 @@ export default defineNitroPlugin((nitroApp) => {
       }
 
       const storage = useStorage('portalEvents')
-      const result = await refreshPortalMeetups(selected, storage, $fetch, new Date(), changes)
-      if (result.preservedCommunities.length > 0) {
-        console.warn(`[portal-events] Preserved snapshots for removed meetups: ${result.preservedCommunities.join(', ')}`)
-      }
+      const result = await refreshPortalMeetups(selected, storage, $fetch, new Date(), changes, refreshAll)
       if (refreshAll) {
         // Use the materialized state that was just written. An immediate KV read is not
         // guaranteed to observe that write, even from the same Cloudflare location.

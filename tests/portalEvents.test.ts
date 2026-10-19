@@ -20,7 +20,8 @@ const now = new Date('2026-08-30T12:00:00.000Z')
 const event = (overrides: Record<string, unknown> = {}) => ({
   id: 1,
   'meetup.name': 'Jednadvacet Brno',
-  'meetup.portalLink': 'portal:brno',
+  meetup_id: 360,
+  'meetup.id': 360,
   title: 'Budoucí meetup',
   start: '2026-08-31 15:00',
   end: null,
@@ -28,18 +29,19 @@ const event = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 })
 
-const meetups = [{ id: 360, portalLink: 'portal:brno' }]
-
 const storage = (values = new Map<string, unknown>()): PortalStorage => ({
   getItem: async key => values.get(key),
   setItem: async (key, value) => { values.set(key, value) },
   getKeys: async base => [...values.keys()].filter(key => !base || key.startsWith(base)),
 })
 
-const fetcher = (events: unknown, meetupRows: unknown = meetups, calls: string[] = []): PortalFetch => async (url, options) => {
+const fetcher = (events: unknown, calls: string[] = []): PortalFetch => async (url, options) => {
   calls.push(url)
   assert.deepEqual(options, { timeout: 20_000, retry: 0 })
-  return url.endsWith('/meetups') ? meetupRows : events
+  assert.equal(new URL(url).pathname, '/api/meetup-events')
+  assert.equal(new URL(url).searchParams.get('locale'), 'cs')
+  assert.equal(new URL(url).searchParams.get('from'), 'today')
+  return events
 }
 
 const signal = (overrides: Partial<PortalChangeSignal> = {}): PortalChangeSignal => ({
@@ -56,8 +58,7 @@ test('Portal transport failures log safe endpoint diagnostics', async (t) => {
   const logs: unknown[][] = []
   t.mock.method(console, 'error', (...args: unknown[]) => logs.push(args))
   const upstreamError = Object.assign(new Error('Sensitive upstream detail'), { statusCode: 504 })
-  const failedFetch: PortalFetch = async (url) => {
-    if (url.endsWith('/meetups')) return meetups
+  const failedFetch: PortalFetch = async () => {
     throw upstreamError
   }
 
@@ -67,12 +68,12 @@ test('Portal transport failures log safe endpoint diagnostics', async (t) => {
   )
   assert.deepEqual(logs, [[
     '[portal-events] Portal fetch failed',
-    { endpoint: 'events', errorType: 'Error', status: 504 },
+    { errorType: 'Error', status: 504 },
   ]])
   assert.doesNotMatch(JSON.stringify(logs), /Sensitive upstream detail/)
 })
 
-test('one refresh fetches each Portal endpoint once and writes community-keyed snapshots', async () => {
+test('one refresh fetches only selected meetup IDs and writes community-keyed snapshots', async () => {
   const values = new Map<string, unknown>()
   const calls: string[] = []
   const refresh = await refreshPortalMeetups([brno, pribram], storage(values), fetcher([
@@ -85,9 +86,10 @@ test('one refresh fetches each Portal endpoint once and writes community-keyed s
       meetup_id: 360,
       custom: 'retained',
     }),
-  ], meetups, calls), now)
+  ], calls), now)
 
-  assert.equal(calls.length, 2)
+  assert.equal(calls.length, 1)
+  assert.equal(new URL(calls[0]!).searchParams.get('meetup_id'), '360')
   assert.ok(values.has('community:brno'))
   assert.ok(values.has('community:pribram'))
   assert.equal(values.has('portal:360:events'), false)
@@ -95,23 +97,23 @@ test('one refresh fetches each Portal endpoint once and writes community-keyed s
   assert.equal(result[0]?.start, '2026-08-31T15:00:00.000Z')
   assert.equal(result[0]?.custom, 'retained')
   assert.equal(result[0]?.meetup_id, undefined)
+  assert.equal(result[0]?.['meetup.id'], undefined)
   assert.deepEqual(await getPortalEvents('pribram', storage(values)), [])
   assert.deepEqual(refresh.calendarEvents.map(item => ({ id: item.event.id, community: item.community.id })), [
     { id: '1', community: 'brno' },
   ])
 })
 
-test('an invalid cold community does not prevent healthy and empty snapshots from being written', async () => {
+test('unknown or eventless meetups get empty snapshots while other communities refresh', async () => {
   const values = new Map<string, unknown>()
   const missing: PortalCommunity = { id: 'missing', path: '/missing', title: 'Missing', portalMeetupId: 999 }
 
-  await assert.rejects(
-    refreshPortalMeetups([brno, pribram, missing], storage(values), fetcher([event()]), now),
-    (error: unknown) => error instanceof PortalEventsError && /missing/.test(error.message),
-  )
+  const calls: string[] = []
+  await refreshPortalMeetups([missing, brno, pribram], storage(values), fetcher([event()], calls), now)
+  assert.equal(new URL(calls[0]!).searchParams.get('meetup_id'), '360,999')
   assert.ok(values.has(portalEventCacheKey(brno)))
   assert.ok(values.has(portalEventCacheKey(pribram)))
-  assert.equal(values.has(portalEventCacheKey(missing)), false)
+  assert.deepEqual(await getPortalEvents('missing', storage(values)), [])
 })
 
 test('a malformed community export preserves its snapshot without blocking healthy communities', async () => {
@@ -124,8 +126,8 @@ test('a malformed community export preserves its snapshot without blocking healt
   await assert.rejects(
     refreshPortalMeetups([brno, ostrava], store, fetcher([
       event({ start: 'invalid' }),
-      event({ id: 2, 'meetup.portalLink': 'portal:ostrava', title: 'Ostravský meetup' }),
-    ], [...meetups, { id: 500, portalLink: 'portal:ostrava' }]), new Date(now.getTime() + 60_000)),
+      event({ id: 2, meetup_id: 500, title: 'Ostravský meetup' }),
+    ]), new Date(now.getTime() + 60_000)),
     (error: unknown) => error instanceof PortalEventsError && /brno/.test(error.message),
   )
   assert.deepEqual(values.get(portalEventCacheKey(brno)), previousBrno)
@@ -141,13 +143,15 @@ test('public reads use only KV keys and ignore obsolete meetup-keyed entries', a
   assert.deepEqual(data.communities.map(community => community.id), ['brno'])
 })
 
-test('an empty global Portal payload is rejected without replacing snapshots', async () => {
+test('an empty full refresh is rejected without replacing any snapshots', async () => {
   const values = new Map<string, unknown>()
+  await refreshPortalMeetups([brno], storage(values), fetcher([event()]), now)
+  const before = structuredClone([...values])
   await assert.rejects(
-    refreshPortalMeetups([brno], storage(values), fetcher([]), now),
+    refreshPortalMeetups([brno, pribram], storage(values), fetcher([]), now, [], true),
     (error: unknown) => error instanceof PortalEventsError && error.statusCode === 502,
   )
-  assert.equal(values.has(portalEventCacheKey(brno)), false)
+  assert.deepEqual([...values], before)
 })
 
 test('delete tombstones survive refresh and expire after 90 days', async () => {
@@ -199,19 +203,29 @@ test('a cold delete creates a tombstone from the authoritative export', async ()
   assert.equal(rows[0]?.cancelled, true)
 })
 
-test('a removed meetup preserves its last valid snapshot', async () => {
+test('an empty partial refresh clears active events and preserves a deletion tombstone', async () => {
   const values = new Map<string, unknown>()
   const store = storage(values)
   await refreshPortalMeetups([brno], store, fetcher([event()]), now)
-  const before = values.get(portalEventCacheKey(brno))
-  const result = await refreshPortalMeetups([brno], store, fetcher([event()], []), new Date(now.getTime() + 60_000), [signal({
-    resource: 'meetup',
+  const result = await refreshPortalMeetups([brno], store, fetcher([]), new Date(now.getTime() + 60_000), [signal({
     action: 'deleted',
-    eventId: undefined,
     sequence: 103,
   })])
-  assert.deepEqual(result.preservedCommunities, ['brno'])
-  assert.deepEqual(values.get(portalEventCacheKey(brno)), before)
+  assert.deepEqual(await getPortalEvents('brno', store), [])
+  assert.deepEqual(result.deletedEventIds, ['1'])
+  assert.equal(result.calendarEvents[0]?.cancelled, true)
+})
+
+test('a partial refresh with no events or prior snapshot creates an empty snapshot', async () => {
+  const store = storage()
+  await refreshPortalMeetups([brno], store, fetcher([]), now)
+  assert.deepEqual(await getPortalEvents('brno', store), [])
+})
+
+test('communities without a Portal ID require no fetch even on a full refresh', async () => {
+  const store = storage()
+  await refreshPortalMeetups([pribram], store, async () => assert.fail('Unexpected Portal request'), now, [], true)
+  assert.deepEqual(await getPortalEvents('pribram', store), [])
 })
 
 test('missing and incompatible snapshots fail without attempting a refresh', async () => {

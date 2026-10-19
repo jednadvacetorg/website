@@ -2,7 +2,6 @@ import type { H3Event } from 'h3'
 import type { PortalEvent } from '../../shared/types/portalEvents.ts'
 
 const portalEventsUrl = 'https://portal.einundzwanzig.space/api/meetup-events?locale=cs'
-const portalMeetupsUrl = 'https://portal.einundzwanzig.space/api/meetups'
 const cancellationRetentionMs = 90 * 24 * 60 * 60 * 1_000
 const cacheSchemaVersion = 1
 const wallClockPattern = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})$/
@@ -265,10 +264,8 @@ const nextRevision = (event: PortalEvent, previous: CachedEvent | undefined, now
 
 const fetchPayload = async (fetcher: PortalFetch, url: string) => {
   try {
-    // The unfiltered meetup-events export is ~5 MB and routinely takes 4-5 s to build.
     return await fetcher(url, { timeout: 20_000, retry: 0 })
   } catch (error) {
-    const endpoint = url === portalMeetupsUrl ? 'meetups' : 'events'
     const status = isRecord(error)
       ? typeof error.statusCode === 'number'
         ? error.statusCode
@@ -277,7 +274,6 @@ const fetchPayload = async (fetcher: PortalFetch, url: string) => {
           : undefined
       : undefined
     console.error('[portal-events] Portal fetch failed', {
-      endpoint,
       errorType: error instanceof Error ? error.name : typeof error,
       ...(status !== undefined ? { status } : {}),
     })
@@ -296,7 +292,6 @@ const latestEventSignals = (signals: readonly PortalChangeSignal[]) => {
 }
 
 export interface PortalRefreshResult {
-  preservedCommunities: string[]
   deletedEventIds: string[]
   calendarEvents: PortalCalendarEvent[]
 }
@@ -308,6 +303,7 @@ export const refreshPortalMeetups = async (
   fetcher: PortalFetch,
   now = new Date(),
   signals: readonly PortalChangeSignal[] = [],
+  fullRefresh = false,
 ): Promise<PortalRefreshResult> => {
   // Queue concurrency makes stale reads unlikely, but KV is not strongly consistent.
   // Revisit a Durable Object only if cross-delivery sequence regressions are observed.
@@ -321,46 +317,31 @@ export const refreshPortalMeetups = async (
   const configured = communities.filter((community): community is PortalCommunity & { portalMeetupId: number } =>
     community.portalMeetupId !== undefined)
   let eventPayload: unknown[] = []
-  let meetupPayload: unknown[] = []
   if (configured.length > 0) {
-    const payloads = await Promise.all([
-      fetchPayload(fetcher, portalEventsUrl),
-      fetchPayload(fetcher, portalMeetupsUrl),
-    ])
-    if (!Array.isArray(payloads[0]) || !Array.isArray(payloads[1])) {
+    const url = new URL(portalEventsUrl)
+    url.searchParams.set('from', 'today')
+    url.searchParams.set('meetup_id', [...new Set(configured.map(community => community.portalMeetupId))]
+      .sort((a, b) => a - b).join(','))
+    const payload = await fetchPayload(fetcher, url.toString())
+    if (!Array.isArray(payload)) {
       throw new PortalEventsError('Portal response is invalid', 502)
     }
-    if (payloads[0].length === 0) throw new PortalEventsError('Portal event response is empty', 502)
-    eventPayload = payloads[0]
-    meetupPayload = payloads[1]
+    // A partial refresh may legitimately have no events; protect all snapshots on a full refresh.
+    if (fullRefresh && payload.length === 0) throw new PortalEventsError('Portal event response is empty', 502)
+    eventPayload = payload
   }
 
-  const linkByMeetup = new Map<number, string>()
-  for (const row of meetupPayload) {
-    if (isRecord(row) && Number.isSafeInteger(row.id) && typeof row.portalLink === 'string') {
-      linkByMeetup.set(row.id as number, row.portalLink)
-    }
-  }
-  const missingCommunities = new Set<string>()
   const failedCommunities = new Set<string>()
+  const communitiesByMeetup = new Map<number, PortalCommunity[]>()
   for (const community of configured) {
-    if (linkByMeetup.has(community.portalMeetupId)) continue
-    missingCommunities.add(community.id)
-    if (!previousByCommunity.get(community.id)) failedCommunities.add(community.id)
-  }
-
-  const communitiesByLink = new Map<string, PortalCommunity[]>()
-  for (const community of configured) {
-    if (missingCommunities.has(community.id)) continue
-    const link = linkByMeetup.get(community.portalMeetupId) as string
-    const matching = communitiesByLink.get(link) ?? []
+    const matching = communitiesByMeetup.get(community.portalMeetupId) ?? []
     matching.push(community)
-    communitiesByLink.set(link, matching)
+    communitiesByMeetup.set(community.portalMeetupId, matching)
   }
   const eventsByCommunity = new Map<string, PortalEvent[]>()
   for (const row of eventPayload) {
-    if (!isRecord(row) || typeof row['meetup.portalLink'] !== 'string') continue
-    const matching = communitiesByLink.get(row['meetup.portalLink'])
+    if (!isRecord(row) || !Number.isSafeInteger(row.meetup_id)) continue
+    const matching = communitiesByMeetup.get(row.meetup_id as number)
     if (!matching) continue
     let parsed: PortalEvent
     try {
@@ -386,9 +367,7 @@ export const refreshPortalMeetups = async (
   const deletedEventIds = new Set<string>()
   for (const community of communities) {
     const previous = previousByCommunity.get(community.id) ?? null
-    if (missingCommunities.has(community.id) || failedCommunities.has(community.id)) {
-      // A missing meetup can mean deletion or a partial /api/meetups response; preserving
-      // an existing snapshot is safer than deleting events until Portal sends a clearer signal.
+    if (failedCommunities.has(community.id)) {
       if (previous) snapshots.push(previous)
       continue
     }
@@ -466,7 +445,6 @@ export const refreshPortalMeetups = async (
   }
   return {
     deletedEventIds: [...deletedEventIds],
-    preservedCommunities: [...missingCommunities].filter(communityId => Boolean(previousByCommunity.get(communityId))),
     calendarEvents: snapshots.flatMap(cache => [
       ...cache.events.map(item => ({ ...item, cancelled: false, community: cache.community })),
       ...cache.cancellations.map(item => ({ ...item, cancelled: true, community: cache.community })),
@@ -540,7 +518,7 @@ export const getPortalCommunities = async (event?: H3Event): Promise<PortalCommu
     const portalMeetupId = community.portal_meetup_id === undefined || community.portal_meetup_id === null
       ? undefined
       : Number(community.portal_meetup_id)
-    if (portalMeetupId !== undefined && (!Number.isSafeInteger(portalMeetupId) || portalMeetupId < 0)) {
+    if (portalMeetupId !== undefined && (!Number.isSafeInteger(portalMeetupId) || portalMeetupId <= 0)) {
       throw new Error(`Community ${community.path} has an invalid Portal meetup ID`)
     }
     return {

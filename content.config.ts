@@ -76,7 +76,7 @@ export default defineContentConfig({
           lng: z.number().finite().min(12).max(19),
         })).min(1).optional()).editor({ description: 'Přepíše bod komunity v mapě na homepage. Každá položka je jedna tečka s vlastním popiskem a všechny vedou na tuto komunitu. Když pole chybí, použije se pole „map“ a název komunity.' }),
         signal_group: z.string().url(),
-        portal_meetup_id: z.number().int().nonnegative().optional(),
+        portal_meetup_id: z.number().int().positive().optional(),
         organizers: z.array(z.string()).optional(),
       }),
     }),
