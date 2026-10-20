@@ -22,9 +22,7 @@ redirect_from:
 ---
 
 ::u-container
-
 Lidé z obou měst se potkávají na společných akcích. Místa se střídají.
-
 ::
 
 ::calendar{community="hradubice"}
