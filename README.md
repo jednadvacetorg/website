@@ -21,6 +21,7 @@ Většina obsahu webu je uložená jako Markdown v adresáři `content/`. Strukt
 - Články se píšou v jazyce Markdown ([zde je jednoduchý tutoriál](https://www.markdowntutorial.com/)) s [rozšířením MDC](https://content.nuxt.com/docs/files/markdown#mdc-syntax) pro využívání komponent.
 - Obrázky se ukládají do `public/images/blog/` s názvy souborů ve formátu `nazev-clanku-obrazek.jpg`
 - Datum zveřejnění článku se nastavuje v názvu souboru. Před schválením pull requestu proto zkontroluj, že odpovídá plánovanému datu vydání.
+- Články s budoucím datem se při sestavení vynechají z obsahové databáze, blogu, kategorií, seznamů autorů i sitemapy a jejich stránky vracejí 404. Zveřejní je první úspěšný build a nasazení v den vydání nebo později podle časové zóny `Europe/Prague`. Pro plánované vydávání proto spouštěj build a nasazení automaticky každý den. Blog zůstává předgenerovaný; zdrojové soubory a obrázky jsou veřejné i před vydáním. Po změně data při lokálním vývoji restartuj server.
 - Povinná metadata článku jsou `title` a `thumbnail`. Pomocí `categories` a `authors` lze článek propojit s kategoriemi a lidmi.
 
 ### Kategorie blogu
@@ -28,6 +29,10 @@ Většina obsahu webu je uložená jako Markdown v adresáři `content/`. Strukt
 - Kategorie se ukládají do `content/blog-categories/` jako Markdown soubory.
 - Každá kategorie musí mít v metadatech `title`. Název souboru slouží jako identifikátor kategorie, který se používá také v poli `categories` u článků.
 - Kategorie i články sdílejí veřejný prostor pod `/blog`, proto jejich cesty musí být jedinečné.
+
+### Přesměrování starých adres
+
+Staré adresy se zapisují do `redirect_from` ve frontmatteru obsahu.
 
 ### Stránky
 

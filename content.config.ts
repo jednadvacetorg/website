@@ -1,6 +1,9 @@
+import { globSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { defineContentConfig, defineCollection, z, property } from '@nuxt/content'
 import { defineSitemapSchema } from '@nuxtjs/sitemap/content'
 import { routedContentSources } from './shared/data/contentRouteSources'
+import { isPublishedBlogFile } from './shared/utils/blogPublication'
 
 const commonSchema = {
   title: z.string(),
@@ -11,6 +14,11 @@ const commonSchema = {
 }
 
 const exclude = ['README.md']
+// Exclude scheduled articles from the entire deployment, not just its listings.
+// The next build on/after their Czech publication day includes them again.
+const scheduledArticles = [...globSync('blog-articles/**/*.{md,mdc}', {
+  cwd: fileURLToPath(new URL('./content/', import.meta.url)),
+})].filter(file => !isPublishedBlogFile(file))
 
 export default defineContentConfig({
   collections: {
@@ -19,7 +27,7 @@ export default defineContentConfig({
       indexes: [{ columns: ['path'] }],
       source: {
         include: `${routedContentSources.blogArticles.directory}/**`,
-        exclude,
+        exclude: [...exclude, ...scheduledArticles],
         prefix: routedContentSources.blogArticles.prefix,
       },
       schema: z.object({
