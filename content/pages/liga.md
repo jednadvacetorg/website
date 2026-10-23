@@ -177,7 +177,9 @@ description: Body ze všech potvrzených kol se sčítají do společného žeb�
 | --- | --- | --- | --- |
 | 1 | Pokec o Svobodě | Praha | 21 |
 | 2 | NO A CO | Praha | 20 |
-| 3 | MFF Fuckboyz | Praha | 19 |
+| 2 | Bratrství nápadů | Liberec | 20 |
+| 4 | MFF Fuckboyz | Praha | 19 |
+| 5 | Nový nováčci | Liberec | 15 |
 
 ### Pokročilí
 
@@ -187,8 +189,12 @@ description: Body ze všech potvrzených kol se sčítají do společného žeb�
 | 2 | TBD | Praha | 19 |
 | 3 | BEZE JMÉNA | Praha | 18 |
 | 4 | Twentyone.world | Praha | 16 |
+| 5 | NOBRAINERS | Liberec | 14 |
+| 6 | Kotíci | Šumperk | 11 |
+| 6 | North Stars | Liberec | 11 |
+| 8 | Šumperští CRYPTOJEZEVCI | Šumperk | 7 |
 
-Aktuální výsledky zveřejníme po ověření pořadatelem. Veřejný žebříček neobsahuje kontaktní ani platební údaje týmů.
+Výsledky průběžně aktualizujeme po odehrání ligového kola v daných městech.
 ::
 
 ::u-page-section
