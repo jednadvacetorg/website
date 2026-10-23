@@ -38,7 +38,7 @@ export const navigationItems: NavigationMenuItem[] = [
         target: '_blank',
       },
       {
-        label: 'BTC LIGA',
+        label: 'BTC Liga',
         description: 'Celoroční pubkvíz po celém Česku a Slovensku.',
         icon: 'lucide:trophy',
         to: '/liga',
