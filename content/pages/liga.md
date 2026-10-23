@@ -188,11 +188,12 @@ description: Body ze všech potvrzených kol se sčítají do společného žeb�
 | 1 | Eddiesons | Praha | 21 |
 | 2 | TBD | Praha | 19 |
 | 3 | BEZE JMÉNA | Praha | 18 |
-| 4 | Twentyone.world | Praha | 16 |
-| 5 | NOBRAINERS | Liberec | 14 |
-| 6 | Kotíci | Šumperk | 11 |
-| 6 | North Stars | Liberec | 11 |
-| 8 | Šumperští CRYPTOJEZEVCI | Šumperk | 7 |
+| 4 | Highlenders | Jihlava | 17 |
+| 5 | Twentyone.world | Praha | 16 |
+| 6 | NOBRAINERS | Liberec | 14 |
+| 7 | Kotíci | Šumperk | 11 |
+| 7 | North Stars | Liberec | 11 |
+| 9 | Šumperští CRYPTOJEZEVCI | Šumperk | 7 |
 
 Výsledky průběžně aktualizujeme po odehrání ligového kola v daných městech.
 ::
