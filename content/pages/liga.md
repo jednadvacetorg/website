@@ -64,6 +64,41 @@ description: Čtyři ligová kola, společný žebříček pro Česko a Slovensk
 
 ::u-page-section
 ---
+title: Průběžné pořadí
+description: Body ze všech potvrzených kol se sčítají do společného žebříčku CZ a SK.
+---
+
+#body
+
+### Nováčci
+
+| Pořadí | Tým | Město | Body |
+| --- | --- | --- | --- |
+| 1 | Pokec o Svobodě | Praha | 21 |
+| 2 | NO A CO | Praha | 20 |
+| 2 | Bratrství nápadů | Liberec | 20 |
+| 4 | MFF Fuckboyz | Praha | 19 |
+| 5 | Nový nováčci | Liberec | 15 |
+
+### Pokročilí
+
+| Pořadí | Tým | Město | Body |
+| --- | --- | --- | --- |
+| 1 | Eddiesons | Praha | 21 |
+| 2 | TBD | Praha | 19 |
+| 3 | BEZE JMÉNA | Praha | 18 |
+| 4 | Highlenders | Jihlava | 17 |
+| 5 | Twentyone.world | Praha | 16 |
+| 6 | NOBRAINERS | Liberec | 14 |
+| 7 | Kotíci | Šumperk | 11 |
+| 7 | North Stars | Liberec | 11 |
+| 9 | Šumperští CRYPTOJEZEVCI | Šumperk | 7 |
+
+Výsledky průběžně aktualizujeme po odehrání ligového kola v daných městech.
+::
+
+::u-page-section
+---
 title: Kde se hraje?
 description: Aktuální termíny a místa jednotlivých kol najdeš v kalendáři Jednadvacet.
 links:
@@ -161,40 +196,6 @@ Mezi připravenými cenami jsou například:
 - Další ceny a speciální překvapení v průběhu sezóny
 
 Konkrétní složení balíčků a rozdělení cen se může průběžně měnit podle finálních příspěvků partnerů.
-::
-
-::u-page-section
----
-title: Průběžné pořadí
-description: Body ze všech potvrzených kol se sčítají do společného žebříčku CZ a SK.
----
-
-#body
-
-### Nováčci
-
-| Pořadí | Tým | Město | Body |
-| --- | --- | --- | --- |
-| 1 | Pokec o Svobodě | Praha | 21 |
-| 2 | NO A CO | Praha | 20 |
-| 2 | Bratrství nápadů | Liberec | 20 |
-| 4 | MFF Fuckboyz | Praha | 19 |
-| 5 | Nový nováčci | Liberec | 15 |
-
-### Pokročilí
-
-| Pořadí | Tým | Město | Body |
-| --- | --- | --- | --- |
-| 1 | Eddiesons | Praha | 21 |
-| 2 | TBD | Praha | 19 |
-| 3 | BEZE JMÉNA | Praha | 18 |
-| 4 | Twentyone.world | Praha | 16 |
-| 5 | NOBRAINERS | Liberec | 14 |
-| 6 | Kotíci | Šumperk | 11 |
-| 6 | North Stars | Liberec | 11 |
-| 8 | Šumperští CRYPTOJEZEVCI | Šumperk | 7 |
-
-Výsledky průběžně aktualizujeme po odehrání ligového kola v daných městech.
 ::
 
 ::u-page-section
