@@ -121,11 +121,23 @@ Image dále obsahuje:
 
 ## Náhledové verze (review apps)
 
-Ke každému pull requestu se přes [`wrangler deploy --temporary`](https://developers.cloudflare.com/workers/platform/claim-deployments/) nasadí dočasný náhled na izolovaný Cloudflare účet a do PR se přidá komentář s odkazem. Funguje i pro forky – nepoužívá žádný Cloudflare token.
+Ke každému pull requestu se přes [dočasný Cloudflare účet](https://developers.cloudflare.com/workers/platform/claim-deployments/) nasadí izolovaný náhled. Stejný příkaz používá CI i lokální ověření:
+
+```bash
+node --experimental-strip-types scripts/deploy-preview.ts --target temporary
+```
+
+Pro již ověřený testovací účet použij explicitně dodanou cílovou konfiguraci a vlastní přihlášení do Cloudflare:
+
+```bash
+node --experimental-strip-types scripts/deploy-preview.ts --target claimed --config /cesta/k/claimed-test.wrangler.json
+```
+
+Příkaz vytvoří jen izolované D1/KV/fronty pro náhled, před nasazením kontroluje jejich identitu a po refreshi čeká na skutečná data a iCalendar. Náhled nepotřebuje Google přihlašovací údaje; R2 a mapové zdroje se do něj nenasazují. Upozornění zůstávají vypnutá a test skutečného odeslání vyžaduje vlastní nastavení poskytovatele, vybrané příjemce a samostatné schválení.
 
 - Náhled **nemá přístup k produkční databázi**.
 - **Vyprší za ~60 min**; po každém commitu se nasadí čerstvý.
-- Pro trvalý náhled spusť `npx wrangler deploy --temporary` lokálně.
+- Dočasný náhled po přihlášení znovu ověř cílovou identitu; jeho platnost a URL se nesdílejí ve veřejných logách.
 - První PR může vyžadovat schválení (pokud máš nový GitHub účet).
 
 Napsat nám můžeš i soukromě:

@@ -31,55 +31,14 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build (Cloudflare Workers, preview bindings)
-        env:
-          # Drops the prod D1 id so the temp account provisions its own fresh DB.
-          PREVIEW_DEPLOY: "1"
-          NODE_OPTIONS: --max-old-space-size=4096
-        run: npm run build
-
       - name: Deploy to temporary Cloudflare account
         id: deploy
         run: |
           set -euo pipefail
-
-          # Guard: preview build must not contain production data bindings.
-          if grep -q "76d271b2-5335-40ba-81dd-bf7e1ef79522" .output/server/wrangler.json; then
-            echo "::error::Preview build leaked the production D1 database_id. Aborting."
-            exit 1
-          fi
-          if grep -qE "PORTAL_EVENT_SNAPSHOTS|5e0aa50166db40ae8414c83614dbae4d" .output/server/wrangler.json; then
-            echo "::error::Preview build leaked the production Portal KV binding. Aborting."
-            exit 1
-          fi
-          if grep -qE 'files-jednadvacet-org|"binding": "BLOB"' .output/server/wrangler.json; then
-            echo "::error::Preview build leaked the production community-map R2 binding. Aborting."
-            exit 1
-          fi
-          # Deploy from repo root so wrangler follows Nuxt's redirect config.
-          set +e
-          npx wrangler deploy --temporary 2>&1 | tee deploy.log
-          status=${PIPESTATUS[0]}
-          set -e
-          if [ "$status" -ne 0 ]; then
-            echo "::error::wrangler deploy --temporary failed (exit $status)."
-            exit "$status"
-          fi
-
-          # Mask the claim URL (bearer credential) out of public logs.
-          claim_url="$(grep -oE 'https://dash\.cloudflare\.com/claim-preview[^[:space:]]*' deploy.log | head -n1 || true)"
-          if [ -n "$claim_url" ]; then
-            echo "::add-mask::$claim_url"
-          fi
-
-          preview_url="$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev[^[:space:]]*' deploy.log | grep -v 'claim-preview' | head -n1 || true)"
-
-          if [ -z "$preview_url" ]; then
-            echo "::error::Could not parse a preview URL from wrangler output."
-            exit 1
-          fi
-
-          echo "Preview URL: $preview_url"
+          # The shared command captures Wrangler output before it reaches CI logs.
+          # It emits only sanitized JSON and never writes a claim URL or token.
+          receipt="$(node --experimental-strip-types scripts/deploy-preview.ts --target temporary)"
+          preview_url="$(node -e 'const value=JSON.parse(process.argv[1]); if (!/^https:\/\/[a-z0-9.-]+\.workers\.dev\/?$/i.test(value.previewUrl)) process.exit(1); process.stdout.write(value.previewUrl)' "$receipt")"
           echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
 
       - name: Write preview metadata artifact

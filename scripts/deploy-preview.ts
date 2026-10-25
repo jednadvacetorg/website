@@ -93,7 +93,7 @@ const build = async (directory: string) => {
       maxBuffer: 8 * 1024 * 1024,
     }, error => error ? reject(new Error('preview build failed')) : accept())
   })
-  return join(directory, 'nuxt', 'dist', 'server', 'wrangler.json')
+  return join(directory, '.output', 'server', 'wrangler.json')
 }
 
 const resolvedConfig = async (generatedPath: string, directory: string, target: Target) => {
@@ -135,8 +135,10 @@ export const runPreviewDeployment = async (options: Options) => {
       return
     }
     await createResources(configPath, options.target)
-    await command(['deploy', '--keep-vars', '--config', configPath], { quiet: true })
-    process.stdout.write(JSON.stringify({ target: options.target, deployed: true, worker: workerName, database: previewDatabase }) + '\n')
+    const receipt = await command(['deploy', ...(options.target === 'temporary' ? ['--temporary'] : []), '--keep-vars', '--config', configPath], { quiet: true })
+    const previewUrl = receipt.match(/https:\/\/[a-z0-9.-]+\.workers\.dev\/?/i)?.[0]
+    if (!previewUrl) throw new Error('Cloudflare did not return a preview URL')
+    process.stdout.write(JSON.stringify({ target: options.target, deployed: true, worker: workerName, database: previewDatabase, previewUrl }) + '\n')
   } finally { await rm(directory, { recursive: true, force: true }) }
 }
 
