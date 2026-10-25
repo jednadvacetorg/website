@@ -46,7 +46,7 @@ export const validatePreviewConfiguration = (input: unknown, target?: { accountI
   if (config.name !== workerName || typeof config.main !== 'string') throw new Error('preview Worker identity is invalid')
   const d1 = rows(config.d1_databases).filter(item => item.binding === 'DB')
   if (d1.length !== 1 || d1[0]!.database_name !== previewDatabase) throw new Error('preview D1 is invalid')
-  if (d1[0]!.database_id === productionDatabaseId || (d1[0]!.database_id && d1[0]!.database_id !== target?.databaseId)) throw new Error('preview D1 is not pinned to its isolated target')
+  if (d1[0]!.database_id === productionDatabaseId || (target && d1[0]!.database_id !== target.databaseId)) throw new Error('preview D1 is not pinned to its isolated target')
   const kv = rows(config.kv_namespaces).filter(item => item.binding === 'PORTAL_EVENT_SNAPSHOTS')
   if (kv.length !== 1 || kv[0]!.id === productionKvId || !kv[0]!.id && target) throw new Error('preview Portal KV is invalid')
   for (const field of ['r2_buckets', 'services', 'dispatch_namespaces']) if (rows(config[field]).length) throw new Error(`preview must not include ${field}`)
