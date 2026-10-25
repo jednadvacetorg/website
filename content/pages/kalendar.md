@@ -37,3 +37,18 @@ links:
     icon: i-lucide-list-video
 ---
 ::
+
+::u-page-section
+---
+title: Chceš vypsat do kalendáře svůj meetup?
+links:
+  - label: Jak vypsat událost
+    to: /blog/jak-vypsat-udalost-na-webu-jednadvacitky
+    icon: i-lucide-book-open
+  - label: Portál Einundzwanzig
+    to: https://portal.einundzwanzig.space/
+    target: _blank
+    trailingIcon: i-lucide-external-link
+    variant: outline
+---
+::

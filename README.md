@@ -21,6 +21,7 @@ Většina obsahu webu je uložená jako Markdown v adresáři `content/`. Strukt
 - Články se píšou v jazyce Markdown ([zde je jednoduchý tutoriál](https://www.markdowntutorial.com/)) s [rozšířením MDC](https://content.nuxt.com/docs/files/markdown#mdc-syntax) pro využívání komponent.
 - Obrázky se ukládají do `public/images/blog/` s názvy souborů ve formátu `nazev-clanku-obrazek.jpg`
 - Datum zveřejnění článku se nastavuje v názvu souboru. Před schválením pull requestu proto zkontroluj, že odpovídá plánovanému datu vydání.
+- Články s budoucím datem se při sestavení vynechají z obsahové databáze, blogu, kategorií, seznamů autorů i sitemapy a jejich stránky vracejí 404. Zveřejní je první úspěšný build a nasazení v den vydání nebo později podle časové zóny `Europe/Prague`. Pro plánované vydávání proto spouštěj build a nasazení automaticky každý den. Blog zůstává předgenerovaný; zdrojové soubory a obrázky jsou veřejné i před vydáním. Po změně data při lokálním vývoji restartuj server.
 - Povinná metadata článku jsou `title` a `thumbnail`. Pomocí `categories` a `authors` lze článek propojit s kategoriemi a lidmi.
 
 ### Kategorie blogu
@@ -28,6 +29,10 @@ Většina obsahu webu je uložená jako Markdown v adresáři `content/`. Strukt
 - Kategorie se ukládají do `content/blog-categories/` jako Markdown soubory.
 - Každá kategorie musí mít v metadatech `title`. Název souboru slouží jako identifikátor kategorie, který se používá také v poli `categories` u článků.
 - Kategorie i články sdílejí veřejný prostor pod `/blog`, proto jejich cesty musí být jedinečné.
+
+### Přesměrování starých adres
+
+Staré adresy se zapisují do `redirect_from` ve frontmatteru obsahu.
 
 ### Stránky
 
@@ -37,10 +42,10 @@ Většina obsahu webu je uložená jako Markdown v adresáři `content/`. Strukt
 
 ### Komunity
 
-- Profily místních komunit se ukládají do `content/communities/` s názvy souborů ve formátu `mesto.md`.
+- Profily místních komunit se ukládají do `content/communities/` s názvy souborů ve formátu `mesto.md`. (Pro inspiraci koukni na `content/communities/brno.md`.)
 - Komunity se stejně jako běžné stránky zobrazují přímo v kořeni webu. Cesta komunity proto nesmí kolidovat se stránkou ani s vyhrazenou cestou `/blog`.
-- Povinná metadata jsou `title`, `region` a `signal_group`. Souřadnice v `map` určují umístění na mapě, `priority` pořadí prioritních měst a `organizers` odkazuje na soubory v `content/people/`.
-- Propojení s kalendářem se nastavuje pomocí `portal_meetup_id`; podrobnosti jsou v části [Integrace kalendáře s Portalem](#integrace-kalendáře-s-portalem).
+- Povinná metadata jsou `title`, `region` a `signal_group`. Souřadnice v `map` určují umístění na mapě a `organizers` odkazuje na soubory v `content/people/`.
+- Propojení s kalendářem se nastavuje pomocí `portal_meetup_id`. (Podrobnosti jsou v části [Integrace kalendáře s Portalem](#integrace-kalendáře-s-portalem).)
 - Nastavením `hidden: true` lze komunitu ponechat dostupnou pro kalendářovou integraci a samostatný odběr, ale skrýt její landing page, navigaci, mapu a záznam v sitemap.
 
 ### Lidé

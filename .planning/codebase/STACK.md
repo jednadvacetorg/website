@@ -1,112 +1,106 @@
 ---
-last_mapped_commit: 599ee9aa4c15c119dae17486c0f6ea5999b32b9e
-last_mapped_at: 2026-09-15
+last_mapped_commit: e29e037cefaa121a9b92ae058a58c950dbf2c276
+last_mapped_at: 2026-10-01
 ---
 # Technology Stack
 
-**Analysis Date:** 2026-09-15
+**Analysis Date:** 2026-10-01
 
 ## Languages
 
 **Primary:**
 
-- TypeScript 6.0 toolchain - application, Nitro server handlers, background tasks, shared types, scripts, and tests in `app/`, `server/`, `shared/`, `scripts/`, and `tests/`.
-- Vue 3 single-file components - SSR UI and client interaction in `app/**/*.vue`.
-- Markdown/MDC - typed site content and embedded Nuxt UI components in `content/`.
+- TypeScript 6.x - Nuxt application, server handlers/tasks, shared data, scripts, and tests (`app/`, `server/`, `shared/`, `scripts/`, `tests/`).
+- Vue 3 single-file components - SSR interface and client behavior in `app/`.
+- Markdown/MDC - content records and embedded components under `content/`, typed by `content.config.ts`.
 
 **Secondary:**
 
-- CSS with Tailwind CSS v4 directives and theme tokens - `app/assets/css/main.css`.
-- JSON, YAML, and shell - static data/configuration in `shared/data/`, `content/`, `.github/workflows/`, and `nuxt.config.ts`-generated deployment settings.
+- CSS with Tailwind CSS v4 - styles and UI theme in `app/assets/css/main.css`.
+- JSON, YAML, and shell - application data/configuration and CI workflows (for example `shared/data/`, `nuxt.config.ts`, `.github/workflows/`).
 
 ## Runtime
 
 **Environment:**
 
-- Node.js 24 in CI (`.github/workflows/pr-preview.yml`); local development runs in the `opencode-gsd-devcontainer` image configured by `.devcontainer/devcontainer.json`.
-- Cloudflare Workers with Nitro's `cloudflare_module` preset in production (`nuxt.config.ts`). The configuration enables `nodeCompat: true` but must remain Web API and Worker compatible.
+- Node.js 24 in GitHub preview CI (`.github/workflows/pr-preview.yml`); local runtime is npm/Node in the devcontainer (`.devcontainer/devcontainer.json`).
+- Cloudflare Workers with Nuxt/Nitro `cloudflare_module` preset in production (`nuxt.config.ts`); `nodeCompat` is enabled, but Worker/Web API compatibility remains required.
 
 **Package Manager:**
 
-- npm - scripts and dependency installation are defined in `package.json`.
-- Lockfile: present (`package-lock.json`, lockfile version 3).
+- npm; scripts and dependency declarations are in `package.json`.
+- Lockfile: present (`package-lock.json`).
 
 ## Frameworks
 
 **Core:**
 
-- Nuxt 4.3.x - SSR application framework, file routing, auto-imports, Nitro server, tasks, and build pipeline (`package.json`, `nuxt.config.ts`).
-- Vue 3 - component and reactivity runtime used throughout `app/`.
-- Nitro/H3 - server routes, middleware, storage, scheduled tasks, and request handling under `server/`.
-- `@nuxt/content` 3.11.x - typed Markdown collections, SQLite-backed content database, MDC rendering, and generated collection types (`content.config.ts`).
-- `@nuxt/ui` 4.4.x with Tailwind CSS 4.1.x - accessible UI primitives and styling (`app/app.vue`, `app/app.config.ts`, `app/assets/css/main.css`).
+- Nuxt 4 (`nuxt` ^4.3.0) - SSR application, routing, auto-imports, Nitro server and build (`nuxt.config.ts`).
+- Vue 3 - component and reactivity runtime (`app/`).
+- Nitro/H3 - API handlers, route handlers, tasks, queue consumers and storage (`server/`).
+- `@nuxt/content` 3.x - typed Markdown collections and content database (`content.config.ts`).
+- `@nuxt/ui` 4.x and Tailwind CSS 4.x - UI primitives and styling (`app/app.vue`, `app/assets/css/main.css`).
 
 **Testing:**
 
-- Node built-in test runner - behavior tests in `tests/*.test.ts`, invoked by `npm test`.
-- TypeScript, `vue-tsc`, and Nuxt generated types - static verification invoked by `npm run typecheck`.
-- No separate test framework or browser-test runner is configured in `package.json`.
+- Node built-in test runner - `npm test` runs `node --experimental-strip-types --test tests/*.test.ts` (`package.json`).
+- Nuxt typecheck - `npm run typecheck`; no separate test framework is declared in `package.json`.
 
 **Build/Dev:**
 
-- Vite through Nuxt - development server and bundling (`package.json`, `nuxt.config.ts`).
-- Wrangler 4.102.x - Cloudflare Worker deployment and temporary PR previews (`package.json`, `.github/workflows/pr-preview.yml`).
-- NuxtHub Core 0.10.x - database/blob integration and `hub:blob` server bindings (`nuxt.config.ts`, `server/plugins/communityMapsQueue.ts`).
-- `nuxt-studio` 1.5.x - repository-backed content editing at `/_studio` (`nuxt.config.ts`).
-- `@vueuse/nuxt` 14.2.x - VueUse auto-import integration (`nuxt.config.ts`).
+- Vite via Nuxt - development and bundling (`nuxt.config.ts`).
+- Wrangler 4.x - Cloudflare deployment and temporary previews (`package.json`, `.github/workflows/pr-preview.yml`).
+- NuxtHub Core 0.10.x - D1/R2 integration and `hub:blob` (`nuxt.config.ts`, `server/plugins/communityMapsQueue.ts`).
+- Nuxt Studio 1.x - repository-backed content editing (`nuxt.config.ts`).
+- `@vueuse/nuxt` 14.x - VueUse Nuxt integration (`nuxt.config.ts`).
 
 ## Key Dependencies
 
 **Critical:**
 
-- `@nuxt/content` - content collections and generated typed records consumed by `app/pages/`, `app/composables/`, and server tasks.
-- `@nuxt/ui` - application shell and component library, wrapped by `UApp` in `app/app.vue`.
-- `@nuxthub/core` - local filesystem/blob and production Cloudflare D1/R2 integration configured in `nuxt.config.ts`.
-- `@nuxt/image` 2.x - `NuxtImg` image rendering in `app/components/`; provider selection is environment-specific in `nuxt.config.ts`.
-- `@nuxtjs/sitemap` 8.2.x - sitemap generation and collection schema support in `content.config.ts` and `nuxt.config.ts`.
-- `nuxt-studio` - content editor and GitHub repository integration.
+- `@nuxt/content` - content collection query and Markdown rendering consumed throughout `app/` and `server/`.
+- `@nuxt/ui` - shared component library used by application UI (`app/`).
+- `@nuxthub/core` - database and blob-storage framework integration (`nuxt.config.ts`).
+- `@nuxt/image` 2.x - responsive image component/provider support in `app/`.
+- `@nuxtjs/sitemap` 8.x - sitemap integration and content schema (`content.config.ts`, `nuxt.config.ts`).
+- `nuxt-studio` - content editor integration (`nuxt.config.ts`).
 
 **Infrastructure:**
 
-- `drizzle-orm` and `drizzle-kit` - installed database ORM/schema tooling for the NuxtHub/SQLite stack; no direct application imports are detected outside generated/framework integration.
-- `@libsql/client` and `better-sqlite3` - installed SQLite/LibSQL drivers used for local or framework tooling compatibility; application persistence is configured through Nuxt Content/NuxtHub rather than hand-written client calls.
-- `@counterscale/tracker` - client analytics in `app/plugins/counterscale.client.ts`.
-- `ical.js` - iCalendar serialization in `server/routes/ical/[slug].get.ts`.
-- `qrcode` - lazy client-side Lightning URI QR generation in `app/components/LightningQrCode.vue`.
-- `@vueuse/core` and `@vueuse/nuxt` - client utility/composable support.
-- `@iconify-json/bitcoin-icons`, `lucide`, `pinhead`, `simple-icons`, and `streamline` - bundled icon collections restricted by `nuxt.config.ts`.
+- `drizzle-orm`, `drizzle-kit`, `@libsql/client`, and `better-sqlite3` are present for database/framework tooling; no standalone application ORM layer is declared in `package.json`.
+- `@counterscale/tracker` - browser analytics (`app/plugins/counterscale.client.ts`).
+- `ical.js` - iCalendar serialization (`server/routes/ical/[slug].get.ts`).
+- `qrcode` - lazy Lightning URI QR generation (`app/components/LightningQrCode.vue`).
+- `@vueuse/core` and `@vueuse/nuxt` - client utilities and auto-imports.
+- Iconify JSON packs for Bitcoin Icons, Lucide, Pinhead, Simple Icons, and Streamline are installed and configured in `nuxt.config.ts`.
 
 ## Configuration
 
 **Environment:**
 
-- Runtime secrets and private integration values are exposed through Nuxt `runtimeConfig` in `nuxt.config.ts`; production values are expected as Cloudflare Worker secrets and local names are documented without values in `.env.example`.
-- Required integration variables include `NUXT_PORTAL_WEBHOOK_SECRET`, `NUXT_GOOGLE_OAUTH_CLIENT_ID`, `NUXT_GOOGLE_OAUTH_SECRET`, `NUXT_GOOGLE_OAUTH_REFRESH_TOKEN`, `NUXT_GOOGLE_LEGACY_CALENDAR_ID`, `NUXT_EVENTS_ADMIN_TOKEN`, and `NUXT_MAPBOX_ACCESS_TOKEN` (`.env.example`, `nuxt.config.ts`).
-- Build/environment switches include `PREVIEW_DEPLOY`, `NUXT_BUILD_DIR`, `NUXT_IMAGE_PROVIDER`, `STUDIO_BRANCH_NAME`, and `NODE_ENV` (`nuxt.config.ts`).
-- `.env` exists locally but is ignored; do not read or commit its contents. `.env.example` is the safe source of variable names.
+- Nuxt runtime secrets/configuration are declared in `nuxt.config.ts`; `.env.example` documents variable names without secret values. `.env` is local configuration and must not be read.
+- Runtime integration names include `NUXT_PORTAL_WEBHOOK_SECRET`, Google OAuth/calendar variables, `NUXT_EVENTS_ADMIN_TOKEN`, and `NUXT_MAPBOX_ACCESS_TOKEN` (`.env.example`, `nuxt.config.ts`).
+- Build switches include `PREVIEW_DEPLOY`, `NUXT_IMAGE_PROVIDER`, `NUXT_BUILD_DIR`, and `STUDIO_BRANCH_NAME` (`nuxt.config.ts`).
 
 **Build:**
 
-- `nuxt.config.ts` defines modules, content's local SQLite path, renderer aliases, runtime config, image providers, NuxtHub storage, Nitro tasks, Cloudflare bindings, queues, cron schedules, route rules, sitemap exclusions, and Studio.
-- `content.config.ts` defines typed collections, Zod schemas, route prefixes, indexes, and sitemap filtering.
-- `tsconfig.json` references Nuxt-generated app, server, shared, and node configs rather than maintaining an independent compiler configuration.
-- `app/assets/css/main.css` imports Tailwind and Nuxt UI and defines the project orange palette.
-- `package.json` defines `build`, `build:cloudflare`, `test`, `typecheck`, `dev`, and tunnel scripts. `npm run build` first runs `scripts/validate-content-routes.ts`.
+- `nuxt.config.ts` configures modules, Content SQLite location, NuxtHub, image/icon providers, Nitro storage/tasks, Cloudflare bindings, queues, schedules, routing and Studio.
+- `content.config.ts` defines the typed content collections and schemas.
+- `tsconfig.json` uses Nuxt-generated TypeScript configuration.
+- `package.json` provides `dev`, `build`, `build:cloudflare`, `test`, and `typecheck`; build runs `scripts/validate-content-routes.ts` before Nuxt build.
 
 ## Platform Requirements
 
 **Development:**
 
-- npm and Node.js compatible with the Nuxt 4/TypeScript toolchain; the repository's devcontainer supplies the recommended environment (`.devcontainer/devcontainer.json`).
-- Writable local `.data/` storage for NuxtHub blob data and generated framework state; Nuxt Content uses `/tmp/jednadvacet-content.sqlite` because the devcontainer workspace mount has unreliable SQLite writes (`nuxt.config.ts`).
-- Optional local credentials from `.env.example` for Portal refresh, Google synchronization, Mapbox generation, and admin endpoints.
+- Node.js/npm compatible with the Nuxt 4 toolchain; the project devcontainer supplies a recommended environment (`.devcontainer/devcontainer.json`).
+- Local writable storage is used for NuxtHub blob files under `.data/blob`; Nuxt Content SQLite is placed at `/tmp/jednadvacet-content.sqlite` (`nuxt.config.ts`).
 
 **Production:**
 
-- Cloudflare Workers project named `jednadvacetorg-web`, deployed with Wrangler/Nitro's `cloudflare_module` preset (`nuxt.config.ts`).
-- Cloudflare D1 binding `DB`, KV namespace binding `PORTAL_EVENT_SNAPSHOTS`, R2 binding `BLOB`, and queues `community-maps` and `portal-events` are generated/configured by `nuxt.config.ts`.
-- Cloudflare cron triggers run map and Portal refresh tasks daily; production observability logs/traces are emitted through the generated Wrangler configuration.
+- Cloudflare Workers deployment named `jednadvacetorg-web`, using Nitro's `cloudflare_module` preset (`nuxt.config.ts`).
+- Cloudflare D1, KV, R2, Queues, and cron bindings are generated/configured through `nuxt.config.ts`.
 
 ---
 
-*Stack analysis: 2026-09-15*
+*Stack analysis: 2026-10-01*

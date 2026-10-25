@@ -457,7 +457,13 @@ test('Portal plugin plans against top-level DB and publishes committed pointers 
       }
       return Reflect.get(target, key)
     } })
-    globals.$fetch = async (url: string) => url.endsWith('/meetups') ? [{ id: 360, portalLink: 'portal:brno' }] : [{ id: 12, 'meetup.name': 'Brno', 'meetup.portalLink': 'portal:brno', title: 'Synthetic future meetup', start: new Date(Date.now() + 86400000).toISOString().slice(0, 16).replace('T', ' '), end: null }]
+    globals.$fetch = async (url: string) => {
+      const request = new URL(url)
+      assert.equal(request.pathname, '/api/meetup-events')
+      assert.equal(request.searchParams.get('meetup_id'), '360')
+      assert.equal(request.searchParams.get('from'), 'today')
+      return [{ id: 12, meetup_id: 360, title: 'Synthetic future meetup', start: new Date(Date.now() + 86400000).toISOString().slice(0, 16).replace('T', ' '), end: null }]
+    }
     let hook!: (event: unknown) => Promise<void>
     ;(plugin as unknown as (app: unknown) => void)({ hooks: { hook: (_name: string, handler: typeof hook) => { hook = handler } } })
     const sent: unknown[] = []

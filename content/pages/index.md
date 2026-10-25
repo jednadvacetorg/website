@@ -13,6 +13,7 @@ redirect_from:
 
 ::u-page-section
 ---
+id: pribehy
 title: Co říkají lidé z komunit
 ---
   :::u-page-grid{:ui='{ "base": "lg:grid-cols-2" }'}

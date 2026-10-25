@@ -338,6 +338,7 @@ export default defineNuxtConfig({
     '/**': { headers: { 'referrer-policy': 'strict-origin' } },
     '/notifications/manage/**': { headers: { 'cache-control': 'no-store' } },
     '/api/notifications/**': { headers: { 'cache-control': 'no-store' } },
+    '/sitemap.xml': { prerender: true },
     '/cntrsclc': { proxy: { to: 'https://analytics.jednadvacet.org/collect' } }, // Mask tracker collect URL to avoid blockers.
     '/author/**': { redirect: { to: '/lide', statusCode: 302 } },
     '/blog/page/**': { redirect: { to: '/blog', statusCode: 302 } },

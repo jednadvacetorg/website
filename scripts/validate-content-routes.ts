@@ -4,25 +4,11 @@ import { readdir } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { routedContentSources, type RoutedContentCollection } from '../shared/data/contentRouteSources.ts'
+import { deriveContentPath, routedContentSources, type RoutedContentCollection } from '../shared/data/contentRouteSources.ts'
 
 interface ContentRouteEntry {
   path: string
   collection: RoutedContentCollection
-}
-
-const deriveContentPath = (relativeFilePath: string, prefix: string): string => {
-  const path = relativeFilePath
-    .replaceAll('\\', '/')
-    .replace(/\.(?:md|mdc)$/i, '')
-    .replace(/^\/+|\/+$/g, '')
-    .split('/')
-    .map(segment => segment.replace(/^\d+\./, ''))
-    .join('/')
-    .replace(/(?:^|\/)index$/i, '')
-
-  const normalizedPrefix = `/${prefix}`.replace(/\/{2,}/g, '/').replace(/\/$/, '')
-  return path ? `${normalizedPrefix}/${path}`.replace(/\/{2,}/g, '/') : normalizedPrefix || '/'
 }
 
 const findContentRouteCollisions = (entries: readonly ContentRouteEntry[]): string[] => {

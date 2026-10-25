@@ -20,7 +20,7 @@
 - Create a commit for ordinary work only when the user explicitly requests one. If its scope is clear, that request is sufficient approval; if unrelated changes are present, ask which paths to include.
 - GSD may create incremental implementation commits only on `gsd/phase-*` branches and their isolated executor worktrees. Never create GSD implementation commits on `master`.
 - Keep `master` protected: never merge, rebase, cherry-pick, tag, push, or otherwise change its history without explicit user approval. Successful checks, UAT, phase completion, or a request to review do not imply integration approval.
-- Start a dependent GSD phase only after every prerequisite phase has been reviewed, approved, and integrated into `master`. Stop rather than base a dependent phase on an unmerged phase branch.
+- When explicitly requested, related dependent GSD phases may be completed on one existing `gsd/phase-*` milestone branch. Review and approve the complete milestone diff before integrating that branch into `master`; keep the phase order and record each phase's verification in its artifacts.
 - Before integrating a phase, report the source and target branches, branch ancestry, commits and diff against `master`, relevant verification and UAT results, and unmet dependencies. Explain the consequences and confirm the user's intended integration path.
 - Prefer `/gsd-ship <phase>` for a reviewed PR into `master`; also offer keeping the phase branch unchanged when further review is wanted. Do not run `/gsd-complete-milestone` until its branch-merge effects have been explained and the user explicitly approves proceeding.
 
@@ -59,6 +59,7 @@
 - Keep one-use logic local by default. Do not split components merely because template sections have different conceptual responsibilities.
 - Keep types at the narrowest boundary. Put a type in `shared/` only when production code on both client and server consumes it.
 - Do not add persisted state, deduplication, schema metadata, compatibility layers, factories, or wrappers unless a requirement or concrete failure mode needs them. Persisted state must have an explicit key owner, invalidation strategy, and retention policy.
+- A concrete dependency or CLI failure does not waive the new-file criteria above. For installation and tooling repairs, first check existing commands, supported options, configuration, and upstream fixes. Before replacing an existing command with a project-owned script or wrapper, explain why those simpler options are insufficient and get explicit user approval. If the upstream issue remains unresolved, report it rather than silently taking ownership of a workaround.
 - Test behavior through stable public boundaries. Do not write tests that inspect source or configuration text with regular expressions. Use typecheck, builds, generated output, and browser verification for framework wiring and content placement.
 - For a narrow feature, prefer one focused test file per stable behavior boundary rather than one file per requirement or acceptance criterion.
 - Keep feature work separate from discovered tooling, devcontainer, build, documentation, and deployment-policy fixes. Report those separately and get approval before mixing them into the feature diff.

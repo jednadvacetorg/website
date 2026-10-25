@@ -12,14 +12,18 @@ import {
 
 const { data, error } = await useDataCommunities()
 
-const markers = computed(() => (data.value ?? []).flatMap(community => {
-  if (!community.map) return []
-  return [{
+const markers = computed(() => (data.value ?? []).flatMap((community) => {
+  const points = community.homepage_map?.length
+    ? community.homepage_map
+    : community.map ? [{ label: community.title, ...community.map }] : []
+  return points.map((point, index) => ({
+    key: `${community.path}#${index}`,
     path: community.path,
+    label: point.label,
     title: community.title,
-    region: community.region,
-    ...projectCommunityCoordinate(community.map.lng, community.map.lat),
-  }]
+    region: [community.region].flat().join(', '),
+    ...projectCommunityCoordinate(point.lng, point.lat),
+  }))
 }))
 
 const transform = reactive<CommunityMapTransform>({ scale: 1, x: 0, y: 0 })
@@ -111,7 +115,7 @@ const toggleZoom = (event: MouseEvent) => {
 const activateMarker = (event: MouseEvent, marker: (typeof markers.value)[number]) => {
   if (isZoomed.value) return
   event.preventDefault()
-  activeMarker.value = marker.path
+  activeMarker.value = marker.key
   setTransform(centerCommunityMapOn(marker.x, marker.y))
 }
 
@@ -217,7 +221,7 @@ const stopPan = (event: PointerEvent) => {
       <h2 id="community-map-heading" class="text-xl text-primary font-semibold sm:text-3xl">
         Najdi svou komunitu
       </h2>
-      <p>Jsme v {{ data?.length ?? 0 }} městech po celém Česku.</p>
+      <p>Jsme v {{ markers.length }} městech po celém Česku.</p>
 
       <p v-if="error" role="alert" class="mt-8 text-white/75">
         Mapu komunit se nepodařilo načíst. Zkus stránku obnovit.
@@ -297,14 +301,14 @@ const stopPan = (event: PointerEvent) => {
 
         <a
           v-for="marker in markers"
-          :key="marker.path"
+          :key="marker.key"
           :href="marker.path"
-          :aria-label="`${marker.title}, ${marker.region}. V základním pohledu přiblíží mapu, v přiblíženém otevře komunitu.`"
+          :aria-label="`${marker.label === marker.title ? marker.title : `${marker.label} – ${marker.title}`}, ${marker.region}. V základním pohledu přiblíží mapu, v přiblíženém otevře komunitu.`"
           :transform="markerTransform(marker.x, marker.y)"
           class="community-marker"
-          @mouseenter="activeMarker = marker.path"
+          @mouseenter="activeMarker = marker.key"
           @mouseleave="activeMarker = null"
-          @focus="activeMarker = marker.path"
+          @focus="activeMarker = marker.key"
           @blur="activeMarker = null"
           @click.stop="activateMarker($event, marker)"
         >
@@ -321,9 +325,9 @@ const stopPan = (event: PointerEvent) => {
               :y="-labelOffset"
               :font-size="labelFontSize"
               class="marker-label"
-              :class="{ 'is-visible': isZoomed || activeMarker === marker.path }"
+              :class="{ 'is-visible': isZoomed || activeMarker === marker.key }"
               text-anchor="middle"
-            >{{ marker.title }}</text>
+            >{{ marker.label }}</text>
         </a>
       </svg>
     </div>

@@ -1,6 +1,9 @@
+import { globSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { defineContentConfig, defineCollection, z, property } from '@nuxt/content'
 import { defineSitemapSchema } from '@nuxtjs/sitemap/content'
 import { routedContentSources } from './shared/data/contentRouteSources'
+import { isPublishedBlogFile } from './shared/utils/blogPublication'
 
 const commonSchema = {
   title: z.string(),
@@ -11,6 +14,11 @@ const commonSchema = {
 }
 
 const exclude = ['README.md']
+// Exclude scheduled articles from the entire deployment, not just its listings.
+// The next build on/after their Czech publication day includes them again.
+const scheduledArticles = [...globSync('blog-articles/**/*.{md,mdc}', {
+  cwd: fileURLToPath(new URL('./content/', import.meta.url)),
+})].filter(file => !isPublishedBlogFile(file))
 
 export default defineContentConfig({
   collections: {
@@ -19,13 +27,14 @@ export default defineContentConfig({
       indexes: [{ columns: ['path'] }],
       source: {
         include: `${routedContentSources.blogArticles.directory}/**`,
-        exclude,
+        exclude: [...exclude, ...scheduledArticles],
         prefix: routedContentSources.blogArticles.prefix,
       },
       schema: z.object({
         ...commonSchema,
         published: property(z.string().optional()).editor({ hidden: true }),
         thumbnail: z.string(),
+        audio: z.string().url().optional(),
         categories: z.array(z.string()).optional(),
         authors: z.array(z.string()).optional(),
       }).passthrough()
@@ -59,15 +68,23 @@ export default defineContentConfig({
           filter: community => community.hidden !== true,
         })).editor({ hidden: true }),
         hidden: property(z.boolean().optional()).editor({ description: 'Skryje komunitu z veřejné landing page, navigace, mapy a sitemap.' }),
-        region: z.string().trim().min(1),
+        region: z.union([
+          z.string().trim().min(1),
+          z.array(z.string().trim().min(1)).min(1),
+        ]),
         priority: z.number().int().nonnegative().optional(),
         map: property(z.object({
           lat: z.number().finite().min(48).max(52),
           lng: z.number().finite().min(12).max(19),
           zoom: z.number().finite().min(0).max(22).optional(),
         }).optional()).editor({ description: 'Najdi ideální souřadnice a zoom tak aby byly vidět všechny důležité body na mapě: https://labs.mapbox.com/location-helper/' }),
+        homepage_map: property(z.array(z.object({
+          label: z.string().trim().min(1),
+          lat: z.number().finite().min(48).max(52),
+          lng: z.number().finite().min(12).max(19),
+        })).min(1).optional()).editor({ description: 'Přepíše bod komunity v mapě na homepage. Každá položka je jedna tečka s vlastním popiskem a všechny vedou na tuto komunitu. Když pole chybí, použije se pole „map“ a název komunity.' }),
         signal_group: z.string().url(),
-        portal_meetup_id: z.number().int().nonnegative().optional(),
+        portal_meetup_id: z.number().int().positive().optional(),
         organizers: z.array(z.string()).optional(),
       }),
     }),

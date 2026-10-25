@@ -12,5 +12,7 @@ links:
     icon: i-lucide-mail
 ---
 
+#body
+
 Napiš nám, jak bys chtěl Jednadvacítce pomoci a co pro tebe můžeme udělat.
 ::

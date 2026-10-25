@@ -24,6 +24,7 @@ logs
 .DS_Store
 .fleet
 .idea
+opencode.json
 .devcontainer/data/*
 
 # Local env files

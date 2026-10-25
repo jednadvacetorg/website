@@ -52,7 +52,7 @@ export default defineNitroPlugin((nitroApp) => {
       }
 
       const storage = useStorage('portalEvents')
-      const result = await refreshPortalMeetups(selected, storage, $fetch, new Date(), changes)
+      const result = await refreshPortalMeetups(selected, storage, $fetch, new Date(), changes, refreshAll)
       // Installed Nitro supplies env at the hook top level; context is ExecutionContext.
       const database = event.context?.notificationDatabase ?? event.env?.DB
       const queue = event.context?.notificationMessagesQueue ?? event.env?.NOTIFICATION_MESSAGES_QUEUE
@@ -70,9 +70,6 @@ export default defineNitroPlugin((nitroApp) => {
           // snapshots from becoming public state. No recipient or provider data is logged.
           console.warn('[notifications] Event email planning is unavailable', { errorType: error instanceof Error ? error.name : typeof error })
         }
-      }
-      if (result.preservedCommunities.length > 0) {
-        console.warn(`[portal-events] Preserved snapshots for removed meetups: ${result.preservedCommunities.join(', ')}`)
       }
       if (refreshAll) {
         // Use the materialized state that was just written. An immediate KV read is not

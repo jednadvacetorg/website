@@ -1,136 +1,107 @@
 ---
-last_mapped_commit: 599ee9aa4c15c119dae17486c0f6ea5999b32b9e
-last_mapped_at: 2026-09-15
+last_mapped_commit: e29e037cefaa121a9b92ae058a58c950dbf2c276
+last_mapped_at: 2026-10-01
 ---
 # Coding Conventions
 
-**Analysis Date:** 2026-09-15
+**Analysis Date:** 2026-10-01
 
 ## Naming Patterns
 
 **Files:**
 
-- Vue components use PascalCase, such as `app/components/CommunityMap.vue` and `app/components/LightningQrCode.vue`.
-- Composables and utilities use lower camel case filenames, such as `app/composables/content.ts` and `app/utils/calendar.ts`.
-- Server route filenames follow Nuxt HTTP suffix conventions, such as `server/api/events/index.get.ts` and `server/api/events/refresh.post.ts`.
-- Tests use the behavior-oriented `.test.ts` suffix in the top-level `tests/` directory, such as `tests/portalEvents.test.ts`.
+- Vue single-file components use PascalCase (`app/components/CommunityMap.vue`, `app/components/content/Calendar.vue`).
+- Composables and utilities use lower camel case (`app/composables/content.ts`, `app/utils/calendar.ts`).
+- Nuxt server routes use HTTP-method suffixes (`server/api/events/index.get.ts`, `server/api/events/webhook.post.ts`).
+- Automated tests use domain-oriented `.test.ts` filenames in `tests/` (`tests/portalEvents.test.ts`).
 
 **Functions:**
 
-- Use lower camel case for functions and composables: `projectCalendarEvents` in `app/utils/calendar.ts`, `useDataCommunities` in `app/composables/content.ts`, and `getPortalEvents` in `server/utils/portalEvents.ts`.
-- Prefix composables with `use`, and name pure transformations with a verb or domain noun: `useCommunityProjection`, `parseEvent`, `generateCommunityMaps`.
-- Use concise predicate names beginning with `is`, `has`, or `can`, such as `isRecord`, `isPortalEvent`, and `hasActiveFilter`.
+- Use lower camel case. Prefix Vue composables with `use` (`useDataCommunities` in `app/composables/content.ts`); name transformations by their domain action (`projectCalendarEvents` in `app/utils/calendar.ts`).
+- Use `is`-prefixed predicates for type guards, for example `isRecord` and `isCommunity` in `server/utils/portalEvents.ts`.
 
 **Variables:**
 
-- Use lower camel case for locals, props, and reactive state: `selectedTags`, `filteredEvents`, and `communityMapsCron`.
-- Use descriptive domain names rather than abbreviations in application logic; acronyms remain in external field names such as `osm_lat` and `portal_meetup_id` when preserving upstream/content schemas.
-- Use `UPPER_SNAKE_CASE` for module constants only when they are stable shared values, such as the map dimensions in `app/utils/communityMap.ts`; local constants commonly remain lower camel case, such as `pageSize` in `app/components/content/Calendar.vue`.
+- Use lower camel case for local variables, reactive values, and parameters. Preserve upstream/content schema spellings such as `portal_meetup_id` at their data boundaries (`content.config.ts`, `server/utils/portalEvents.ts`).
+- Use uppercase names for stable module constants where appropriate; module constants in `server/utils/portalEvents.ts` use descriptive lower camel case.
 
 **Types:**
 
-- Use PascalCase for interfaces, type aliases, and classes: `PortalCommunity`, `PortalCalendarEvent`, `CalendarEventRow`, and `PortalEventsError`.
-- Prefer explicit interfaces for public dependency contracts and records in server utilities, for example `PortalStorage` and `PortalFetch` in `server/utils/portalEvents.ts`.
-- Use discriminated unions for page results, such as `PageResult` in `app/pages/[...slug].vue` and `BlogResult` in `app/pages/blog/[[slug]].vue`.
-- Use `type` imports when importing only types, as in `app/pages/[...slug].vue` and `app/components/content/Calendar.vue`.
+- Use PascalCase for interfaces, aliases, and classes (`PortalCommunity`, `PortalStorage`, and `PortalEventsError` in `server/utils/portalEvents.ts`).
+- Use explicit dependency contracts for injectable side effects and discriminated unions where result variants differ (`PageResult` in `app/pages/[...slug].vue`).
+- Use `import type` for type-only imports, as in `server/utils/portalEvents.ts` and `tests/portalEvents.test.ts`.
 
 ## Code Style
 
 **Formatting:**
 
-- No repository ESLint, Prettier, Biome, or formatting configuration is detected; preserve the established manual style.
-- Use two-space indentation, single quotes in TypeScript, trailing commas in multiline objects/arrays/parameters, and semicolons only where syntax requires them. Examples are `app/composables/content.ts` and `server/utils/portalEvents.ts`.
-- Keep arrow functions and simple guards concise, but use multiline expressions when chained transformations become difficult to scan, as in `projectCommunities` in `app/composables/content.ts`.
-- Keep Vue files organized as `<script setup lang="ts">`, template, and optional scoped style sections. Components such as `app/components/CommunityMap.vue` follow this order.
+- No repository ESLint, Prettier, or Biome configuration is present; follow nearby source formatting.
+- TypeScript examples use two-space indentation, single quotes, and trailing commas in multiline lists/objects; semicolons are generally omitted. See `app/composables/content.ts` and `server/utils/portalEvents.ts`.
+- Vue components use `<script setup lang="ts">`, then template and optional styles; see `app/components/content/Calendar.vue`.
 
 **Linting:**
 
-- No lint script or lint configuration is present in `package.json` or the repository root.
-- Use `npm run typecheck` as the available static verification for TypeScript and Vue template types; do not introduce untyped boundaries without a framework-hook reason.
-- Generated Nuxt types are consumed through the root `tsconfig.json` project references rather than hand-written application compiler options.
+- `package.json` defines no lint script. `npm run typecheck` runs `nuxt typecheck`; `tsconfig.json` references generated Nuxt app, server, shared, and node projects.
+- Respect Nuxt-generated Content and framework types rather than adding broader `any` annotations.
 
 ## Import Organization
 
 **Order:**
 
-1. External runtime and framework imports, for example `h3` or `@nuxt/content`, appear first.
-2. Type-only imports are placed alongside the owning package or module.
-3. Project aliases and relative imports follow, generally grouped by alias or local path.
-4. A blank line separates logically distinct import groups in larger modules, as in `tests/communityHeroMaps.test.ts` and `server/api/events/refresh.post.ts`.
+1. Node built-ins and external packages (`node:assert/strict`, `h3`).
+2. Type-only imports alongside their owning module/package.
+3. Project alias and relative imports, grouped logically; tests commonly use explicit relative `.ts` paths.
 
 **Path Aliases:**
 
-- Use Nuxt aliases such as `#shared/types/portalEvents`, `#shared/data/partners`, and `~/composables/content`.
-- Use relative imports for adjacent server and test modules when the path is explicit, such as `../server/utils/portalEvents.ts` in `tests/portalEvents.test.ts`.
-- Let Nuxt auto-import framework composables and utilities in Vue files; components such as `app/components/content/Calendar.vue` do not import `computed`, `ref`, `watch`, or `useFetch`.
+- Use Nuxt aliases such as `#shared/types/portalEvents` and `~/composables/content` where appropriate. Server/test modules also use explicit relative paths, e.g. `../server/utils/portalEvents.ts` in `tests/portalEvents.test.ts`.
+- Rely on Nuxt auto-imports for framework composables in Vue files (`app/components/content/Calendar.vue`).
 
 ## Error Handling
 
 **Patterns:**
 
-- Validate untrusted values at the boundary and throw a domain-specific error with a safe public message. `server/utils/portalEvents.ts` uses `PortalEventsError` for malformed upstream data and status codes.
-- Convert server-route failures to H3 errors with an appropriate status code and user-safe status message, as in `server/api/events/index.get.ts` and `server/api/events/refresh.post.ts`.
-- Narrow `unknown` with type guards such as `isRecord`, `isPortalEvent`, and `isCommunity` before accessing fields in `server/utils/portalEvents.ts`.
-- Catch external transport failures, log only safe diagnostics, and discard sensitive upstream messages. See `fetchPayload` in `server/utils/portalEvents.ts` and Google API handling in `server/utils/googleCalendar.ts`.
-- Treat stale cached data as an explicit fallback where the domain permits it; `server/utils/miners.ts` returns a stale snapshot when the upstream refresh fails.
-- In Vue pages, throw a fatal 404 after a typed content query returns no result, as in `app/pages/[...slug].vue` and `app/pages/blog/[[slug]].vue`.
+- Validate untrusted external payloads at integration boundaries and narrow `unknown` with type guards; `server/utils/portalEvents.ts` defines `PortalEventsError` and validates its Portal inputs.
+- Convert API failures to H3 errors with appropriate status and safe public messages (`server/api/events/index.get.ts`, `server/api/events/refresh.post.ts`).
+- Catch network failures where sanitization is required, log limited diagnostics, and avoid forwarding raw upstream messages (`fetchPayload` in `server/utils/portalEvents.ts`).
+- Use typed content query results and Nuxt 404 handling for missing public content (`app/pages/[...slug].vue`, `app/pages/blog/[[slug]].vue`).
 
 ## Logging
 
-**Framework:** `console` with structured, prefixed messages.
+**Framework:** `console`.
 
 **Patterns:**
 
-- Prefix background integration logs with the subsystem, for example `[portal-events]` in `server/utils/portalEvents.ts` and `[community-maps]` in `server/utils/staticMap.ts`.
-- Log error category, endpoint, error type, and status rather than raw upstream error objects or credentials; `fetchPayload` in `server/utils/portalEvents.ts` demonstrates this boundary.
-- Route handlers may log the caught error for server diagnostics, but responses must use safe messages outside development, as in `server/api/events/index.get.ts`.
-- Avoid logging expected client validation failures unless the route needs operational visibility.
+- Prefix integration/background messages with a subsystem (`[portal-events]` in `server/utils/portalEvents.ts`).
+- Log categorized, non-sensitive diagnostics; do not expose tokens or raw external error details to public responses.
 
 ## Comments
 
 **When to Comment:**
 
-- Comment non-obvious framework, deployment, security, cache, or data-integrity constraints, as in `nuxt.config.ts` and `server/utils/portalEvents.ts`.
-- Prefer comments that explain why a constraint exists, such as the Cloudflare `sharp` alias in `nuxt.config.ts`, instead of narrating obvious code.
-- Use short inline comments for security-sensitive transformations, such as the XSS-safe `<` escaping in `app/utils/calendar.ts`.
+- Explain non-obvious deployment, consistency, security, and data-integrity constraints, not obvious operations. Examples include comments in `nuxt.config.ts` and `server/utils/portalEvents.ts`.
 
 **JSDoc/TSDoc:**
 
-- Add short JSDoc to exported utilities or complex transformations that establish a shared invariant: `eventJsonLd`, `projectCalendarEvents`, and `osmMapUri` in `app/utils/calendar.ts`.
-- Do not add documentation blocks to trivial local helpers unless they clarify an external contract.
+- Short JSDoc documents exported functions when it establishes a contract, such as `refreshPortalMeetups` in `server/utils/portalEvents.ts`; avoid comments on self-evident local helpers.
 
 ## Function Design
 
-**Size:**
-
-- Keep pure projection, validation, and formatting helpers small and composable, as in `app/utils/calendar.ts`.
-- Larger orchestration functions are permitted for integration workflows; keep their steps visible through named helpers and explicit stages, as in `refreshPortalMeetups` in `server/utils/portalEvents.ts`.
+**Size:** Keep pure parsers/projections small; orchestration may be larger when stages remain explicit, as in `refreshPortalMeetups` in `server/utils/portalEvents.ts`.
 
 **Parameters:**
 
-- Use narrow object contracts and `Pick`/`Partial` at boundaries, for example `osmMapUri` accepts only the OSM fields it needs in `app/utils/calendar.ts`.
-- Inject fetchers, storage, clocks, and other side effects into server utilities so tests can provide deterministic doubles; see `PortalFetch`, `PortalStorage`, and the `now` parameter in `server/utils/portalEvents.ts`.
-- Use optional parameters with concrete defaults for testable time and signal behavior, rather than reading mutable global state inside pure logic.
+- Use narrow interfaces and `Pick`/`Partial` for dependency/input boundaries (`PortalStorage`, `PortalFetch` in `server/utils/portalEvents.ts`).
+- Inject fetchers, storage, and clocks into side-effecting domain functions to support deterministic tests (`refreshPortalMeetups`).
 
-**Return Values:**
-
-- Return typed domain values or explicit `undefined`/`null` for absent optional results; `osmMapUri` returns `string | undefined`.
-- Preserve immutable inputs in projections by copying before sorting or enriching, as `projectCalendarEvents` does in `app/utils/calendar.ts`.
-- Return structured reports for batch work, such as `{ generated, images }` from `generateCommunityMaps` and `{ created, updated, deleted }` from Google synchronization.
+**Return Values:** Return explicit typed domain results and `undefined` for absent optional values; preserve inputs when sorting or projecting (`projectCalendarEvents` in `app/utils/calendar.ts`). Batch operations return structured result objects (`PortalRefreshResult` in `server/utils/portalEvents.ts`).
 
 ## Module Design
 
-**Exports:**
+**Exports:** Export public domain operations and testable types; keep internal parsers/helpers private (`server/utils/portalEvents.ts`). Nuxt entrypoints use framework-compatible exports, including default route handlers under `server/api/`.
 
-- Export reusable pure functions, parsers, domain errors, and dependency types from server utility modules so they can be tested directly; `server/utils/portalEvents.ts` and `server/utils/googleCalendar.ts` follow this pattern.
-- Keep implementation-only helpers private within the module, such as `parseCacheForWrite` and `futureEvents` in `server/utils/portalEvents.ts`.
-- Use default exports for Nuxt entry points and module hooks, such as route handlers in `server/api/` and `shared/contentRedirectsModule.ts`.
-
-**Barrel Files:**
-
-- No barrel/index export pattern is detected for application utilities or components. Import from the defining file.
-- Use Nuxt auto-imports for components and composables where the framework provides them; avoid adding a new barrel solely for convenience.
+**Barrel Files:** No application barrel convention is detected. Import from defining modules; use Nuxt auto-import where supported instead of adding one-use barrels.
 
 ---
 
-*Convention analysis: 2026-09-15*
+*Convention analysis: 2026-10-01*
