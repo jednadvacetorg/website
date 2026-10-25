@@ -13,6 +13,7 @@ manual_port=2106
 server_pids=()
 browser_session=""
 push_init=""
+challenge_init=""
 temporary_dir="${TMPDIR:-/tmp}"
 screenshot_dir="${AGENT_BROWSER_SCREENSHOT_DIR:-/tmp/screenshots}"
 
@@ -65,11 +66,15 @@ cleanup() {
   if [[ -n "$browser_session" ]]; then
     if [[ "$mode" == "--fake-doors" && "$result" != 0 ]]; then
       agent-browser --session "$browser_session" --no-auto-dialog snapshot >"$screenshot_dir/notification-fake-doors-failure.txt" 2>&1 || true
+      agent-browser --session "$browser_session" --no-auto-dialog network requests --json >"$screenshot_dir/notification-fake-doors-failure-network.json" 2>&1 || true
+      agent-browser --session "$browser_session" --no-auto-dialog errors --json >"$screenshot_dir/notification-fake-doors-failure-errors.json" 2>&1 || true
+      agent-browser --session "$browser_session" --no-auto-dialog eval '({url:location.href,hydrating:document.querySelector("#__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating})' --json >"$screenshot_dir/notification-fake-doors-failure-state.json" 2>&1 || true
     fi
     agent-browser --session "$browser_session" close >/dev/null 2>&1 || true
   fi
   stop_servers
   if [[ -n "$push_init" ]]; then rm -f "$push_init"; fi
+  if [[ -n "$challenge_init" ]]; then rm -f "$challenge_init"; fi
 }
 
 start_server() {
@@ -82,12 +87,32 @@ start_server() {
   local owned_dir
   owned_dir="$(mktemp -d "${temporary_dir%/}/notification-lifecycle-cache-${port}-XXXXXXXX")"
   mkdir "$owned_dir/home"
-  local isolated_env=(env -i "PATH=$PATH" "HOME=$owned_dir/home" "NUXT_BUILD_DIR=$owned_dir/nuxt" "CONTENT_LOCAL_DATABASE_PATH=$owned_dir/content.sqlite" NODE_USE_ENV_PROXY=1 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1)
+  local isolated_env=(env -i "PATH=$PATH" "HOME=$owned_dir/home" "NUXT_BUILD_DIR=$owned_dir/nuxt" "CONTENT_LOCAL_DATABASE_PATH=$owned_dir/content.sqlite" NODE_USE_ENV_PROXY=1 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 CLOUDFLARE_CF_FETCH_ENABLED=false WRANGLER_SEND_METRICS=false)
+  local dev_args=(--port "$port" --dotenv /dev/null)
+  if [[ -n "${NOTIFICATION_UI_VERIFY_LAYER:-}" ]]; then
+    local layer
+    layer="$(realpath -- "$NOTIFICATION_UI_VERIFY_LAYER")"
+    [[ "$layer" == /tmp/opencode/* && -f "$layer/nuxt.config.ts" ]] || { echo 'Verification layer must be an owned local Nuxt layer under /tmp/opencode.' >&2; exit 1; }
+    local layer_run
+    case "$port" in
+      "$guide_port") layer_run=guide ;;
+      "$ready_port") layer_run=ready ;;
+      "$manual_port") layer_run=manual ;;
+    esac
+    isolated_env+=("VERIFY_RUN=$layer_run")
+    dev_args+=(--extends "$layer")
+  fi
 
   if [[ "$fixture" == true ]]; then
-    setsid "${isolated_env[@]}" NUXT_NOTIFICATION_UI_VERIFICATION_FIXTURE=true NUXT_PUBLIC_NOTIFICATION_TURNSTILE_SITE_KEY=notification-ui-verification-site-key npm run dev -- --port "$port" --dotenv /dev/null >"$log_file" 2>&1 &
+    if [[ "$mode" == --push ]]; then
+      # Public-only ephemeral identity: no root/private/provider material is needed
+      # for this explicitly synthetic browser boundary.
+      push_public_key="$(node --input-type=module -e 'import { createECDH } from "node:crypto"; const key=createECDH("prime256v1");key.generateKeys();console.log(key.getPublicKey().toString("base64url"))')"
+      isolated_env+=("NUXT_PUBLIC_NOTIFICATION_VAPID_PUBLIC_KEY=$push_public_key")
+    fi
+    setsid "${isolated_env[@]}" NUXT_NOTIFICATION_UI_VERIFICATION_FIXTURE=true NUXT_PUBLIC_NOTIFICATION_TURNSTILE_SITE_KEY=notification-ui-verification-site-key npm run dev -- "${dev_args[@]}" >"$log_file" 2>&1 &
   else
-    setsid "${isolated_env[@]}" npm run dev -- --port "$port" --dotenv /dev/null >"$log_file" 2>&1 &
+    setsid "${isolated_env[@]}" npm run dev -- "${dev_args[@]}" >"$log_file" 2>&1 &
   fi
   server_pids+=("$!")
   local server_pid="${server_pids[-1]}"
@@ -117,47 +142,104 @@ start_server() {
 trap cleanup EXIT
 trap 'cleanup; exit 0' INT TERM
 
+if [[ "$mode" == --all || "$mode" == --guide || "$mode" == --management || "$mode" == --push ]]; then
+  challenge_init="$(mktemp "${temporary_dir%/}/notification-challenge-init-XXXXXXXX.js")"
+  cat >"$challenge_init" <<'JS'
+const challenge = window.__notificationChallengeProof = {
+  expectedSiteKey: 'notification-ui-verification-site-key', token: 'notification-ui-verification-token',
+  widgets: [], posts: [], events: [], errors: [], failNextRender: false,
+  live(label) { return this.widgets.filter(w => !w.removed && w.container.isConnected && w.label === label && (!document.querySelector('[role=dialog]') || w.container.closest('[role=dialog]') === document.querySelector('[role=dialog]'))) },
+  postCount() { return window.__pushProof ? window.__pushProof.posts.length : this.posts.length },
+  snapshot() { return { events: this.events, errors: this.errors, posts: this.posts, widgets: this.widgets.map(w => ({ id:w.id, label:w.label, sitekey:w.options.sitekey, action:w.options.action, size:w.options.size, responseField:w.options['response-field'], width:w.width, issued:w.issued, resets:w.resets, removed:w.removed })) } },
+}
+window.turnstile = {
+  ready(callback) { challenge.events.push(['ready']); queueMicrotask(callback) },
+  render(container, options) {
+    if (!(container instanceof HTMLElement) || !container.isConnected || options.sitekey !== challenge.expectedSiteKey || options.action !== 'notification-operation' || options['response-field'] !== false || options.size !== (container.clientWidth < 300 ? 'compact' : 'flexible') || !Object.keys(options).every(key => ['sitekey','action','size','response-field','callback','expired-callback','error-callback','timeout-callback'].includes(key)) || !['callback','expired-callback','error-callback','timeout-callback'].every(key => typeof options[key] === 'function')) {
+      challenge.errors.push('Invalid native widget contract'); throw Error('Invalid native widget contract')
+    }
+    if (challenge.failNextRender) { challenge.failNextRender=false; challenge.events.push(['render-failure']); return undefined }
+    let field = container.parentElement
+    while (field && !field.querySelector('label')) field = field.parentElement
+    const label = field?.querySelector('label')?.textContent.trim()
+    const id = 'owned-' + challenge.widgets.length
+    const button = document.createElement('button')
+    button.type='button'; button.textContent='Dokončit lokální ověření ' + id; button.setAttribute('data-verification-widget',id)
+    button.style.width=options.size === 'compact' ? '150px' : '100%'
+    button.style.minWidth=options.size === 'compact' ? '150px' : '300px'
+    button.style.height=options.size === 'compact' ? '140px' : '65px'
+    const widget={ id, container, options, label, button, width:container.clientWidth, removed:false, resets:0, issued:0 }
+    button.onclick=() => { if (widget.removed || widget.issued) return; widget.issued++; challenge.events.push(['success',id]); options.callback(challenge.token); button.disabled=true }
+    container.append(button); challenge.widgets.push(widget); challenge.events.push(['render',id,label]); return id
+  },
+  reset(id) { const w=challenge.widgets.find(w=>w.id===id); if (!w || w.removed) { challenge.errors.push('Invalid reset'); return }; w.resets++; challenge.events.push(['reset',id]) },
+  remove(id) { const w=challenge.widgets.find(w=>w.id===id); if (!w || w.removed) { challenge.errors.push('Invalid remove'); return }; w.removed=true; w.button.remove(); challenge.events.push(['remove',id]) },
+}
+const challengeFetch=window.fetch.bind(window)
+window.fetch=async (input, options={}) => {
+  const url=new URL(typeof input==='string'?input:input.url,location.href)
+  if (url.origin===location.origin && String(options.method || input.method || 'GET').toUpperCase()==='POST' && ['/api/notifications/activate','/api/notifications/manage-request'].includes(url.pathname)) {
+    const row={path:url.pathname,body:JSON.parse(options.body),status:null};challenge.posts.push(row)
+    const response=await challengeFetch(input,options);row.status=response.status;return response
+  }
+  return challengeFetch(input,options)
+}
+JS
+  export AGENT_BROWSER_INIT_SCRIPTS="${AGENT_BROWSER_INIT_SCRIPTS:+$AGENT_BROWSER_INIT_SCRIPTS,}$challenge_init"
+fi
+
+acquire_challenge() {
+  local label="$1" token="$2" submit="${3:-Poslat odkaz pro správu}" id
+  agent-browser --session "$browser_session" wait --text "$label" >/dev/null
+  agent-browser --session "$browser_session" wait --fn "window.__notificationChallengeProof.live('$label').length === 1 && !document.querySelector('input[name=turnstile-token], input[name=cf-turnstile-response]')" >/dev/null
+  agent-browser --session "$browser_session" eval "window.__notificationChallengeProof.token='$token'; window.__notificationChallengeProof.baseline=window.__notificationChallengeProof.postCount()" >/dev/null
+  agent-browser --session "$browser_session" wait --fn "!Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='$submit'&&!b.disabled)" >/dev/null
+  id="$(agent-browser --session "$browser_session" eval "window.__notificationChallengeProof.live('$label')[0].id" | tr -d '"')"
+  agent-browser --session "$browser_session" focus "button[data-verification-widget='$id']" >/dev/null
+  agent-browser --session "$browser_session" press Enter >/dev/null
+  agent-browser --session "$browser_session" wait --fn 'window.__notificationChallengeProof.postCount() === window.__notificationChallengeProof.baseline' >/dev/null
+  # Expiry/error exercise the actual component retry path, without another POST.
+  agent-browser --session "$browser_session" eval "window.__notificationChallengeProof.retired=window.__notificationChallengeProof.widgets.find(w=>w.id==='$id'); window.__notificationChallengeProof.retired.options['expired-callback']()" >/dev/null
+  agent-browser --session "$browser_session" wait --text 'Ověření vypršelo.' >/dev/null
+  agent-browser --session "$browser_session" eval 'window.__notificationChallengeProof.retired.options.callback("retired-token")' >/dev/null
+  agent-browser --session "$browser_session" wait --fn "!Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='$submit'&&!b.disabled)" >/dev/null
+  agent-browser --session "$browser_session" wait --fn 'window.__notificationChallengeProof.retired.removed && window.__notificationChallengeProof.retired.resets === 1 && window.__notificationChallengeProof.postCount() === window.__notificationChallengeProof.baseline' >/dev/null
+  agent-browser --session "$browser_session" find role button click --name 'Zkusit ověření znovu' --exact >/dev/null
+  agent-browser --session "$browser_session" wait --fn "window.__notificationChallengeProof.live('$label').length === 1" >/dev/null
+  agent-browser --session "$browser_session" eval "window.__notificationChallengeProof.live('$label')[0].options['error-callback']()" >/dev/null
+  agent-browser --session "$browser_session" wait --text 'Ověření se nepodařilo.' >/dev/null
+  agent-browser --session "$browser_session" find role button click --name 'Zkusit ověření znovu' --exact >/dev/null
+  agent-browser --session "$browser_session" wait --fn "window.__notificationChallengeProof.live('$label').length === 1" >/dev/null
+  id="$(agent-browser --session "$browser_session" eval "window.__notificationChallengeProof.live('$label')[0].id" | tr -d '"')"
+  agent-browser --session "$browser_session" focus "button[data-verification-widget='$id']" >/dev/null
+  agent-browser --session "$browser_session" press Enter >/dev/null
+  agent-browser --session "$browser_session" wait --fn 'window.__notificationChallengeProof.postCount() === window.__notificationChallengeProof.baseline && window.__notificationChallengeProof.errors.length === 0' >/dev/null
+  agent-browser --session "$browser_session" wait --fn "Array.from(document.querySelectorAll('button')).some(b=>b.textContent.trim()==='$submit'&&!b.disabled)" >/dev/null
+}
+
+capture_challenge_proof() {
+  local name="$1"
+  agent-browser --session "$browser_session" eval 'window.__notificationChallengeProof.snapshot()' --json >"$screenshot_dir/$name-challenge.json"
+  agent-browser --session "$browser_session" network requests --json >"$screenshot_dir/$name-challenge-network.json"
+  node --input-type=module -e 'import fs from "node:fs";const p=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const n=JSON.parse(fs.readFileSync(process.argv[2],"utf8"));if(!p.success||p.data.result.errors.length||!n.success||n.data.requests.some(r=>r.url.startsWith("https://challenges.cloudflare.com/turnstile/")))throw Error("Native challenge boundary failed")' "$screenshot_dir/$name-challenge.json" "$screenshot_dir/$name-challenge-network.json"
+}
+
 if [[ "$mode" == '--push' ]]; then
   if [[ -n "${NOTIFICATION_UI_BASE_URL:-}" ]]; then
     [[ "$NOTIFICATION_UI_BASE_URL" == http://127.0.0.1:* || "$NOTIFICATION_UI_BASE_URL" == http://localhost:* ]] || { echo 'Push verification requires an owned loopback server.' >&2; exit 1; }
     base_url="$NOTIFICATION_UI_BASE_URL"
   else
-    [[ -f .output/server/wrangler.json ]] || { echo 'Build the actual Cloudflare Worker before --push.' >&2; exit 1; }
-    node --experimental-strip-types --input-type=module <<'JS'
-import { readFileSync } from 'node:fs'
-import { validateNotificationDeploymentConfiguration } from './scripts/verify-email-delivery.ts'
-const config = JSON.parse(readFileSync('.output/server/wrangler.json', 'utf8'))
-validateNotificationDeploymentConfiguration(config, config.d1_databases?.[0]?.database_name === 'web-preview' ? 'preview' : 'production')
-JS
-    owned_push_dir="$(mktemp -d "${temporary_dir%/}/notification-push-worker-XXXXXXXX")"
-    mkdir "$owned_push_dir/home"
-    base_url="http://127.0.0.1:$guide_port"
-    setsid env -i "PATH=$PATH" "HOME=$owned_push_dir/home" "NOTIFICATION_PUSH_STORAGE=$owned_push_dir/storage" NODE_USE_ENV_PROXY=1 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 WRANGLER_SEND_METRICS=false node --input-type=module >"$owned_push_dir/worker.log" 2>&1 <<'JS' &
-import { unstable_startWorker } from 'wrangler'
-const worker = await unstable_startWorker({ config: '.output/server/wrangler.json', dev: { remote: false, watch: false, persist: process.env.NOTIFICATION_PUSH_STORAGE, server: { hostname: '127.0.0.1', port: 2104 }, outboundService() { throw new Error('External network denied by push UI verification') } } })
-process.on('SIGTERM', async () => { await worker.dispose(); process.exit(0) })
-await worker.ready
-await new Promise(() => {})
-JS
-    server_pids+=("$!")
-    ready=false
-    for _ in {1..60}; do
-      if curl --silent --fail --max-time 1 "$base_url/lide" >/dev/null; then ready=true; break; fi
-      if ! kill -0 "${server_pids[-1]}" 2>/dev/null; then break; fi
-      sleep 1
-    done
-    [[ "$ready" == true ]] || { echo "Built Worker startup failed; inspect $owned_push_dir/worker.log and stop for a tooling decision." >&2; exit 1; }
-    echo "Owned built Worker: process_group=${server_pids[-1]} evidence=$owned_push_dir"
+    start_server "$guide_port" true
   fi
   mkdir -p "$screenshot_dir"
   push_init="$(mktemp "${temporary_dir%/}/notification-push-init-XXXXXXXX.js")"
   cat >"$push_init" <<'JS'
 const proof = window.__pushProof = { permission: 'default', outcome: 'granted', permissionCalls: 0, registers: 0, subscribes: 0, existing: false, activation: 'active', status: 200, recoveryStatus: 202, posts: [], analytics: [] }
-const subscription = { toJSON: () => ({ endpoint: 'https://push.example.test/browser-proof', expirationTime: null, keys: { p256dh: 'synthetic-point', auth: 'synthetic-auth' } }) }
-const registration = { pushManager: { getSubscription: async () => proof.existing ? subscription : null, subscribe: async () => { proof.subscribes++; proof.existing = true; return subscription } } }
+const subscription = { toJSON: () => ({ endpoint: 'https://push.example.test/browser-proof', expirationTime: null, keys: { p256dh: proof.publicKey, auth: 'AAECAwQFBgcICQoLDA0ODw' } }) }
+const registration = { pushManager: { getSubscription: async () => proof.existing ? subscription : null, subscribe: async options => { const bytes=Array.from(options.applicationServerKey); if (!options.userVisibleOnly || JSON.stringify(bytes)!==JSON.stringify(proof.publicKeyBytes)) throw Error('Native subscription key differs from compiled public key'); (proof.subscriptionKeys ??= []).push(bytes); proof.subscribes++; proof.existing = true; return subscription } } }
 Object.defineProperty(window, 'PushManager', { configurable: true, value: function() {} })
 Object.defineProperty(window, 'Notification', { configurable: true, value: { get permission() { return proof.permission }, requestPermission() { if (!navigator.userActivation.isActive) throw Error('Permission lost user gesture'); proof.permissionCalls++; proof.permission = proof.outcome; return Promise.resolve(proof.outcome) } } })
-Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { register: async () => { proof.registers++; if (proof.permission !== 'granted') throw Error('Registration before permission'); return registration }, ready: Promise.resolve(registration), getRegistration: async () => registration } })
+Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { register: async (scriptURL) => { const url = new URL(String(scriptURL), location.href); if (url.origin === location.origin && url.pathname === '/notification-sw.js') { proof.registers++; if (proof.permission !== 'granted') throw Error('Registration before permission') } else (proof.otherRegistrationCalls ??= []).push(url.href); return registration }, ready: Promise.resolve(registration), getRegistration: async () => registration } })
 const originalFetch = window.fetch.bind(window)
 window.fetch = async (input, options = {}) => {
   const url = typeof input === 'string' ? input : input.url ?? String(input)
@@ -170,23 +252,37 @@ window.fetch = async (input, options = {}) => {
   return originalFetch(input, options)
 }
 JS
-  ab() { agent-browser --session "$browser_session" --init-script "$push_init" --allowed-domains localhost,127.0.0.1 --screenshot-dir "$screenshot_dir" "$@"; }
+  export AGENT_BROWSER_INIT_SCRIPTS="$AGENT_BROWSER_INIT_SCRIPTS,$push_init"
+  # Shared challenge helpers must launch with the same containment settings;
+  # changing an allowlist per command restarts Chromium and loses the live widget.
+  export AGENT_BROWSER_ALLOWED_DOMAINS=localhost,127.0.0.1
+  ab() { agent-browser --session "$browser_session" --screenshot-dir "$screenshot_dir" "$@"; }
   check_push() { ab wait --fn "$1" >/dev/null; }
+  push_browser_session="$browser_session"
   for width in 1280 320; do
     for surface in kalendar brno; do
+      browser_session="${push_browser_session}-${surface}-${width}"
       ab set viewport "$width" 900 >/dev/null
       ab open "$base_url/lide" >/dev/null
       check_push 'document.getElementById("__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false'
-      # A prerendered false-ready payload would suppress the client readiness
-      # request. Drop only that cached payload so the real useFetch boundary runs.
-      ab network route '**/_payload.json*' --abort >/dev/null
+      # Same-origin readiness is controlled local UI I/O, not provider evidence.
+      # Payloads and compiled public runtime configuration remain untouched.
       ab network route '**/api/notifications/readiness' --body '{"email":false,"sms":false,"webPush":true}' >/dev/null
       ab eval --stdin <<'JS' >/dev/null
+(async () => {
 const nuxt = document.getElementById('__nuxt').__vue_app__.config.globalProperties.$nuxt
-if (!nuxt.$config.public.notificationVapidPublicKey) nuxt.$config.public.notificationVapidPublicKey = 'B' + 'A'.repeat(86)
-nuxt.$config.public.notificationTurnstileSiteKey = 'synthetic-site-key'
+const key=nuxt.$config.public.notificationVapidPublicKey
+const html=await fetch(location.href).then(r=>r.text())
+const scripts=Array.from(new DOMParser().parseFromString(html,'text/html').scripts)
+const raw=scripts.find(s=>s.textContent.includes('notificationVapidPublicKey'))?.textContent
+const bytes=Array.from(Uint8Array.from(atob(key.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0)))
+if (!raw?.includes(JSON.stringify(key)) || bytes.length!==65 || bytes[0]!==4 || !nuxt.$config.public.notificationTurnstileSiteKey) throw Error('Invalid compiled public identity')
+window.__pushProof.publicKey=key;window.__pushProof.publicKeyBytes=bytes
+window.__notificationChallengeProof.expectedSiteKey=nuxt.$config.public.notificationTurnstileSiteKey
 for (const name of ['trackWebIntent', 'trackSmsIntent', 'trackEmailIntent', 'trackSubscriptionGuide', 'trackICalendarCopy']) nuxt.$counterscale[name] = (...args) => { if (args.length) throw Error('Sensitive analytics arguments'); window.__pushProof.analytics.push(name) }
+})()
 JS
+      if [[ -n "${push_public_key:-}" ]]; then check_push "window.__pushProof.publicKey === '$push_public_key'"; fi
       ab eval "document.getElementById('__nuxt').__vue_app__.config.globalProperties.\$router.push('/$surface')" >/dev/null
       if [[ "$surface" == brno ]]; then
         ab wait --text 'Nadcházející události' >/dev/null
@@ -207,9 +303,9 @@ JS
       # The challenge reuses one canonical native JSON body and subscription.
       ab eval 'Object.assign(window.__pushProof,{permission:"default",outcome:"granted",status:403})' >/dev/null
       activate_push
-      ab wait --text 'Ověřovací kód pro oznámení' >/dev/null
+      ab wait --text 'Ověřit aktivaci oznámení' >/dev/null
       check_push 'window.__pushProof.subscribes === 1 && window.__pushProof.registers === 1 && window.__pushProof.permissionCalls === 2'
-      ab find label 'Ověřovací kód pro oznámení' fill 'synthetic-body-token' >/dev/null
+      acquire_challenge 'Ověřit aktivaci oznámení' 'synthetic-body-token' 'Aktivovat oznámení v prohlížeči'
       ab eval 'Object.assign(window.__pushProof,{status:200,activation:"pending-reactivation"})' >/dev/null
       activate_push
       ab wait --text 'Obnovení potvrď přes odkaz pro správu' >/dev/null
@@ -227,8 +323,8 @@ JS
       check_push 'window.__pushProof.posts.filter(p=>p.url.includes("activate")).length === 5'
       ab eval 'window.__pushProof.recoveryStatus = 403' >/dev/null
       ab find role button click --name 'Poslat odkaz pro správu tohoto prohlížeče' >/dev/null
-      ab wait --text 'Ověřovací kód pro správu prohlížeče' >/dev/null
-      ab find label 'Ověřovací kód pro správu prohlížeče' fill 'synthetic-recovery-token' >/dev/null
+      ab wait --text 'Ověřit správu prohlížeče' >/dev/null
+      acquire_challenge 'Ověřit správu prohlížeče' 'synthetic-recovery-token' 'Poslat odkaz pro správu tohoto prohlížeče'
       ab eval 'window.__pushProof.recoveryStatus = 202' >/dev/null
       ab find role button click --name 'Poslat odkaz pro správu tohoto prohlížeče' >/dev/null
       ab wait --text 'Pokud pro tento prohlížeč existuje správa oznámení' >/dev/null
@@ -249,8 +345,10 @@ JS
       ab eval 'Object.defineProperty(navigator,"userAgent",{configurable:true,value:"Macintosh"});Object.defineProperty(navigator,"platform",{configurable:true,value:"MacIntel"});Object.defineProperty(navigator,"maxTouchPoints",{configurable:true,value:5});Object.defineProperty(window,"PushManager",{configurable:true,value:function(){}});window.__pushProof.status=200' >/dev/null
       activate_push
       ab wait --text 'Oznámení jsou pro tento prohlížeč aktivní' >/dev/null
+      check_push 'window.__pushProof.registers === 6 && window.__pushProof.permissionCalls === 2 && window.__pushProof.subscribes === 2 && window.__pushProof.posts.length === 9 && document.getElementById("__nuxt").__vue_app__.config.globalProperties.$nuxt.$config.public.notificationVapidPublicKey === window.__pushProof.publicKey'
       ab screenshot "$screenshot_dir/notification-push-$surface-$width.png" >/dev/null
       ab eval 'JSON.stringify(window.__pushProof)' --json >"$screenshot_dir/notification-push-$surface-$width.json"
+      capture_challenge_proof "notification-push-$surface-$width"
       ab close >/dev/null
     done
   done
@@ -313,10 +411,27 @@ if [[ "$mode" == "--fake-doors" ]]; then
       if (!readiness.some(r => r.status === 200)) throw Error("Readiness interception was not consumed");
       const forbidden = requests.filter(r => (/\/api\/notifications\//.test(r.url) && !r.url.includes("/readiness")) || /\/notifications\/manage\/|brevo|twilio|fcm\.googleapis|push\.services\.mozilla/.test(r.url) || new URL(r.url).pathname === "/notification-sw.js");
       if (forbidden.length) throw Error("Forbidden notification attempt: " + JSON.stringify(forbidden));
-      const events = requests.filter(r => new URL(r.url).pathname === "/cntrsclc" && new URL(r.url).searchParams.has("p"));
+      const analytics = requests.filter(r => new URL(r.url).pathname === "/cntrsclc");
       const expected = JSON.parse(process.argv[2]);
+      const publicViews = {};
+      const events = [];
+      for (const request of analytics) {
+        const url = new URL(request.url);
+        if ([...url.searchParams.keys()].some(k => !["p","h","r","sid","ht"].includes(k))) throw Error("Unexpected analytics metadata");
+        if (/15551234567|fake-door|example\.test|week-before|day-before|all-czech-communities|notifications\/manage/i.test(decodeURIComponent(JSON.stringify(request)))) throw Error("Private data in emitted tracker request");
+        const referrer = Object.entries(request.headers ?? {}).find(([k]) => k.toLowerCase() === "referer")?.[1];
+        if (referrer && (new URL(referrer).search || new URL(referrer).hash)) throw Error("Identifying referrer query");
+        if (!url.searchParams.has("p")) continue; // SDK cache request, audited above.
+        const observed = new URL(url.searchParams.get("p"), url.origin);
+        if (observed.origin !== url.origin || observed.search || observed.hash || url.searchParams.get("r") !== "") throw Error("Unexpected pageview identity");
+        const path = observed.pathname;
+        if (Object.hasOwn(expected, path)) events.push({request,path});
+        // /lide is the explicit neutral entry audited before each count reset.
+        else if (["/kalendar","/brno","/lide"].includes(path)) publicViews[path]=(publicViews[path] || 0)+1;
+        else throw Error("Unexpected analytics path: " + path);
+      }
       for (const [path, count] of Object.entries(expected)) {
-        const actual = events.filter(r => new URL(r.url).searchParams.get("p") === path);
+        const actual = events.filter(event => event.path === path).map(event => event.request);
         if (actual.length !== count) throw Error(`${path}: expected ${count}, captured ${actual.length}`);
         for (const request of actual) {
           const url = new URL(request.url);
@@ -327,7 +442,7 @@ if [[ "$mode" == "--fake-doors" ]]; then
           if (referrer && (new URL(referrer).search || new URL(referrer).hash)) throw Error("Identifying referrer query");
         }
       }
-      console.log(JSON.stringify({readiness: readiness.length, counts: expected, notificationAttempts: forbidden.length}));
+      console.log(JSON.stringify({readiness: readiness.length, counts: expected, publicViews, analyticsRequests:analytics.length, notificationAttempts: forbidden.length}));
     ' "$screenshot_dir/${case_name}-requests.json" "$counts"
     assert_browser 'window.__notificationVerification?.permission === 0 && window.__notificationVerification?.subscribe === 0'
   }
@@ -346,6 +461,7 @@ if [[ "$mode" == "--fake-doors" ]]; then
       ab press Enter >/dev/null
     fi
     ab wait --text 'Kalendářový feed' >/dev/null
+    assert_browser 'document.querySelector("#__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false && !Array.from(document.querySelectorAll("[role=status]")).some(node => node.textContent.includes("Ověřujeme dostupné možnosti upozornění…")) && ["Mám zájem o SMS", "Mám zájem o e-mail", "Mám zájem o oznámení ve webu"].every(name => Array.from(document.querySelectorAll("button")).some(button => button.textContent.trim() === name)) && !Array.from(document.querySelectorAll("button")).some(button => ["Spravovat SMS notifikace", "Spravovat e-mailové notifikace"].includes(button.getAttribute("aria-label")))'
     assert_browser 'Array.from(document.querySelectorAll("button")).filter(b => b.textContent.trim().startsWith("Mám zájem o")).length === 3 && !Array.from(document.querySelectorAll("button")).some(b => /Aktivovat|Spravovat.*notifikace/.test(b.textContent))'
     assert_browser 'Array.from(document.querySelectorAll("h3")).map(h => h.textContent.trim()).filter(t => ["SMS","E-mail","Oznámení ve webu","Kalendářový feed"].includes(t)).join("|") === "SMS|E-mail|Oznámení ve webu|Kalendářový feed"'
     if [[ "$surface" == brno ]]; then assert_browser 'document.querySelector("[role=dialog]")?.contains(document.activeElement)'; fi
@@ -357,7 +473,7 @@ if [[ "$mode" == "--fake-doors" ]]; then
       case_name="notification-fake-doors-${surface}-${width}"
       browser_session="${case_name}-$$"
       counts=""
-      ab --args '--disable-dev-shm-usage' open about:blank >/dev/null
+      ab open "$base_url/robots.txt" >/dev/null
       ab set viewport "$width" 800 >/dev/null
       # The installed CLI chooses the first matching interception rule.
       ab network route '**/api/notifications/readiness' --body '{"email":false,"sms":false,"webPush":false}' >/dev/null
@@ -548,10 +664,12 @@ if [[ "$mode" == "--all" || "$mode" == "--guide" ]]; then
   agent-browser --session "$browser_session" wait --load networkidle >/dev/null
   agent-browser --session "$browser_session" wait --text "Kalendářový feed" >/dev/null
   # The deployed fake door owns convenience values only in browser-local storage.
+  agent-browser --session "$browser_session" wait --fn 'document.querySelector("#__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false && !Array.from(document.querySelectorAll("[role=status]")).some(node => node.textContent.includes("Ověřujeme dostupné možnosti upozornění…")) && ["Mám zájem o SMS", "Mám zájem o e-mail", "Mám zájem o oznámení ve webu"].every(name => Array.from(document.querySelectorAll("button")).some(button => button.textContent.trim() === name))' >/dev/null
   agent-browser --session "$browser_session" eval 'localStorage.setItem("subscription-guide-telephone", "+15551234567"); localStorage.setItem("subscription-guide-email", "fake@example.test")' >/dev/null
   agent-browser --session "$browser_session" reload >/dev/null
   agent-browser --session "$browser_session" wait --load networkidle >/dev/null
   agent-browser --session "$browser_session" wait --text "Kalendářový feed" >/dev/null
+  agent-browser --session "$browser_session" wait --fn '!Array.from(document.querySelectorAll("[role=status]")).some(node => node.textContent.includes("Ověřujeme dostupné možnosti upozornění…")) && ["Mám zájem o SMS", "Mám zájem o e-mail", "Mám zájem o oznámení ve webu"].every(name => Array.from(document.querySelectorAll("button")).some(button => button.textContent.trim() === name))' >/dev/null
   agent-browser --session "$browser_session" eval 'document.querySelector("input[name=telephone]")?.value === "+15551234567" && document.querySelector("input[name=email]")?.value === "fake@example.test"' | grep -q true
   agent-browser --session "$browser_session" network requests --clear >/dev/null
   agent-browser --session "$browser_session" find role button click --name "Mám zájem o SMS" >/dev/null
@@ -564,6 +682,7 @@ if [[ "$mode" == "--all" || "$mode" == "--guide" ]]; then
   agent-browser --session "$browser_session" reload >/dev/null
   agent-browser --session "$browser_session" wait --load networkidle >/dev/null
   agent-browser --session "$browser_session" wait --text "Kalendářový feed" >/dev/null
+  agent-browser --session "$browser_session" wait --fn '!Array.from(document.querySelectorAll("[role=status]")).some(node => node.textContent.includes("Ověřujeme dostupné možnosti upozornění…")) && ["Mám zájem o SMS", "Mám zájem o e-mail", "Mám zájem o oznámení ve webu"].every(name => Array.from(document.querySelectorAll("button")).some(button => button.textContent.trim() === name))' >/dev/null
   agent-browser --session "$browser_session" eval 'Array.from(document.querySelectorAll("[role=status]")).filter(status => status.textContent?.includes("Tato možnost ještě není připravená. Nic jsme neaktivovali")).length === 3' | grep -q true
   agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-guide-desktop.png" >/dev/null
   agent-browser --session "$browser_session" set viewport 320 800 >/dev/null
@@ -576,32 +695,59 @@ if [[ "$mode" == "--all" || "$mode" == "--guide" ]]; then
   agent-browser --session "$browser_session" open "$base_url/kalendar" >/dev/null
   agent-browser --session "$browser_session" wait --load networkidle >/dev/null
   agent-browser --session "$browser_session" wait --text "Kalendářový feed" >/dev/null
+  agent-browser --session "$browser_session" wait --fn 'document.querySelector("#__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false && !Array.from(document.querySelectorAll("[role=status]")).some(node => node.textContent.includes("Ověřujeme dostupné možnosti upozornění…")) && ["Spravovat SMS notifikace", "Spravovat e-mailové notifikace"].every(label => Array.from(document.querySelectorAll("button")).some(button => button.getAttribute("aria-label") === label && !button.disabled && button.getClientRects().length))' >/dev/null
   agent-browser --session "$browser_session" eval 'localStorage.setItem("subscription-guide-telephone", "+15551234567"); localStorage.setItem("subscription-guide-email", "fake@example.test")' >/dev/null
   agent-browser --session "$browser_session" reload >/dev/null
   agent-browser --session "$browser_session" wait --load networkidle >/dev/null
+  agent-browser --session "$browser_session" wait --fn 'document.querySelector("#__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false && !Array.from(document.querySelectorAll("[role=status]")).some(node => node.textContent.includes("Ověřujeme dostupné možnosti upozornění…")) && ["Spravovat SMS notifikace", "Spravovat e-mailové notifikace"].every(label => Array.from(document.querySelectorAll("button")).some(button => button.getAttribute("aria-label") === label && !button.disabled && button.getClientRects().length))' >/dev/null
   agent-browser --session "$browser_session" eval 'document.querySelector("input[name=telephone]")?.value === "" && document.querySelector("input[name=email]")?.value === ""' | grep -q true
-  agent-browser --session "$browser_session" find role button click --name "Spravovat e-mailové notifikace" >/dev/null
+  agent-browser --session "$browser_session" find role button click --name "Spravovat e-mailové notifikace" --exact >/dev/null
   agent-browser --session "$browser_session" fill 'input[name="recovery-contact"]' 'recovery@example.test' >/dev/null
   agent-browser --session "$browser_session" find role button click --name "Poslat odkaz pro správu" >/dev/null
-  agent-browser --session "$browser_session" wait --text "Ověřovací kód" >/dev/null
-  agent-browser --session "$browser_session" find label "Ověřovací kód" fill 'notification-ui-verification-token' >/dev/null
+  acquire_challenge 'Ověřit požadavek' 'notification-ui-verification-token'
   agent-browser --session "$browser_session" find role button click --name "Poslat odkaz pro správu" >/dev/null
   agent-browser --session "$browser_session" wait --text "Pokud pro tento kontakt existuje" >/dev/null
   agent-browser --session "$browser_session" find role button click --name "Zrušit" >/dev/null
   agent-browser --session "$browser_session" eval 'Array.from(document.querySelectorAll("button")).some(button => button.textContent?.trim() === "Mám zájem o oznámení ve webu" && !button.disabled)' | grep -q true
+  capture_challenge_proof notification-guide-recovery
+  for width in 1280 320; do
+    for channel in email sms; do
+      agent-browser --session "$browser_session" set viewport "$width" 900 >/dev/null
+      agent-browser --session "$browser_session" open "$base_url/kalendar" >/dev/null
+      agent-browser --session "$browser_session" wait --fn 'document.querySelectorAll("button[aria-label^=Spravovat]").length === 2 && !document.body.innerText.includes("Ověřujeme dostupné možnosti upozornění…")' >/dev/null
+      agent-browser --session "$browser_session" find role button click --name 'Komunity, které chceš sledovat' --exact >/dev/null
+      agent-browser --session "$browser_session" find role option click --name Brno --exact >/dev/null
+      agent-browser --session "$browser_session" find role button click --name 'Komunity, které chceš sledovat' --exact >/dev/null
+      agent-browser --session "$browser_session" wait --fn '!document.querySelector("[role=listbox]")' >/dev/null
+      contact=recovery@example.test
+      input=email
+      if [[ "$channel" == sms ]]; then contact=+15551234567; input=telephone; fi
+      agent-browser --session "$browser_session" fill "input[name=$input]" "$contact" >/dev/null
+      control="section:has(input[name=$input]):not(:has(section)) > button:first-of-type"
+      agent-browser --session "$browser_session" click "$control" >/dev/null
+      acquire_challenge 'Ověřit požadavek' 'notification-ui-verification-token' 'Aktivovat odběr'
+      agent-browser --session "$browser_session" click "$control" >/dev/null
+      agent-browser --session "$browser_session" wait --text 'Odběr je aktivní.' >/dev/null
+      agent-browser --session "$browser_session" wait --fn 'window.__notificationChallengeProof.posts.length === 2 && window.__notificationChallengeProof.posts[0].status === 403 && window.__notificationChallengeProof.posts[1].status === 200 && window.__notificationChallengeProof.posts[1].body.turnstileToken === "notification-ui-verification-token" && window.__notificationChallengeProof.widgets.every(w=>w.removed) && document.documentElement.scrollWidth <= innerWidth' >/dev/null
+      capture_challenge_proof "notification-guide-$channel-$width"
+    done
+  done
 fi
 
 if [[ "$mode" == "--all" || "$mode" == "--management" ]]; then
   stop_servers
   start_server "$guide_port" true
+  management_browser_session="$(agent-browser session id --scope worktree --prefix management)"
 
   capture_management_state() {
     local token="$1"
     local name="$2"
     local expected_text="$3"
+    agent-browser --session "$browser_session" close >/dev/null
+    browser_session="${management_browser_session}-${name}"
     agent-browser --session "$browser_session" set viewport 1440 900 >/dev/null
     agent-browser --session "$browser_session" open "$base_url/notifications/manage/$token" >/dev/null
-    agent-browser --session "$browser_session" wait --load networkidle >/dev/null
+    agent-browser --session "$browser_session" wait --fn 'document.querySelector("#__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.isHydrating === false' >/dev/null
     agent-browser --session "$browser_session" wait --text "$expected_text" >/dev/null
     agent-browser --session "$browser_session" eval 'document.documentElement.scrollWidth <= window.innerWidth' | grep -q true
     agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-management-${name}-desktop.png" >/dev/null
@@ -643,8 +789,11 @@ if [[ "$mode" == "--all" || "$mode" == "--management" ]]; then
   agent-browser --session "$browser_session" wait --text "Opravdu chceš ukončit odběr" >/dev/null
   agent-browser --session "$browser_session" eval 'Array.from(document.querySelectorAll("[role=dialog] button")).find(button => button.textContent?.trim() === "Ukončit odběr")?.click()' >/dev/null
   agent-browser --session "$browser_session" wait --text "Odběr je ukončený" >/dev/null
+  agent-browser --session "$browser_session" set viewport 1440 900 >/dev/null
+  agent-browser --session "$browser_session" scrollintoview 'h1' >/dev/null
   agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-management-stopped-desktop.png" >/dev/null
   agent-browser --session "$browser_session" set viewport 320 800 >/dev/null
+  agent-browser --session "$browser_session" scrollintoview 'h1' >/dev/null
   agent-browser --session "$browser_session" eval 'document.documentElement.scrollWidth <= window.innerWidth' | grep -q true
   agent-browser --session "$browser_session" screenshot "$screenshot_dir/notification-management-stopped-mobile.png" >/dev/null
 
@@ -655,17 +804,24 @@ if [[ "$mode" == "--all" || "$mode" == "--management" ]]; then
   capture_management_state 'notification-ui-management-unavailable' unavailable 'Odkaz pro správu není dostupný'
   agent-browser --session "$browser_session" eval 'document.body.innerText.includes("Zkontroluj celý odkaz nebo si nech poslat nový odkaz pro správu.")' | grep -q true
   agent-browser --session "$browser_session" eval '!document.body.innerText.includes("Oznámení ve webu") && document.body.innerText.includes("Nechat si poslat nový odkaz")' | grep -q true
-  agent-browser --session "$browser_session" eval 'document.querySelector("button[role=combobox]")?.click()' >/dev/null
-  agent-browser --session "$browser_session" find text 'SMS' click >/dev/null
+  agent-browser --session "$browser_session" click 'button[role=combobox]' >/dev/null
+  agent-browser --session "$browser_session" find role option click --name 'SMS' --exact >/dev/null
+  agent-browser --session "$browser_session" wait --fn 'document.querySelector("input[name=recovery-contact]")?.getAttribute("autocomplete") === "tel" && !document.querySelector("[role=listbox]")' >/dev/null
   agent-browser --session "$browser_session" eval 'document.querySelector("input[name=recovery-contact]")?.getAttribute("autocomplete") === "tel"' | grep -q true
-  agent-browser --session "$browser_session" eval 'document.querySelector("button[role=combobox]")?.click()' >/dev/null
-  agent-browser --session "$browser_session" find text 'E-mail' click >/dev/null
+  agent-browser --session "$browser_session" click 'button[role=combobox]' >/dev/null
+  agent-browser --session "$browser_session" find role option click --name 'E-mail' --exact >/dev/null
+  agent-browser --session "$browser_session" wait --fn 'document.querySelector("input[name=recovery-contact]")?.getAttribute("autocomplete") === "email" && !document.querySelector("[role=listbox]")' >/dev/null
   agent-browser --session "$browser_session" fill 'input[name="recovery-contact"]' 'recovery@example.test' >/dev/null
+  agent-browser --session "$browser_session" wait --fn '(() => { const input = document.querySelector("input[name=recovery-contact]"); const submit = Array.from(document.querySelectorAll("button")).find(button => button.textContent?.trim() === "Poslat odkaz pro správu"); if (!input?.value || !input.checkValidity() || !submit || submit.disabled || document.querySelector("[role=listbox]")) return false; const rect = submit.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight && submit.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)); })()' >/dev/null
+  agent-browser --session "$browser_session" eval 'window.__notificationChallengeProof.failNextRender=true' >/dev/null
   agent-browser --session "$browser_session" find role button click --name 'Poslat odkaz pro správu' >/dev/null
-  agent-browser --session "$browser_session" wait --text 'Ověřovací kód' >/dev/null
-  agent-browser --session "$browser_session" fill 'input[name="turnstile-token"]' 'notification-ui-verification-token' >/dev/null
+  agent-browser --session "$browser_session" wait --text 'Ověření se nepodařilo načíst.' >/dev/null
+  agent-browser --session "$browser_session" find role button click --name 'Zkusit ověření znovu' --exact >/dev/null
+  acquire_challenge 'Ověřit požadavek' 'notification-ui-verification-token'
+  agent-browser --session "$browser_session" wait --fn '(() => { const input = document.querySelector("input[name=recovery-contact]"); const submit = Array.from(document.querySelectorAll("button")).find(button => button.textContent?.trim() === "Poslat odkaz pro správu"); if (!input?.value || !input.checkValidity() || !submit || submit.disabled || document.querySelector("[role=listbox]")) return false; const rect = submit.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight && submit.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)); })()' >/dev/null
   agent-browser --session "$browser_session" find role button click --name 'Poslat odkaz pro správu' >/dev/null
   agent-browser --session "$browser_session" wait --text 'Pokud pro tento kontakt existuje správa notifikací' >/dev/null
+  capture_challenge_proof notification-management
 fi
 
 echo "Notification lifecycle UI verification passed (${mode})."

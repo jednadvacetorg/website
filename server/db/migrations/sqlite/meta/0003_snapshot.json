@@ -1,0 +1,810 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "b6259339-a1d9-40d4-a663-1715694495fd",
+  "prevId": "4cb3f62b-dbd3-4e76-8b83-d8851261674f",
+  "tables": {
+    "notification_abuse_attempts": {
+      "name": "notification_abuse_attempts",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "requester_hash": {
+          "name": "requester_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "attempted_at": {
+          "name": "attempted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "notification_abuse_attempts_requester_attempted_idx": {
+          "name": "notification_abuse_attempts_requester_attempted_idx",
+          "columns": [
+            "requester_hash",
+            "attempted_at"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "notification_contacts": {
+      "name": "notification_contacts",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "channel": {
+          "name": "channel",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "destination": {
+          "name": "destination",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "destination_hash": {
+          "name": "destination_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "management_token_digest": {
+          "name": "management_token_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "capability_generation": {
+          "name": "capability_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "consent_at": {
+          "name": "consent_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "consent_version": {
+          "name": "consent_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "notification_contacts_identity_unique": {
+          "name": "notification_contacts_identity_unique",
+          "columns": [
+            "channel",
+            "destination"
+          ],
+          "isUnique": true
+        },
+        "notification_contacts_token_digest_unique": {
+          "name": "notification_contacts_token_digest_unique",
+          "columns": [
+            "management_token_digest"
+          ],
+          "isUnique": true
+        },
+        "notification_contacts_destination_hash_idx": {
+          "name": "notification_contacts_destination_hash_idx",
+          "columns": [
+            "channel",
+            "destination_hash"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "notification_contacts_channel_check": {
+          "name": "notification_contacts_channel_check",
+          "value": "\"notification_contacts\".\"channel\" IN ('email', 'sms', 'web-push')"
+        },
+        "notification_contacts_state_check": {
+          "name": "notification_contacts_state_check",
+          "value": "\"notification_contacts\".\"state\" IN ('active', 'pending-reactivation')"
+        }
+      }
+    },
+    "notification_delivery_callbacks": {
+      "name": "notification_delivery_callbacks",
+      "columns": {
+        "provider_event_id": {
+          "name": "provider_event_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "delivery_id": {
+          "name": "delivery_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "event": {
+          "name": "event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "notification_delivery_callbacks_delivery_idx": {
+          "name": "notification_delivery_callbacks_delivery_idx",
+          "columns": [
+            "delivery_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "notification_event_deliveries": {
+      "name": "notification_event_deliveries",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "contact_id": {
+          "name": "contact_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "channel": {
+          "name": "channel",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'email'"
+        },
+        "community_slug": {
+          "name": "community_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "eligibility_frequency": {
+          "name": "eligibility_frequency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "expected_capability_generation": {
+          "name": "expected_capability_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "destination_hash": {
+          "name": "destination_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "event_uid": {
+          "name": "event_uid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "event_revision": {
+          "name": "event_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "submitted_at": {
+          "name": "submitted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "notification_event_deliveries_dedupe_unique": {
+          "name": "notification_event_deliveries_dedupe_unique",
+          "columns": [
+            "contact_id",
+            "event_uid",
+            "event_revision",
+            "reason"
+          ],
+          "isUnique": true
+        },
+        "notification_event_deliveries_status_idx": {
+          "name": "notification_event_deliveries_status_idx",
+          "columns": [
+            "status"
+          ],
+          "isUnique": false
+        },
+        "notification_event_deliveries_authority_idx": {
+          "name": "notification_event_deliveries_authority_idx",
+          "columns": [
+            "contact_id",
+            "channel",
+            "community_slug",
+            "eligibility_frequency"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "notification_event_deliveries_contact_id_notification_contacts_id_fk": {
+          "name": "notification_event_deliveries_contact_id_notification_contacts_id_fk",
+          "tableFrom": "notification_event_deliveries",
+          "tableTo": "notification_contacts",
+          "columnsFrom": [
+            "contact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "notification_event_deliveries_channel_check": {
+          "name": "notification_event_deliveries_channel_check",
+          "value": "\"notification_event_deliveries\".\"channel\" IN ('email', 'sms', 'web-push')"
+        },
+        "notification_event_deliveries_frequency_check": {
+          "name": "notification_event_deliveries_frequency_check",
+          "value": "\"notification_event_deliveries\".\"eligibility_frequency\" IN ('created', 'week-before', 'day-before')"
+        },
+        "notification_event_deliveries_reason_check": {
+          "name": "notification_event_deliveries_reason_check",
+          "value": "\"notification_event_deliveries\".\"reason\" IN ('created', 'week-before', 'day-before', 'updated', 'cancelled')"
+        },
+        "notification_event_deliveries_status_check": {
+          "name": "notification_event_deliveries_status_check",
+          "value": "\"notification_event_deliveries\".\"status\" IN ('pending', 'submitted', 'delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed', 'failed')"
+        }
+      }
+    },
+    "notification_event_state": {
+      "name": "notification_event_state",
+      "columns": {
+        "event_key": {
+          "name": "event_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "uid": {
+          "name": "uid",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "starts_at": {
+          "name": "starts_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "ends_at": {
+          "name": "ends_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "venue": {
+          "name": "venue",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cancelled": {
+          "name": "cancelled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "notification_revision": {
+          "name": "notification_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "notification_management_capabilities": {
+      "name": "notification_management_capabilities",
+      "columns": {
+        "token_digest": {
+          "name": "token_digest",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "contact_id": {
+          "name": "contact_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expected_capability_generation": {
+          "name": "expected_capability_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "notification_management_capabilities_contact_idx": {
+          "name": "notification_management_capabilities_contact_idx",
+          "columns": [
+            "contact_id",
+            "expected_capability_generation"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "notification_management_capabilities_contact_id_notification_contacts_id_fk": {
+          "name": "notification_management_capabilities_contact_id_notification_contacts_id_fk",
+          "tableFrom": "notification_management_capabilities",
+          "tableTo": "notification_contacts",
+          "columnsFrom": [
+            "contact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "notification_outbox": {
+      "name": "notification_outbox",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "contact_id": {
+          "name": "contact_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "expected_capability_generation": {
+          "name": "expected_capability_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "claim_token": {
+          "name": "claim_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "claim_expires_at": {
+          "name": "claim_expires_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "payload_ciphertext": {
+          "name": "payload_ciphertext",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "payload_iv": {
+          "name": "payload_iv",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "terminal_at": {
+          "name": "terminal_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "notification_outbox_contact_status_idx": {
+          "name": "notification_outbox_contact_status_idx",
+          "columns": [
+            "contact_id",
+            "status"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "notification_outbox_status_check": {
+          "name": "notification_outbox_status_check",
+          "value": "\"notification_outbox\".\"status\" IN ('pending', 'queued', 'claimed', 'consumed', 'invalidated')"
+        },
+        "notification_outbox_kind_check": {
+          "name": "notification_outbox_kind_check",
+          "value": "\"notification_outbox\".\"kind\" IN ('first-activation', 'reactivation', 'management-recovery', 'event-email', 'event-sms', 'event-web-push')"
+        }
+      }
+    },
+    "notification_subscriptions": {
+      "name": "notification_subscriptions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "contact_id": {
+          "name": "contact_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "community_slug": {
+          "name": "community_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "frequency": {
+          "name": "frequency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "notification_subscriptions_identity_unique": {
+          "name": "notification_subscriptions_identity_unique",
+          "columns": [
+            "contact_id",
+            "community_slug",
+            "frequency"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "notification_subscriptions_contact_id_notification_contacts_id_fk": {
+          "name": "notification_subscriptions_contact_id_notification_contacts_id_fk",
+          "tableFrom": "notification_subscriptions",
+          "tableTo": "notification_contacts",
+          "columnsFrom": [
+            "contact_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "notification_subscriptions_frequency_check": {
+          "name": "notification_subscriptions_frequency_check",
+          "value": "\"notification_subscriptions\".\"frequency\" IN ('created', 'week-before', 'day-before')"
+        }
+      }
+    },
+    "notification_suppressions": {
+      "name": "notification_suppressions",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": true
+        },
+        "channel": {
+          "name": "channel",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "destination_hash": {
+          "name": "destination_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "suppressed_at": {
+          "name": "suppressed_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "notification_suppressions_identity_unique": {
+          "name": "notification_suppressions_identity_unique",
+          "columns": [
+            "channel",
+            "destination_hash"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "notification_suppressions_channel_check": {
+          "name": "notification_suppressions_channel_check",
+          "value": "\"notification_suppressions\".\"channel\" IN ('email', 'sms', 'web-push')"
+        },
+        "notification_suppressions_reason_check": {
+          "name": "notification_suppressions_reason_check",
+          "value": "\"notification_suppressions\".\"reason\" IN ('user-stop', 'provider-bounce', 'provider-complaint', 'provider-opt-out')"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}

@@ -15,7 +15,7 @@ test('email delivery configuration is disabled unless every private and operatio
   assert.equal(JSON.stringify(config).includes('undefined'), false)
 })
 
-test('one root derives non-extractable, purpose-separated Worker keys and rejects all rotation-era inputs', async () => {
+test('one root derives non-extractable, purpose-separated Worker keys', async () => {
   const config = await notificationConfig(base)
   assert.ok('outboxTransportKey' in config)
   assert.equal(config.outboxTransportKey.extractable, false)
@@ -29,7 +29,7 @@ test('one root derives non-extractable, purpose-separated Worker keys and reject
   assert.notDeepEqual(new Uint8Array(suppression), new Uint8Array(abuse))
 })
 
-test('email delivery accepts only the verified root-domain sender', async () => {
+test('legacy verification booleans and sender settings cannot replace operational email evidence', async () => {
   const ready = {
     ...base,
     brevoApiKey: 'a'.repeat(24),

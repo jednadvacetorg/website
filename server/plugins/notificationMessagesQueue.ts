@@ -13,7 +13,8 @@ interface NotificationQueueEnvelope {
 
 interface NotificationQueueHookContext {
   batch: { queue: string, messages: NotificationQueueEnvelope[] }
-  context?: { notificationDatabase?: NotificationDatabase, cloudflare?: { env?: Record<string, unknown> } }
+  env?: { DB?: NotificationDatabase }
+  context?: { notificationDatabase?: NotificationDatabase }
 }
 
 export const processNotificationQueueMessage = async (message: NotificationQueueEnvelope, dependencies: NotificationQueueDependencies, deliver?: NotificationDeliveryHook) => {
@@ -27,7 +28,8 @@ export const dispatchNotificationQueueMessage = (message: NotificationQueueEnvel
   processNotificationQueueMessage(message, dependencies, async (payload, authorization, authorize) => {
     // Adapters finish composition/crypto before reaching this transport boundary.
     const authorizedFetch: typeof fetch = async (url, request) => {
-      if (!await authorize()) throw new Error('Notification delivery authorization expired')
+      const signal = request?.signal ?? undefined
+      if (signal?.aborted || !await authorize(signal) || signal?.aborted) throw new Error('Notification delivery authorization expired')
       return fetcher(url, request)
     }
     if (authorization.channel === 'web-push') {
@@ -56,7 +58,8 @@ export const dispatchNotificationQueueMessage = (message: NotificationQueueEnvel
     if ('capability' in payload) {
       if (authorization.channel === 'sms') return sendBrevoLifecycleSms({ apiKey: runtime.brevoApiKey, sender: runtime.brevoSenderName }, { recipient: payload.destination, capability: payload.capability, kind: payload.kind }, authorizedFetch)
       if (authorization.channel !== 'email') throw new Error('Notification channel is invalid')
-      return sendBrevoLifecycleEmail({ apiKey: runtime.brevoApiKey, senderName: runtime.brevoSenderName, senderEmail: 'noreply@jednadvacet.org', sandbox: runtime.brevoSandbox === true }, { destination: payload.destination, capability: payload.capability, kind: payload.kind }, authorizedFetch)
+      if (!authorization.lifecycleAttempt) throw new Error('Lifecycle email attempt is unavailable')
+      return sendBrevoLifecycleEmail({ apiKey: runtime.brevoApiKey, senderName: runtime.brevoSenderName, senderEmail: 'noreply@jednadvacet.org', sandbox: runtime.brevoSandbox === true }, { destination: payload.destination, capability: payload.capability, kind: payload.kind, attempt: authorization.lifecycleAttempt }, authorizedFetch)
     }
     if (payload.kind === 'event-sms') return sendBrevoEventSms({ apiKey: runtime.brevoApiKey, sender: runtime.brevoSenderName }, { deliveryId: payload.deliveryId, recipient: payload.destination, event: payload.event, reason: payload.reason }, authorizedFetch)
     return sendBrevoEventEmail({ apiKey: runtime.brevoApiKey, senderName: runtime.brevoSenderName, senderEmail: 'noreply@jednadvacet.org', sandbox: runtime.brevoSandbox === true }, {
@@ -72,7 +75,7 @@ export default defineNitroPlugin((nitroApp) => {
     if (event.batch.queue !== notificationMessagesQueueName) return
 
     const database = event.context?.notificationDatabase
-      ?? event.context?.cloudflare?.env?.DB as NotificationDatabase | undefined
+      ?? event.env?.DB
     if (!database?.prepare || !database.batch) throw new Error('Notification database is not configured')
     const runtime = useRuntimeConfig() as unknown as Record<string, unknown>
     const dependencies: NotificationQueueDependencies = {

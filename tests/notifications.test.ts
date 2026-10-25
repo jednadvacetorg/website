@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
 import { evaluateNotificationAbuse } from '../server/utils/notificationAbuse.ts'
-import { activateNotificationChannel, confirmNotificationReactivation, isDeliveryEligible, readNotificationManagement, removeNotificationCommunity, requestNotificationManagementRecovery, stopNotificationChannel, updateNotificationFrequencies, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
+import { activateNotificationChannel, confirmNotificationReactivation, readNotificationManagement, removeNotificationCommunity, requestNotificationManagementRecovery, stopNotificationChannel, updateNotificationFrequencies, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 import { notificationUiVerificationDecision, notificationUiVerificationFixtureEnabled, notificationUiVerificationToken } from '../server/utils/notificationUiVerificationFixture.ts'
 import { projectNotificationReadiness } from '../server/api/notifications/readiness.get.ts'
 
@@ -13,7 +13,7 @@ const Database = createRequire(import.meta.url)('better-sqlite3') as new (filena
   prepare(sql: string): { run(...values: unknown[]): unknown, get(...values: unknown[]): unknown, all(...values: unknown[]): unknown[] }
 }
 
-const schema = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_phase_7_constraints'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
+const schema = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
 
 const disposableDatabase = (failsStatement?: (sql: string) => boolean): { database: NotificationDatabase, query(sql: string): unknown[] } => {
   const sqlite = new Database(':memory:')
@@ -27,7 +27,7 @@ const disposableDatabase = (failsStatement?: (sql: string) => boolean): { databa
       all: async <T>() => ({ results: sqlite.prepare(sql).all(...values) as T[] }),
       run: async () => {
         if (failsStatement?.(sql)) throw new Error('Injected D1 statement failure')
-        sqlite.prepare(sql).run(...values)
+        return sqlite.prepare(sql).run(...values)
       },
     }
     return result
@@ -38,8 +38,13 @@ const disposableDatabase = (failsStatement?: (sql: string) => boolean): { databa
       batch: async (statements) => {
         sqlite.exec('BEGIN')
         try {
-          for (const item of statements) await item.run()
+          const results = []
+          for (const item of statements) {
+            const result = await item.run() as { changes?: number }
+            results.push({ meta: { changes: result.changes ?? 0 } })
+          }
           sqlite.exec('COMMIT')
+          return results
         } catch (error) {
           sqlite.exec('ROLLBACK')
           throw error
@@ -84,6 +89,24 @@ const predictableCrypto = { randomBytes: (length: number) => new Uint8Array(leng
 const tokenForByte = (byte: number) => btoa(String.fromCharCode(...new Uint8Array(32).fill(byte))).replace(/=+$/g, '').replace(/\+/g, '-').replace(/\//g, '_')
 const fromBase64Url = (value: string) => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - value.length % 4) % 4)), character => character.charCodeAt(0))
 const input = { channel: 'email' as const, contact: 'Alice@Example.COM', communitySlugs: ['brno'], frequencies: ['created', 'day-before'] as ('created' | 'day-before')[], consentAt: '2026-09-15T12:00:00.000Z', consentVersion: '2026-09' }
+
+const assertCommittedPayload = async (query: (sql: string) => unknown[], expectedKind: string) => {
+  const contacts = query('SELECT id, destination, management_token_digest, capability_generation FROM notification_contacts') as { id: number, destination: string, management_token_digest: string, capability_generation: number }[]
+  const work = query("SELECT contact_id, kind, expected_capability_generation, payload_ciphertext, payload_iv FROM notification_outbox WHERE status = 'pending'") as { contact_id: number, kind: string, expected_capability_generation: number, payload_ciphertext: string, payload_iv: string }[]
+  assert.equal(contacts.length, 1)
+  assert.equal(work.length, 1)
+  const contact = contacts[0]!
+  const outbox = work[0]!
+  const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromBase64Url(outbox.payload_iv) }, config.outboxTransportKey, fromBase64Url(outbox.payload_ciphertext))
+  const payload = JSON.parse(new TextDecoder().decode(plaintext)) as { destination: string, capability: string, kind: string }
+  assert.equal(outbox.contact_id, contact.id)
+  assert.equal(outbox.expected_capability_generation, contact.capability_generation)
+  assert.equal(outbox.kind, expectedKind)
+  assert.equal(payload.kind, expectedKind)
+  assert.equal(payload.destination, contact.destination)
+  assert.equal(Buffer.from(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload.capability))).toString('base64url'), contact.management_token_digest)
+  return payload.capability
+}
 
 test('native push activation and recovery canonicalize device identity and reject direct-service bypasses', async () => {
   const { database, query } = disposableDatabase()
@@ -150,7 +173,7 @@ test('fresh activation leaves no lifecycle rows when payload encryption fails', 
   assert.equal(query('SELECT * FROM notification_outbox').length, 0)
 })
 
-test('private purpose-specific keyrings import a Worker AES-GCM key for an activation outbox write', async () => {
+test('one private root derives a Worker AES-GCM key for an activation outbox write', async () => {
   const { database, query } = disposableDatabase()
   const runtimeConfig = await notificationConfig({
     notificationCommunitySlugs: 'brno,praha',
@@ -178,7 +201,7 @@ test('private purpose-specific keyrings import a Worker AES-GCM key for an activ
   assert.match(new TextDecoder().decode(plaintext), /"destination":"Alice@example.com"/)
 })
 
-test('missing, malformed, short, and unknown-current private key material fails before activation', async () => {
+test('missing, malformed, short, and undefined private root material fails configuration loading', async () => {
   const validRuntimeConfig = {
     notificationCommunitySlugs: 'brno,praha',
     notificationRootKey: key,
@@ -222,7 +245,7 @@ test('public readiness keeps email false until separate delivery evidence is com
   assert.deepEqual(await projectNotificationReadiness({ ...runtimeConfig, notificationRootKey: '' }, database), { email: false, sms: false, webPush: false })
 })
 
-test('public readiness rejects missing, malformed, and unretained D1 transport-key references', async () => {
+test('public readiness stays false without D1 or operational delivery evidence', async () => {
   const { database } = disposableDatabase()
   const runtimeConfig = {
     notificationCommunitySlugs: 'brno', notificationRootKey: key,
@@ -284,13 +307,12 @@ test('stopping a token-scoped contact with queued outbox work suppresses it and 
   const { database, query } = disposableDatabase()
   await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
   database.prepare('UPDATE notification_outbox SET status = ?, claim_token = ?, claim_expires_at = ?').bind('queued', 'queued-claim', '2026-09-18T12:00:00.000Z').run()
-  const [contact] = query('SELECT destination_hash FROM notification_contacts') as { destination_hash: string }[]
-  assert.equal(await isDeliveryEligible({ channel: 'email', contactFingerprint: contact!.destination_hash, communitySlug: 'brno', frequency: 'created', now: new Date() }, { database, config }), true)
-  assert.deepEqual(await stopNotificationChannel(tokenForByte(0), { database, config, crypto: predictableCrypto }), { state: 'unavailable' })
+  assert.equal((await readNotificationManagement(tokenForByte(0), { database, config })).state, 'active')
+  assert.deepEqual(await stopNotificationChannel(tokenForByte(0), { database, config, crypto: predictableCrypto }), { outcome: 'stopped' })
   assert.equal(query('SELECT * FROM notification_contacts').length, 0)
   assert.equal(query('SELECT * FROM notification_suppressions').length, 1)
   assert.deepEqual(query('SELECT version, status, payload_ciphertext, payload_iv, claim_token, claim_expires_at FROM notification_outbox'), [{ version: 2, status: 'invalidated', payload_ciphertext: null, payload_iv: null, claim_token: null, claim_expires_at: null }])
-  assert.equal(await isDeliveryEligible({ channel: 'email', contactFingerprint: contact!.destination_hash, communitySlug: 'brno', frequency: 'created', now: new Date() }, { database, config }), false)
+  assert.deepEqual(await readNotificationManagement(tokenForByte(0), { database, config }), { state: 'unavailable' })
 })
 
 test('suppressed activation rotates its bearer and stays pending until only the new bearer confirms', async () => {
@@ -303,8 +325,8 @@ test('suppressed activation rotates its bearer and stays pending until only the 
   const [pending] = query('SELECT state, capability_generation FROM notification_contacts') as { state: string, capability_generation: number }[]
   assert.deepEqual(pending, { state: 'pending-reactivation', capability_generation: 1 })
   assert.deepEqual(await readNotificationManagement(tokenForByte(0), { database, config, crypto: sequencedCrypto }), { state: 'unavailable' })
-  assert.deepEqual(await confirmNotificationReactivation(tokenForByte(3), { database, config, crypto: sequencedCrypto }), {
-    state: 'active', channel: 'email', maskedContact: 'A•••@example.com', communities: [{ slug: 'brno', title: 'brno', frequencies: ['week-before'] }],
+  assert.deepEqual(await confirmNotificationReactivation(tokenForByte(4), { database, config, crypto: sequencedCrypto }), {
+    outcome: 'reactivated', management: { state: 'active', channel: 'email', maskedContact: 'A•••@example.com', communities: [{ slug: 'brno', title: 'brno', frequencies: ['week-before'] }] },
   })
   assert.equal(query('SELECT * FROM notification_suppressions').length, 0)
 })
@@ -355,7 +377,7 @@ test('management reads are non-destructive and only the newest rotated bearer re
   assert.deepEqual(query('SELECT management_token_digest, capability_generation FROM notification_contacts'), before)
   await requestNotificationManagementRecovery({ channel: 'email', contact: 'Alice@example.com' }, { database, config, crypto: sequencedCrypto })
   assert.deepEqual(await readNotificationManagement(tokenForByte(0), { database, config, crypto: sequencedCrypto }), { state: 'unavailable' })
-  assert.equal((await readNotificationManagement(tokenForByte(3), { database, config, crypto: sequencedCrypto })).state, 'active')
+  assert.equal((await readNotificationManagement(tokenForByte(4), { database, config, crypto: sequencedCrypto })).state, 'active')
 })
 
 test('a digest-only event alias resolves only for the matching current generation', async () => {
@@ -382,14 +404,14 @@ test('a stale bearer cannot update, remove, or stop subscriptions after recovery
   await requestNotificationManagementRecovery({ channel: 'email', contact: 'Alice@example.com' }, { database: paused.database, config, crypto: sequencedCrypto })
   paused.release()
 
-  assert.deepEqual(await staleUpdate, { state: 'unavailable' })
+  assert.deepEqual(await staleUpdate, { outcome: 'unavailable' })
   const afterRecovery = query('SELECT community_slug, frequency FROM notification_subscriptions ORDER BY community_slug, frequency')
   assert.deepEqual(afterRecovery, [
     { community_slug: 'brno', frequency: 'created' },
     { community_slug: 'praha', frequency: 'created' },
   ])
-  assert.deepEqual(await removeNotificationCommunity(tokenForByte(0), 'brno', { database: paused.database, config, crypto: sequencedCrypto }), { state: 'unavailable' })
-  assert.deepEqual(await stopNotificationChannel(tokenForByte(0), { database: paused.database, config, crypto: sequencedCrypto }), { state: 'unavailable' })
+  assert.deepEqual(await removeNotificationCommunity(tokenForByte(0), 'brno', { database: paused.database, config, crypto: sequencedCrypto }), { outcome: 'unavailable' })
+  assert.deepEqual(await stopNotificationChannel(tokenForByte(0), { database: paused.database, config, crypto: sequencedCrypto }), { outcome: 'unavailable' })
   assert.deepEqual(query('SELECT community_slug, frequency FROM notification_subscriptions ORDER BY community_slug, frequency'), afterRecovery)
   assert.equal(query('SELECT * FROM notification_suppressions').length, 0)
 })
@@ -403,12 +425,12 @@ test('a recovered pending bearer cannot confirm after its authority becomes stal
   await activateNotificationChannel(input, { database: baseDatabase, config, crypto: sequencedCrypto })
   const paused = pauseFirstBatch(baseDatabase)
 
-  const staleConfirmation = confirmNotificationReactivation(tokenForByte(3), { database: paused.database, config, crypto: sequencedCrypto })
+  const staleConfirmation = confirmNotificationReactivation(tokenForByte(4), { database: paused.database, config, crypto: sequencedCrypto })
   await paused.firstBatchEntered
   await requestNotificationManagementRecovery({ channel: 'email', contact: 'Alice@example.com' }, { database: paused.database, config, crypto: sequencedCrypto })
   paused.release()
 
-  assert.deepEqual(await staleConfirmation, { state: 'unavailable' })
+  assert.deepEqual(await staleConfirmation, { outcome: 'unavailable' })
   assert.deepEqual(query('SELECT state FROM notification_contacts'), [{ state: 'pending-reactivation' }])
   assert.equal(query('SELECT * FROM notification_suppressions').length, 1)
 })
@@ -484,7 +506,7 @@ test('a delayed pending signup cannot overwrite a newer recovery generation or s
   await requestNotificationManagementRecovery({ channel: 'email', contact: 'Alice@example.com' }, { database, config, crypto: { randomBytes: length => new Uint8Array(length).fill(3), subtle: crypto.subtle } })
   const before = query('SELECT * FROM notification_subscriptions')
   paused.release()
-  await first
+  await assert.rejects(first, (error: unknown) => error instanceof Error && (error as { statusCode?: number }).statusCode === 409)
   assert.deepEqual(query('SELECT * FROM notification_subscriptions'), before)
   assert.equal((await readNotificationManagement(tokenForByte(3), { database, config })).state, 'pending-reactivation')
   assert.equal((await readNotificationManagement(tokenForByte(2), { database, config })).state, 'unavailable')
@@ -522,8 +544,191 @@ test('token confirmation cannot remove provider suppression from a pending react
     await stopNotificationChannel(tokenForByte(0), { database, config })
     await activateNotificationChannel(input, { database, config, crypto: { randomBytes: length => new Uint8Array(length).fill(1), subtle: crypto.subtle } })
     await database.prepare('UPDATE notification_suppressions SET reason = ?').bind(reason).run()
-    assert.deepEqual(await confirmNotificationReactivation(tokenForByte(1), { database, config }), { state: 'unavailable' })
+    assert.deepEqual(await confirmNotificationReactivation(tokenForByte(1), { database, config }), { outcome: 'unavailable' })
     assert.deepEqual(query('SELECT state FROM notification_contacts'), [{ state: 'pending-reactivation' }])
     assert.deepEqual(query('SELECT reason FROM notification_suppressions'), [{ reason }])
   }
 })
+
+test('management mutations report only their committed action', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+
+  assert.deepEqual(
+    await stopNotificationChannel(tokenForByte(0), { database, config, crypto: predictableCrypto }),
+    { outcome: 'stopped' },
+  )
+  assert.equal(query('SELECT * FROM notification_contacts').length, 0)
+})
+
+test('management saves use the mutation contract for unknown and pending bearers, and removals accept every committed frequency-row count', async () => {
+  const { database, query } = disposableDatabase()
+  assert.deepEqual(await updateNotificationFrequencies(tokenForByte(99), 'brno', ['created'], { database, config, crypto: predictableCrypto }), { outcome: 'unavailable' })
+
+  await activateNotificationChannel({ ...input, communitySlugs: ['brno', 'praha'], frequencies: ['created', 'week-before', 'day-before'] }, { database, config, crypto: predictableCrypto })
+  assert.deepEqual(await removeNotificationCommunity(tokenForByte(0), 'brno', { database, config, crypto: predictableCrypto }), {
+    outcome: 'removed',
+    management: {
+      state: 'active', channel: 'email', maskedContact: 'A•••@example.com',
+      communities: [{ slug: 'praha', title: 'praha', frequencies: ['created', 'day-before', 'week-before'] }],
+    },
+  })
+
+  await stopNotificationChannel(tokenForByte(0), { database, config, crypto: predictableCrypto })
+  await activateNotificationChannel(input, { database, config, crypto: { randomBytes: length => new Uint8Array(length).fill(1), subtle: crypto.subtle } })
+  assert.deepEqual(await updateNotificationFrequencies(tokenForByte(1), 'brno', ['created'], { database, config, crypto: predictableCrypto }), { outcome: 'unavailable' })
+  assert.deepEqual(query('SELECT community_slug, frequency FROM notification_subscriptions ORDER BY community_slug, frequency'), [{ community_slug: 'brno', frequency: 'created' }, { community_slug: 'brno', frequency: 'day-before' }])
+})
+
+test('activation classifies a stop committed between its suppression and contact reads inside the write', async () => {
+  const { database: baseDatabase, query } = disposableDatabase()
+  let randomCall = 0
+  const sequencedCrypto = { randomBytes: (length: number) => new Uint8Array(length).fill(randomCall++), subtle: crypto.subtle }
+  await activateNotificationChannel(input, { database: baseDatabase, config, crypto: sequencedCrypto })
+
+  let pause!: () => void
+  const suppressionRead = new Promise<void>(resolve => { pause = resolve })
+  let release!: () => void
+  const continueActivation = new Promise<void>(resolve => { release = resolve })
+  let intercepted = false
+  const database: NotificationDatabase = {
+    ...baseDatabase,
+    prepare: sql => {
+      const statement = baseDatabase.prepare(sql)
+      if (!intercepted && sql.startsWith('SELECT id, destination_hash FROM notification_suppressions')) {
+        intercepted = true
+        const pausedStatement: NotificationStatement = {
+          ...statement,
+          bind: (...values) => {
+            statement.bind(...values)
+            return pausedStatement
+          },
+          first: async <T>() => {
+            const result = await statement.first<T>()
+            pause()
+            await continueActivation
+            return result
+          },
+        }
+        return pausedStatement
+      }
+      return statement
+    },
+  }
+
+  const activation = activateNotificationChannel(input, { database, config, crypto: sequencedCrypto })
+  await suppressionRead
+  assert.deepEqual(await stopNotificationChannel(tokenForByte(0), { database: baseDatabase, config, crypto: sequencedCrypto }), { outcome: 'stopped' })
+  release()
+
+  assert.deepEqual(await activation, { state: 'pending-reactivation' })
+  assert.deepEqual(query('SELECT state FROM notification_contacts'), [{ state: 'pending-reactivation' }])
+  assert.deepEqual(query("SELECT kind, status FROM notification_outbox WHERE status = 'pending'"), [{ kind: 'reactivation', status: 'pending' }])
+  await assertCommittedPayload(query, 'reactivation')
+})
+
+test('lost activation authority reports no success and leaves no replacement rows', async () => {
+  const { database: baseDatabase, query } = disposableDatabase()
+  await activateNotificationChannel(input, { database: baseDatabase, config, crypto: predictableCrypto })
+  const paused = pauseFirstBatch(baseDatabase)
+  const activation = activateNotificationChannel({ ...input, frequencies: ['week-before'] }, { database: paused.database, config, crypto: predictableCrypto })
+  await paused.firstBatchEntered
+  assert.deepEqual(await stopNotificationChannel(tokenForByte(0), { database: baseDatabase, config, crypto: predictableCrypto }), { outcome: 'stopped' })
+  paused.release()
+  await assert.rejects(activation, (error: unknown) => error instanceof Error && (error as { statusCode?: number }).statusCode === 409)
+  assert.equal(query('SELECT * FROM notification_contacts').length, 0)
+  assert.equal(query('SELECT * FROM notification_subscriptions').length, 0)
+  assert.equal(query("SELECT * FROM notification_outbox WHERE status = 'pending'").length, 0)
+})
+
+test('two fresh activations have one committed winner, one conflict and no orphan work', async () => {
+  const { database, query } = disposableDatabase()
+  const paused = pauseFirstBatch(database)
+  const losing = activateNotificationChannel({ ...input, frequencies: ['week-before'] }, { database: paused.database, config })
+  // Attach rejection handling before allowing the competing batch to run.
+  const conflict = assert.rejects(losing, (error: unknown) => error instanceof Error && (error as { statusCode?: number }).statusCode === 409)
+  await paused.firstBatchEntered
+  try {
+    assert.deepEqual(await activateNotificationChannel({ ...input, communitySlugs: ['brno', 'praha'] }, { database, config }), { state: 'active' })
+    const tables = ['notification_contacts', 'notification_subscriptions', 'notification_outbox', 'notification_suppressions']
+    const winner = tables.map(table => query(`SELECT * FROM ${table}`))
+    paused.release()
+    await conflict
+    assert.deepEqual(tables.map(table => query(`SELECT * FROM ${table}`)), winner)
+    assert.equal(winner[0]!.length, 1)
+    assert.equal(winner[1]!.length, 4)
+    assert.equal(winner[2]!.length, 1)
+    assert.equal(winner[3]!.length, 0)
+    const token = await assertCommittedPayload(query, 'first-activation')
+    assert.equal((await readNotificationManagement(token, { database, config })).state, 'active')
+  } finally { paused.release(); await conflict }
+})
+
+for (const reason of ['user-stop', 'provider-bounce', 'provider-complaint', 'provider-opt-out']) {
+  for (const timing of ['already-present', 'during-preparation']) {
+    test(`fresh ${reason} suppression ${timing} commits bound pending work and safeguards confirmation`, async () => {
+      const { database, query } = disposableDatabase()
+      const destinationHash = Buffer.from(await crypto.subtle.sign('HMAC', config.suppressionHashKey, new TextEncoder().encode('Alice@example.com'))).toString('base64url')
+      const suppress = () => database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) VALUES (?, ?, ?, ?)').bind('email', destinationHash, reason, '2026-09-17T00:00:00.000Z').run()
+      if (timing === 'already-present') await suppress()
+      let entered!: () => void
+      let release!: () => void
+      const preparationEntered = new Promise<void>(resolve => { entered = resolve })
+      const resume = new Promise<void>(resolve => { release = resolve })
+      let encryptions = 0
+      const preparingCrypto = {
+        randomBytes: (length: number) => crypto.getRandomValues(new Uint8Array(length)),
+        subtle: {
+          digest: crypto.subtle.digest.bind(crypto.subtle),
+          sign: crypto.subtle.sign.bind(crypto.subtle),
+          encrypt: async (...args: Parameters<SubtleCrypto['encrypt']>) => {
+            if (encryptions++ === 0) { entered(); await resume }
+            return crypto.subtle.encrypt(...args)
+          },
+        } as unknown as SubtleCrypto,
+      }
+      const activation = activateNotificationChannel(input, { database, config, crypto: preparingCrypto })
+      await preparationEntered
+      try {
+        if (timing === 'during-preparation') await suppress()
+        release()
+        assert.deepEqual(await activation, { state: 'pending-reactivation' })
+        assert.deepEqual(query('SELECT state FROM notification_contacts'), [{ state: 'pending-reactivation' }])
+        const token = await assertCommittedPayload(query, 'reactivation')
+        assert.equal((await readNotificationManagement(token, { database, config })).state, 'pending-reactivation')
+        const before = ['notification_contacts', 'notification_subscriptions', 'notification_suppressions', 'notification_outbox'].map(table => query(`SELECT * FROM ${table}`))
+        const confirmed = await confirmNotificationReactivation(token, { database, config })
+        if (reason === 'user-stop') {
+          assert.equal(confirmed.outcome, 'reactivated')
+          assert.deepEqual(query('SELECT state FROM notification_contacts'), [{ state: 'active' }])
+          assert.deepEqual(query('SELECT * FROM notification_suppressions'), [])
+          assert.equal((await readNotificationManagement(token, { database, config })).state, 'active')
+        } else {
+          assert.deepEqual(confirmed, { outcome: 'unavailable' })
+          assert.deepEqual(['notification_contacts', 'notification_subscriptions', 'notification_suppressions', 'notification_outbox'].map(table => query(`SELECT * FROM ${table}`)), before)
+        }
+      } finally { release(); await activation }
+    })
+  }
+}
+
+for (const reason of ['provider-bounce', 'provider-complaint', 'provider-opt-out']) {
+  test(`confirmation loses user-stop authority when ${reason} commits after its own pre-read`, async () => {
+    const { database, query } = disposableDatabase()
+    const destinationHash = Buffer.from(await crypto.subtle.sign('HMAC', config.suppressionHashKey, new TextEncoder().encode('Alice@example.com'))).toString('base64url')
+    await database.prepare('INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) VALUES (?, ?, ?, ?)').bind('email', destinationHash, 'user-stop', '2026-09-17T00:00:00.000Z').run()
+    await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
+    const paused = pauseFirstBatch(database)
+    const confirmation = confirmNotificationReactivation(tokenForByte(0), { database: paused.database, config })
+    await paused.firstBatchEntered
+    try {
+      await database.prepare('UPDATE notification_suppressions SET reason = ?').bind(reason).run()
+      const tables = ['notification_contacts', 'notification_subscriptions', 'notification_suppressions', 'notification_outbox']
+      const before = tables.map(table => query(`SELECT * FROM ${table}`))
+      paused.release()
+      assert.deepEqual(await confirmation, { outcome: 'unavailable' })
+      assert.deepEqual(tables.map(table => query(`SELECT * FROM ${table}`)), before)
+      assert.equal((await readNotificationManagement(tokenForByte(0), { database, config })).state, 'pending-reactivation')
+    } finally { paused.release(); await confirmation }
+  })
+}

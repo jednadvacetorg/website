@@ -7,10 +7,11 @@ const communityMapsQueue = 'community-maps'
 const portalEventsCron = '47 3 * * *'
 const portalEventsQueue = 'portal-events'
 const notificationMessagesCron = '13 * * * *'
+const notificationPublicationCron = '* * * * *'
 const notificationMessagesQueue = 'notification-messages'
 const notificationMessagesDeadLetterQueue = 'notification-messages-dlq'
 
-const studioIconLibraries = ['bitcoin-icons', 'lucide', 'pinhead', 'simple-icons', 'streamline']
+const iconLibraries = ['bitcoin-icons', 'lucide', 'pinhead', 'simple-icons', 'streamline']
 
 // Nitro 2's bundled Wrangler type predates traces, but it emits this object unchanged.
 const cloudflareObservability = {
@@ -65,7 +66,6 @@ export default defineNuxtConfig({
     '@nuxtjs/sitemap',
     '@vueuse/nuxt',
     './shared/contentRedirectsModule',
-    'nuxt-studio'
   ],
 
   site: {
@@ -108,20 +108,11 @@ export default defineNuxtConfig({
     notificationSmsEnabled: false,
     notificationSmsFirstMessageReady: false,
     notificationSmsEventDeliveryReady: false,
-    // Legacy assertions alone cannot enable delivery; bounded observations are required.
+    // Bounded observations are required alongside private provider configuration.
     brevoApiKey: '',
     brevoCallbackSecret: '',
     brevoSenderName: '',
     brevoSenderEmail: '',
-    brevoSenderVerified: false,
-    brevoSpfVerified: false,
-    brevoDkimVerified: false,
-    brevoDmarcVerified: false,
-    brevoCallbackVerified: false,
-    brevoSandboxVerified: false,
-    brevoLiveCanaryVerified: false,
-    notificationProductionBindingsVerified: false,
-    notificationMigrationVerified: false,
     notificationEmailManualEnabled: false,
     notificationWebPushEnabled: false,
     notificationWebPushFirstMessageReady: false,
@@ -141,7 +132,7 @@ export default defineNuxtConfig({
 
   sitemap: {
     // People have no standalone routes; everything else is content-backed.
-    exclude: ['/_studio/**', '/debug/**', '/cntrsclc'],
+    exclude: ['/debug/**', '/cntrsclc'],
   },
 
   hub: {
@@ -165,10 +156,10 @@ export default defineNuxtConfig({
   },
 
   icon: {
-    collections: studioIconLibraries,
+    collections: iconLibraries,
     provider: isDevelopment ? 'server' : 'none',
     fallbackToApi: false,
-    serverBundle: { collections: studioIconLibraries },
+    serverBundle: { collections: iconLibraries },
     clientBundle: {
       icons: navigationItems.flatMap(item =>
         item.children?.flatMap(child => child.icon ? [child.icon] : []) ?? [],
@@ -176,7 +167,7 @@ export default defineNuxtConfig({
       scan: {
         globInclude: ['app/**/*.{vue,ts}', 'content/**/*.{md,yml,yaml}'],
         globExclude: ['node_modules'],
-        additionalCollections: studioIconLibraries,
+        additionalCollections: iconLibraries,
       },
       sizeLimitKb: 256,
     },
@@ -192,7 +183,11 @@ export default defineNuxtConfig({
       : {
           [communityMapsCron]: 'community-maps',
           [portalEventsCron]: 'portal-events',
-          [notificationMessagesCron]: 'notification-messages',
+          // Automatic notification jobs require the Worker binding context.
+          ...(isDevelopment ? {} : {
+            [notificationMessagesCron]: 'notification-messages',
+            [notificationPublicationCron]: 'notification-publication',
+          }),
         },
     devStorage: {
       miners: {
@@ -222,7 +217,7 @@ export default defineNuxtConfig({
           },
         },
     alias: {
-      'sharp': 'unenv/mock/proxy-cjs', // sharp can't run in Cloudflare Workers; pulled in transitively by nuxt-studio's IPX media handler
+      'sharp': 'unenv/mock/proxy-cjs', // sharp can't run in Cloudflare Workers; retain the alias for Nuxt Image's IPX dependency.
     },
     cloudflare: {
       deployConfig: true,
@@ -239,7 +234,6 @@ export default defineNuxtConfig({
             '/ical/*',
             '/feed/*',
             '/cntrsclc',
-            '/_studio/*',
             '!/_nuxt/*',
             '!/images/*',
             '!/icons/*',
@@ -327,39 +321,28 @@ export default defineNuxtConfig({
         triggers: isPreviewDeploy
           ? undefined
           : {
-              crons: [communityMapsCron, portalEventsCron, notificationMessagesCron],
+              crons: [communityMapsCron, portalEventsCron, ...(isDevelopment ? [] : [notificationMessagesCron, notificationPublicationCron])],
             },
         observability: cloudflareObservability,
       }
     },
     prerender: {
       routes: ['/'],
-      ignore: ['/_studio'],
       crawlLinks: true,
     },
     preset: 'cloudflare_module',
   },
 
   routeRules: {
+    // A queued public analytics request must not disclose a later management URL.
+    '/**': { headers: { 'referrer-policy': 'strict-origin' } },
+    '/notifications/manage/**': { headers: { 'cache-control': 'no-store' } },
+    '/api/notifications/**': { headers: { 'cache-control': 'no-store' } },
     '/cntrsclc': { proxy: { to: 'https://analytics.jednadvacet.org/collect' } }, // Mask tracker collect URL to avoid blockers.
     '/author/**': { redirect: { to: '/lide', statusCode: 302 } },
     '/blog/page/**': { redirect: { to: '/blog', statusCode: 302 } },
     '/category/**': { redirect: { to: '/blog', statusCode: 302 } },
     '/tag/**': { redirect: { to: '/blog', statusCode: 302 } },
-  },
-
-  studio: {
-    dev: true,
-    editor: {
-      iconLibraries: studioIconLibraries,
-    },
-    repository: {
-      provider: 'github',
-      owner: 'Jednadvacetorg',
-      repo: 'web',
-      branch: process.env.STUDIO_BRANCH_NAME || 'master',
-      private: false,
-    },
   },
 
   vite: {

@@ -2,10 +2,12 @@ import {
   getPortalCommunities,
   refreshPortalMeetups,
   type PortalChangeSignal,
+  type PortalCommunity,
 } from '../utils/portalEvents.ts'
 import { getGoogleCalendarConfig, GoogleCalendarError, reconcileGoogleCalendar, syncGoogleCalendarChanges } from '../utils/googleCalendar.ts'
 import { planEventNotifications } from '../utils/eventEmailNotifications.ts'
 import { notificationConfig } from '../utils/notificationConfig.ts'
+import { publishPendingNotificationPointers, type NotificationMessagesQueue } from '../utils/notificationMessagesQueue.ts'
 import type { NotificationDatabase } from '../utils/notifications.ts'
 import {
   parsePortalEventsQueueBatch,
@@ -18,6 +20,7 @@ export default defineNitroPlugin((nitroApp) => {
   nitroApp.hooks.hook('cloudflare:queue', async queueEvent => {
     const { batch } = queueEvent
     if (batch.queue !== portalEventsQueueName) return
+    const event = queueEvent as unknown as { env?: { DB?: NotificationDatabase, NOTIFICATION_MESSAGES_QUEUE?: NotificationMessagesQueue }, context?: { notificationDatabase?: NotificationDatabase, notificationMessagesQueue?: NotificationMessagesQueue, portalCommunities?: PortalCommunity[] } }
 
     try {
       const parsedBatch = parsePortalEventsQueueBatch(batch.messages as PortalEventsQueueEnvelope[])
@@ -37,7 +40,7 @@ export default defineNitroPlugin((nitroApp) => {
             occurredAt: message.occurredAt,
           }]
         : [])
-      const communities = await getPortalCommunities()
+      const communities = event.context?.portalCommunities ?? await getPortalCommunities()
       const affectedMeetupIds = new Set(changes.map(change => change.meetupId))
       const selected = refreshAll
         ? communities
@@ -50,7 +53,9 @@ export default defineNitroPlugin((nitroApp) => {
 
       const storage = useStorage('portalEvents')
       const result = await refreshPortalMeetups(selected, storage, $fetch, new Date(), changes)
-      const database = (queueEvent as unknown as { context?: { cloudflare?: { env?: { DB?: NotificationDatabase } } } }).context?.cloudflare?.env?.DB
+      // Installed Nitro supplies env at the hook top level; context is ExecutionContext.
+      const database = event.context?.notificationDatabase ?? event.env?.DB
+      const queue = event.context?.notificationMessagesQueue ?? event.env?.NOTIFICATION_MESSAGES_QUEUE
       if (database) {
         try {
           const planned = await planEventNotifications(result.calendarEvents, {
@@ -58,6 +63,8 @@ export default defineNitroPlugin((nitroApp) => {
             config: await notificationConfig(useRuntimeConfig() as unknown as Record<string, unknown>),
           })
           console.info(`[notifications] Planned ${planned.planned} event email deliveries after Portal refresh`)
+          if (!queue?.send) throw new Error('Notification messages queue is not configured')
+          await publishPendingNotificationPointers(queue, { database }, { lifecycleLimit: 100, eventLimit: 300, budgetMs: 20000 })
         } catch (error) {
           // A disabled or incomplete private email configuration must not prevent Portal
           // snapshots from becoming public state. No recipient or provider data is logged.

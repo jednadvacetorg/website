@@ -60,10 +60,40 @@ export const notificationOutbox = sqliteTable('notification_outbox', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),
   terminalAt: text('terminal_at'),
+  // Minimal lifecycle attempt evidence; old rows legitimately have no evidence.
+  // 06-18 owns expiry at original terminal_at + 30 days, including receipt cleanup.
+  emailDestinationHash: text('email_destination_hash'),
+  emailProviderMessageId: text('email_provider_message_id'),
+  emailDeliveryStatus: text('email_delivery_status'),
+  emailAttemptedAt: text('email_attempted_at'),
+  emailAttemptVersion: integer('email_attempt_version'),
 }, table => [
   index('notification_outbox_contact_status_idx').on(table.contactId, table.status),
   check('notification_outbox_status_check', sql`${table.status} IN ('pending', 'queued', 'claimed', 'consumed', 'invalidated')`),
   check('notification_outbox_kind_check', sql`${table.kind} IN ('first-activation', 'reactivation', 'management-recovery', 'event-email', 'event-sms', 'event-web-push')`),
+  check('notification_outbox_email_destination_hash_check', sql`${table.emailDestinationHash} IS NULL OR (length(${table.emailDestinationHash}) = 43 AND ${table.emailDestinationHash} NOT GLOB '*[^A-Za-z0-9_-]*')`),
+  check('notification_outbox_email_provider_message_id_check', sql`${table.emailProviderMessageId} IS NULL OR (length(CAST(${table.emailProviderMessageId} AS BLOB)) BETWEEN 1 AND 256 AND instr(${table.emailProviderMessageId}, char(0)) = 0 AND ${table.emailProviderMessageId} NOT GLOB ('*[' || char(1) || '-' || char(31) || char(127) || '-' || char(159) || ']*') AND substr(${table.emailProviderMessageId}, 1, 1) <> '<' AND substr(${table.emailProviderMessageId}, -1) <> '>')`),
+  check('notification_outbox_email_delivery_status_check', sql`${table.emailDeliveryStatus} IN ('pending', 'submitted', 'delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed', 'failed')`),
+  check('notification_outbox_email_attempt_version_check', sql`${table.emailAttemptVersion} IS NULL OR (typeof(${table.emailAttemptVersion}) = 'integer' AND ${table.emailAttemptVersion} > 0 AND ${table.emailAttemptVersion} <= ${table.version})`),
+  check('notification_outbox_email_attempted_at_check', sql`${table.emailAttemptedAt} IS NULL OR (length(${table.emailAttemptedAt}) = 24 AND ${table.emailAttemptedAt} GLOB '????-??-??T??:??:??.???Z')`),
+  check('notification_outbox_lifecycle_email_evidence_check', sql`${table.kind} IN ('first-activation', 'reactivation', 'management-recovery') OR (${table.emailDestinationHash} IS NULL AND ${table.emailProviderMessageId} IS NULL AND ${table.emailDeliveryStatus} IS NULL AND ${table.emailAttemptedAt} IS NULL AND ${table.emailAttemptVersion} IS NULL)`),
+])
+
+export const notificationLifecycleEmailCallbacks = sqliteTable('notification_lifecycle_email_callbacks', {
+  receiptKey: text('receipt_key').primaryKey().notNull(),
+  outboxId: text('outbox_id').notNull().references(() => notificationOutbox.id, { onDelete: 'cascade' }),
+  attemptVersion: integer('attempt_version').notNull(),
+  event: text('event').notNull(),
+  providerMessageId: text('provider_message_id').notNull(),
+  receivedAt: text('received_at').notNull(),
+}, table => [
+  // Lookup and deletion follow the retained outbox owner, never the contact.
+  index('notification_lifecycle_email_callbacks_outbox_idx').on(table.outboxId),
+  check('notification_lifecycle_email_callbacks_receipt_key_check', sql`length(${table.receiptKey}) = 64 AND ${table.receiptKey} NOT GLOB '*[^0-9a-f]*'`),
+  check('notification_lifecycle_email_callbacks_attempt_version_check', sql`typeof(${table.attemptVersion}) = 'integer' AND ${table.attemptVersion} > 0`),
+  check('notification_lifecycle_email_callbacks_event_check', sql`${table.event} IN ('delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed')`),
+  check('notification_lifecycle_email_callbacks_provider_message_id_check', sql`length(CAST(${table.providerMessageId} AS BLOB)) BETWEEN 1 AND 256 AND instr(${table.providerMessageId}, char(0)) = 0 AND ${table.providerMessageId} NOT GLOB ('*[' || char(1) || '-' || char(31) || char(127) || '-' || char(159) || ']*') AND substr(${table.providerMessageId}, 1, 1) <> '<' AND substr(${table.providerMessageId}, -1) <> '>'`),
+  check('notification_lifecycle_email_callbacks_received_at_check', sql`length(${table.receivedAt}) = 24 AND ${table.receivedAt} GLOB '????-??-??T??:??:??.???Z'`),
 ])
 
 export const notificationEventDeliveries = sqliteTable('notification_event_deliveries', {

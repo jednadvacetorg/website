@@ -1,4 +1,4 @@
-import type { NotificationChannel, NotificationManagementResult } from './notifications.ts'
+import type { NotificationChannel, NotificationManagementMutationResult, NotificationManagementResult } from './notifications.ts'
 
 export const notificationUiVerificationToken = 'notification-ui-verification-token'
 export const notificationUiVerificationManagementTokens = {
@@ -78,24 +78,24 @@ const isFrequencyList = (value: unknown): value is Array<'created' | 'week-befor
   && value.every(frequency => frequency === 'created' || frequency === 'week-before' || frequency === 'day-before')
 
 /** Applies deterministic, row-scoped projections only for the local fixture. */
-export const mutateNotificationUiVerificationManagement = (runtimeConfig: Record<string, unknown>, token: unknown, action: unknown, body: Record<string, unknown>, development?: boolean): NotificationManagementResult | null => {
+export const mutateNotificationUiVerificationManagement = (runtimeConfig: Record<string, unknown>, token: unknown, action: unknown, body: Record<string, unknown>, development?: boolean): NotificationManagementMutationResult | null => {
   const current = notificationUiVerificationManagementResult(runtimeConfig, token, development)
-  if (!current || current.state === 'unavailable') return current
-  if (action === 'stop-channel') return unavailableManagementResult
-  if (current.state === 'pending-reactivation' && action === 'confirm-reactivation') return activeManagementResult
+  if (!current || current.state === 'unavailable') return current ? { outcome: 'unavailable' } : null
+  if (action === 'stop-channel') return { outcome: 'stopped' }
+  if (current.state === 'pending-reactivation' && action === 'confirm-reactivation') return { outcome: 'reactivated', management: activeManagementResult }
   if (current.state !== 'active' || typeof body.communitySlug !== 'string') return null
 
   const result = cloneManagementResult(current)
-  if (result.state === 'unavailable') return result
+  if (result.state === 'unavailable') return { outcome: 'unavailable' }
   const communityIndex = result.communities.findIndex(community => community.slug === body.communitySlug)
   if (communityIndex < 0) return null
   if (action === 'update-frequencies' && isFrequencyList(body.frequencies)) {
     result.communities[communityIndex] = { ...result.communities[communityIndex]!, frequencies: [...new Set(body.frequencies)] }
-    return result
+    return { outcome: 'saved', management: result }
   }
   if (action === 'remove-community') {
     result.communities.splice(communityIndex, 1)
-    return result.communities.length ? result : unavailableManagementResult
+    return result.communities.length ? { outcome: 'removed', management: result } : { outcome: 'stopped' }
   }
   return null
 }

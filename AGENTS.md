@@ -42,7 +42,7 @@
 - `pages` and `communities` share the root URL space. Keep their public paths unique and preserve the routing precedence defined by the catch-all pages.
 - Source code lives in `app/`, `content/`, `shared/`, and root configuration files. Treat `.nuxt/`, `.output/`, `.data/`, root log files, and `node_modules/` as generated or diagnostic output rather than source of truth.
 - Treat content as actionable work only when it has a syntactic TODO marker or an unambiguous product placeholder. Ordinary editorial prose, including future-looking prose, is not an implementation task.
-- Use icons only from the collections allowed by `studio.editor.iconLibraries` in `nuxt.config.ts` and installed directly as `@iconify-json/*` dependencies. Do not introduce icons from other collections or dynamically construct icon names unless they are explicitly included in the Nuxt Icon client bundle.
+- Use icons only from the collections allowed by `icon.collections` in `nuxt.config.ts` and installed directly as `@iconify-json/*` dependencies. Do not introduce icons from other collections or dynamically construct icon names unless they are explicitly included in the Nuxt Icon client bundle.
 
 ## Coding Conventions
 

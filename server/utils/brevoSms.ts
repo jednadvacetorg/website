@@ -33,18 +33,72 @@ const providerMessageId = (value: unknown) => {
   if (typeof value !== 'object' || value === null || !('messageId' in value)) return
   const id = value.messageId
   if (typeof id === 'number' && Number.isSafeInteger(id) && id > 0) return String(id)
-  if (typeof id === 'string' && id.length > 0 && id.length <= 256 && !/[\u0000-\u001f\u007f]/.test(id)) return id
+  if (typeof id === 'string' && id.length > 0 && new TextEncoder().encode(id).byteLength <= 256 && !/[\u0000-\u001f\u007f-\u009f]/.test(id)) return id
 }
-const providerOutcome = async (response: Response): Promise<BrevoSmsAttemptResult> => {
-  let body: unknown
+
+/** The two senders share only this adapter-local, bounded request/body operation. */
+const requestSms = async (config: BrevoSmsConfig, body: string, fetcher: typeof fetch): Promise<BrevoSmsAttemptResult> => {
+  const controller = new AbortController()
+  let disposed = false
+  let response: Response | undefined
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  let complete = false
+  let timer: ReturnType<typeof setTimeout>
+  const deadline = new Promise<BrevoSmsAttemptResult>(resolve => {
+    timer = setTimeout(() => {
+      disposed = true
+      controller.abort()
+      resolve({ attempted: true, status: 'transport' })
+    }, 10_000)
+  })
   try {
-    const text = await response.text()
-    if (text.length <= 16_384) body = JSON.parse(text)
-  } catch { body = undefined }
-  const id = providerMessageId(body)
-  if (response.status === 201) return id ? { attempted: true, status: 'submitted', httpStatus: 201, providerMessageId: id } : { attempted: true, status: 'invalid-request', httpStatus: 201 }
-  const code = typeof body === 'object' && body !== null && 'code' in body ? body.code : undefined
-  return { attempted: true, status: response.status === 429 ? 'rate-limited' : response.status >= 500 ? 'provider-5xx' : code === 'not_enough_credits' ? 'credits' : response.status === 401 || response.status === 403 || code === 'permission_denied' || code === 'account_under_validation' ? 'auth' : 'invalid-request', httpStatus: response.status }
+    return await Promise.race([deadline, (async (): Promise<BrevoSmsAttemptResult> => {
+      const received = await fetcher('https://api.brevo.com/v3/transactionalSMS/send', {
+        method: 'POST', headers: { 'api-key': config.apiKey, 'content-type': 'application/json' }, body, signal: controller.signal,
+      })
+      if (disposed) {
+        void received.body?.cancel().catch(() => {})
+        return { attempted: true, status: 'transport' }
+      }
+      response = received
+      const httpStatus = response.status
+      // These outcomes are authoritative without an optional provider error body.
+      if (httpStatus === 429 || httpStatus >= 500) return { attempted: true, status: httpStatus === 429 ? 'rate-limited' : 'provider-5xx', httpStatus }
+      const length = response.headers.get('content-length')
+      let data: unknown
+      if (!(length && /^\d+$/.test(length) && Number(length) > 16_384) && response.body) {
+        reader = response.body.getReader()
+        const chunks: Uint8Array[] = []
+        let size = 0
+        while (!disposed) {
+          const chunk = await reader.read()
+          if (disposed) return { attempted: true, status: 'transport' }
+          if (chunk.done) { complete = true; break }
+          size += chunk.value.byteLength
+          if (size > 16_384) break
+          chunks.push(chunk.value)
+        }
+        if (complete) {
+          const bytes = new Uint8Array(size)
+          let offset = 0
+          for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+          try { data = JSON.parse(new TextDecoder().decode(bytes)) } catch { /* Fixed invalid-request below. */ }
+        }
+      }
+      const id = providerMessageId(data)
+      if (httpStatus === 201) return id ? { attempted: true, status: 'submitted', httpStatus, providerMessageId: id } : { attempted: true, status: 'invalid-request', httpStatus }
+      const code = typeof data === 'object' && data !== null && 'code' in data ? data.code : undefined
+      return { attempted: true, status: code === 'not_enough_credits' ? 'credits' : httpStatus === 401 || httpStatus === 403 || code === 'permission_denied' || code === 'account_under_validation' ? 'auth' : 'invalid-request', httpStatus }
+    })()])
+  } catch { return { attempted: true, status: 'transport' } }
+  finally {
+    disposed = true
+    clearTimeout(timer!)
+    if (reader) {
+      if (!complete) void reader.cancel().catch(() => {})
+      reader.releaseLock()
+    } else if (response) void response.body?.cancel().catch(() => {})
+  }
 }
 
 const gsm7Basic = new Set([..."@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà"])
@@ -82,33 +136,20 @@ export const composeBrevoLifecycleSms = (message: BrevoSmsLifecycle) => {
 /** Makes one Worker-native transactional SMS request and returns only a bounded opaque outcome. */
 export const sendBrevoEventSms = async (config: BrevoSmsConfig, message: BrevoSmsEvent, fetcher: typeof fetch = fetch): Promise<BrevoSmsAttemptResult> => {
   if (!config.apiKey.trim() || !isSender(config.sender) || !isRecipient(message.recipient)) return { attempted: false, status: 'invalid-request' }
-  let content: string
   try {
-    content = composeBrevoEventSms(message)
+    const content = composeBrevoEventSms(message)
+    const body = JSON.stringify({ recipient: message.recipient, sender: config.sender, content, type: 'transactional' })
+    return requestSms(config, body, fetcher)
   } catch {
     return { attempted: false, status: 'invalid-request' }
-  }
-  try {
-    const response = await fetcher('https://api.brevo.com/v3/transactionalSMS/send', {
-      method: 'POST',
-      headers: { 'api-key': config.apiKey, 'content-type': 'application/json' },
-      body: JSON.stringify({ recipient: message.recipient, sender: config.sender, content, type: 'transactional', webhookUrl: undefined }),
-    })
-    return await providerOutcome(response)
-  } catch {
-    return { attempted: true, status: 'transport' }
   }
 }
 
 export const sendBrevoLifecycleSms = async (config: BrevoSmsConfig, message: BrevoSmsLifecycle, fetcher: typeof fetch = fetch): Promise<BrevoSmsAttemptResult> => {
   if (!config.apiKey.trim() || !isSender(config.sender) || !isRecipient(message.recipient)) return { attempted: false, status: 'invalid-request' }
-  let content: string
-  try { content = composeBrevoLifecycleSms(message) } catch { return { attempted: false, status: 'invalid-request' } }
   try {
-    const response = await fetcher('https://api.brevo.com/v3/transactionalSMS/send', {
-      method: 'POST', headers: { 'api-key': config.apiKey, 'content-type': 'application/json' },
-      body: JSON.stringify({ recipient: message.recipient, sender: config.sender, content, type: 'transactional' }),
-    })
-    return await providerOutcome(response)
-  } catch { return { attempted: true, status: 'transport' } }
+    const content = composeBrevoLifecycleSms(message)
+    const body = JSON.stringify({ recipient: message.recipient, sender: config.sender, content, type: 'transactional' })
+    return requestSms(config, body, fetcher)
+  } catch { return { attempted: false, status: 'invalid-request' } }
 }

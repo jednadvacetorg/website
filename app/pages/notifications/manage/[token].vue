@@ -2,6 +2,10 @@
 type Frequency = 'created' | 'week-before' | 'day-before'
 type Community = { slug: string, title: string, frequencies: Frequency[] }
 type ManagementResult = { state: 'active' | 'pending-reactivation', channel: 'email' | 'sms' | 'web-push', maskedContact: string, communities: Community[] } | { state: 'unavailable' }
+type ManagementMutationResult =
+  | { outcome: 'saved' | 'removed' | 'reactivated', management: Exclude<ManagementResult, { state: 'unavailable' }> }
+  | { outcome: 'stopped' }
+  | { outcome: 'unavailable' }
 
 const route = useRoute()
 const heading = useTemplateRef<HTMLElement>('heading')
@@ -10,6 +14,7 @@ const stopOpen = ref(false)
 const stopped = ref(false)
 const statusMessage = ref<string | null>(null)
 const errorMessage = ref<string | null>(null)
+const stopError = ref<string | null>(null)
 const pendingRows = ref(new Set<string>())
 const rowDrafts = ref<Record<string, Frequency[]>>({})
 const isStopping = ref(false)
@@ -17,6 +22,8 @@ const isReactivating = ref(false)
 const recoveryChannel = ref<'email' | 'sms'>('email')
 const recoveryContact = ref('')
 const recoveryChallenge = ref('')
+const recoveryChallengeRevision = ref(0)
+const { public: publicConfig } = useRuntimeConfig()
 const recoveryNeedsChallenge = ref(false)
 const recoveryMessage = ref<string | null>(null)
 const recoveryError = ref<string | null>(null)
@@ -55,10 +62,16 @@ const toggleDraftFrequency = (community: Community, frequency: Frequency, checke
   }
 }
 
-const updateResult = (next: ManagementResult) => {
-  if (isAvailable.value && next.state === 'unavailable') stopped.value = true
+const updateResult = (next: Exclude<ManagementResult, { state: 'unavailable' }>) => {
   result.value = next
   rowDrafts.value = {}
+}
+
+const showUnavailable = () => {
+  result.value = { state: 'unavailable' }
+  rowDrafts.value = {}
+  pendingRows.value = new Set()
+  stopOpen.value = false
 }
 
 const recoveryInputType = computed(() => recoveryChannel.value === 'email' ? 'email' : 'tel')
@@ -72,8 +85,17 @@ const switchRecoveryChannel = (channel: string) => {
   recoveryNeedsChallenge.value = false
   recoveryError.value = null
 }
+watch([recoveryChannel, recoveryContact], () => {
+  recoveryChallenge.value = ''
+  recoveryChallengeRevision.value++
+  isRecovering.value = false
+  recoveryMessage.value = null
+}, { flush: 'sync' })
+onBeforeUnmount(() => { recoveryChallengeRevision.value++ })
 
 const requestRecovery = async () => {
+  if (isRecovering.value || (recoveryNeedsChallenge.value && !recoveryChallenge.value)) return
+  const revision = recoveryChallengeRevision.value
   const valid = recoveryChannel.value === 'email'
     ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recoveryContact.value)
     : /^\+[1-9]\d{6,14}$/.test(recoveryContact.value)
@@ -87,28 +109,38 @@ const requestRecovery = async () => {
   try {
     const response = await $fetch<{ message: string }>('/api/notifications/manage-request', {
       method: 'POST',
+      retry: 0,
       body: {
         channel: recoveryChannel.value,
         contact: recoveryContact.value,
         ...(recoveryNeedsChallenge.value ? { turnstileToken: recoveryChallenge.value } : {}),
       },
     })
+    if (revision !== recoveryChallengeRevision.value) return
     recoveryMessage.value = response.message
+    recoveryNeedsChallenge.value = false
   } catch (error: unknown) {
+    if (revision !== recoveryChallengeRevision.value) return
     const status = typeof error === 'object' && error && 'statusCode' in error ? error.statusCode : undefined
     if (status === 403) recoveryNeedsChallenge.value = true
+    else if (status === 429) recoveryError.value = 'Počkej alespoň minutu od posledního pokusu a pak požadavek zkus znovu.'
     else recoveryError.value = 'Odkaz se teď nepodařilo odeslat. Zkus to prosím později.'
   } finally {
-    isRecovering.value = false
+    if (revision === recoveryChallengeRevision.value) {
+      isRecovering.value = false
+      recoveryChallenge.value = ''
+      recoveryChallengeRevision.value++
+    }
   }
 }
 
 const mutate = async (body: Record<string, unknown>) => {
   errorMessage.value = null
+  statusMessage.value = null
   try {
-    return await $fetch<ManagementResult>(`/api/notifications/manage/${encodeURIComponent(String(route.params.token ?? ''))}`, { method: 'POST', body })
+    return await $fetch<ManagementMutationResult>(`/api/notifications/manage/${encodeURIComponent(String(route.params.token ?? ''))}`, { method: 'POST', body })
   } catch {
-    errorMessage.value = 'Nastavení se teď nepodařilo uložit. Nic jsme nezměnili. Zkus to prosím znovu.'
+    errorMessage.value = 'Nastavení se teď nepodařilo uložit. Zkus to prosím znovu.'
     return null
   }
 }
@@ -117,9 +149,11 @@ const saveCommunity = async (community: Community, frequencies: Frequency[]) => 
   if (!frequencies.length) return
   pendingRows.value = new Set([...pendingRows.value, community.slug])
   const next = await mutate({ action: 'update-frequencies', communitySlug: community.slug, frequencies })
-  if (next) {
-    updateResult(next)
+  if (next?.outcome === 'saved') {
+    updateResult(next.management)
     statusMessage.value = 'Nastavení jsme uložili.'
+  } else if (next?.outcome === 'unavailable') {
+    showUnavailable()
   }
   pendingRows.value = new Set([...pendingRows.value].filter(slug => slug !== community.slug))
 }
@@ -127,16 +161,28 @@ const saveCommunity = async (community: Community, frequencies: Frequency[]) => 
 const removeCommunity = async (community: Community) => {
   pendingRows.value = new Set([...pendingRows.value, community.slug])
   const next = await mutate({ action: 'remove-community', communitySlug: community.slug })
-  if (next) updateResult(next)
+  if (next?.outcome === 'removed') {
+    updateResult(next.management)
+    statusMessage.value = 'Komunitu jsme odebrali.'
+  } else if (next?.outcome === 'stopped') {
+    stopped.value = true
+  } else if (next?.outcome === 'unavailable') {
+    showUnavailable()
+  }
   pendingRows.value = new Set([...pendingRows.value].filter(slug => slug !== community.slug))
 }
 
 const stopChannel = async () => {
   isStopping.value = true
+  stopError.value = null
   const next = await mutate({ action: 'stop-channel' })
-  if (next) {
-    updateResult(next)
+  if (next?.outcome === 'stopped') {
+    stopped.value = true
     stopOpen.value = false
+  } else if (next?.outcome === 'unavailable') {
+    showUnavailable()
+  } else if (errorMessage.value) {
+    stopError.value = errorMessage.value
   }
   isStopping.value = false
 }
@@ -144,9 +190,11 @@ const stopChannel = async () => {
 const reactivate = async () => {
   isReactivating.value = true
   const next = await mutate({ action: 'confirm-reactivation' })
-  if (next) {
-    updateResult(next)
+  if (next?.outcome === 'reactivated') {
+    updateResult(next.management)
     statusMessage.value = 'Odběr je znovu aktivní.'
+  } else if (next?.outcome === 'unavailable') {
+    showUnavailable()
   }
   isReactivating.value = false
 }
@@ -172,13 +220,11 @@ onMounted(() => heading.value?.focus())
           <UFormField name="channel" label="Kanál">
             <USelect :model-value="recoveryChannel" :items="[{ label: 'E-mail', value: 'email' }, { label: 'SMS', value: 'sms' }]" @update:model-value="switchRecoveryChannel" />
           </UFormField>
-          <UFormField name="contact" :label="recoveryInputLabel" :error="recoveryError ?? undefined">
+          <UFormField name="contact" :label="recoveryInputLabel">
             <UInput v-model="recoveryContact" name="recovery-contact" :type="recoveryInputType" :autocomplete="recoveryInputType" class="min-h-11" />
           </UFormField>
-          <UFormField v-if="recoveryNeedsChallenge" name="turnstileToken" label="Ověřovací kód">
-            <UInput v-model="recoveryChallenge" name="turnstile-token" class="min-h-11" />
-          </UFormField>
-          <UButton type="submit" color="neutral" class="min-h-11 w-full sm:w-auto" :loading="isRecovering" :disabled="isRecovering">Poslat odkaz pro správu</UButton>
+          <NotificationChallenge v-if="recoveryNeedsChallenge" v-model="recoveryChallenge" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="recoveryChallengeRevision" />
+          <UButton type="submit" color="neutral" class="min-h-11 w-full sm:w-auto" :loading="isRecovering" :disabled="isRecovering || (recoveryNeedsChallenge && !recoveryChallenge)">Poslat odkaz pro správu</UButton>
         </UForm>
         <div aria-live="polite">
           <UAlert v-if="recoveryMessage" color="success" :title="recoveryMessage" />
@@ -246,6 +292,7 @@ onMounted(() => heading.value?.focus())
       <UModal v-model:open="stopOpen" title="Ukončit odběr" @after:leave="focusStopTrigger">
         <template #body>
           <p>Opravdu chceš ukončit odběr {{ channelLabel }}? Přestaneme ti posílat všechna upozornění v tomto kanálu.</p>
+          <UAlert v-if="stopError" class="my-4" color="error" icon="i-lucide-circle-alert" :title="stopError" />
         </template>
         <template #footer>
           <UButton color="neutral" variant="outline" :disabled="isStopping" @click="stopOpen = false">Neukončovat</UButton>

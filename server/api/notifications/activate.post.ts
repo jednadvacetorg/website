@@ -3,6 +3,7 @@ import { evaluateNotificationAbuse } from '../../utils/notificationAbuse.ts'
 import { activateNotificationChannel, NotificationLifecycleError, validateNotificationActivation, type NotificationDatabase, type NotificationLifecycleConfig } from '../../utils/notifications.ts'
 import { notificationConfig } from '../../utils/notificationConfig.ts'
 import { notificationUiVerificationDecision } from '../../utils/notificationUiVerificationFixture.ts'
+import { publishPendingNotificationPointers, type NotificationMessagesQueue } from '../../utils/notificationMessagesQueue.ts'
 
 const isFixtureActivationInput = (value: Record<string, unknown>, channel: 'email' | 'sms') =>
   value.channel === channel
@@ -45,7 +46,20 @@ export default defineEventHandler(async (event) => {
     })
   }
   try {
-    return await activateNotificationChannel(input, { database, config })
+    const result = await activateNotificationChannel(input, { database, config })
+    const queue = (event.context._platform as { cloudflare?: { env?: { NOTIFICATION_MESSAGES_QUEUE?: NotificationMessagesQueue } } } | undefined)?.cloudflare?.env?.NOTIFICATION_MESSAGES_QUEUE
+    const publication = Promise.resolve().then(async () => {
+      if (!queue?.send) throw new Error('Notification Queue unavailable')
+      await publishPendingNotificationPointers(queue, { database, config }, { lifecycleLimit: 100, eventLimit: 0, budgetMs: 5000 })
+    }).catch(() => { console.error('[notifications] Lifecycle pointer publication failed') })
+    try {
+      if (typeof event.waitUntil === 'function') event.waitUntil(publication)
+      else await publication
+    } catch {
+      console.error('[notifications] Lifecycle pointer publication registration failed')
+      await publication
+    }
+    return result
   } catch (error) {
     const statusCode = error instanceof NotificationLifecycleError ? error.statusCode : 503
     throw createError({ statusCode, statusMessage: 'Notification activation is unavailable' })

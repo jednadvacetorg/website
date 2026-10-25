@@ -55,7 +55,10 @@ interface SubscriptionRow { community_slug: string, frequency: NotificationFrequ
 interface SuppressionRow { id: number, destination_hash: string }
 export interface NotificationManagementCommunity { slug: string, title: string, frequencies: NotificationFrequency[] }
 export type NotificationManagementResult = { state: 'active' | 'pending-reactivation', channel: NotificationChannel, maskedContact: string, communities: NotificationManagementCommunity[] } | { state: 'unavailable' }
-export interface DeliveryEligibilityInput { channel: NotificationChannel, contactFingerprint: string, communitySlug: string, frequency: NotificationFrequency, now: Date }
+export type NotificationManagementMutationResult =
+  | { outcome: 'saved' | 'removed' | 'reactivated', management: Exclude<NotificationManagementResult, { state: 'unavailable' }> }
+  | { outcome: 'stopped' }
+  | { outcome: 'unavailable' }
 
 const encoder = new TextEncoder()
 const channels = new Set<NotificationChannel>(['email', 'sms', 'web-push'])
@@ -66,6 +69,13 @@ const defaultCrypto = (): NotificationCrypto => ({ randomBytes: length => crypto
 const asBufferSource = (value: Uint8Array) => value as unknown as BufferSource
 const nowIso = (dependencies: NotificationDependencies) => (dependencies.now?.() ?? new Date()).toISOString()
 const unavailable: NotificationManagementResult = { state: 'unavailable' }
+const unavailableMutation: NotificationManagementMutationResult = { outcome: 'unavailable' }
+const changed = (results: unknown, index: number) => {
+  const result = Array.isArray(results) ? results[index] : undefined
+  if (!result || typeof result !== 'object' || !('meta' in result)) return 0
+  const meta = result.meta
+  return meta && typeof meta === 'object' && 'changes' in meta && typeof meta.changes === 'number' ? meta.changes : 0
+}
 
 export const normalizeNotificationContact = (channel: NotificationChannel, value: unknown, now = new Date()) => {
   if (channel === 'web-push') {
@@ -97,9 +107,13 @@ export const notificationSchemaReady = async (database: NotificationDatabase) =>
   try {
     await database.prepare(`SELECT d.channel, d.community_slug, d.eligibility_frequency, d.expected_capability_generation,
       o.kind, o.version, o.claim_token, o.claim_expires_at, c.capability_generation,
-      cap.token_digest, cap.expires_at, e.notification_revision
+      cap.token_digest, cap.expires_at, e.notification_revision,
+      o.email_destination_hash, o.email_provider_message_id, o.email_delivery_status,
+      o.email_attempted_at, o.email_attempt_version, cb.receipt_key, cb.outbox_id,
+      cb.attempt_version, cb.event, cb.provider_message_id, cb.received_at
       FROM notification_event_deliveries d, notification_outbox o, notification_contacts c,
-      notification_management_capabilities cap, notification_event_state e WHERE 0`).all()
+      notification_management_capabilities cap, notification_event_state e,
+      notification_lifecycle_email_callbacks cb WHERE 0`).all()
     return true
   } catch { return false }
 }
@@ -145,7 +159,12 @@ export const activateNotificationChannel = async (input: unknown, dependencies: 
   const suppression = await database.prepare('SELECT id, destination_hash FROM notification_suppressions WHERE channel = ? AND destination_hash = ?').bind(parsed.channel, destinationHash).first<SuppressionRow>()
   const existing = await database.prepare('SELECT id, channel, destination, destination_hash, management_token_digest, state, capability_generation FROM notification_contacts WHERE channel = ? AND destination = ?').bind(parsed.channel, parsed.contact).first<ContactRow>()
   if (existing && !suppression) {
-    await database.batch(parsed.communitySlugs.flatMap(community => authorizedSubscriptionReplacement(existing, community, parsed.selectedFrequencies, database, now)))
+    const authority = contactAuthority(existing, existing.state)
+    const results = await database.batch([
+      database.prepare(`UPDATE notification_contacts SET updated_at = updated_at WHERE ${authority.clause}`).bind(...authority.values),
+      ...parsed.communitySlugs.flatMap(community => authorizedSubscriptionReplacement(existing, community, parsed.selectedFrequencies, database, now)),
+    ])
+    if (changed(results, 0) !== 1) throw new NotificationLifecycleError('Notification activation is unavailable', 409)
     return { state: existing.state === 'active' ? 'updated' : 'pending-reactivation' }
   }
   const token = toBase64Url(cryptoApi.randomBytes(32))
@@ -155,22 +174,34 @@ export const activateNotificationChannel = async (input: unknown, dependencies: 
     const rotating: ContactRow = { ...existing, management_token_digest: tokenDigest, state: 'pending-reactivation', capability_generation: generation }
     const previous = contactAuthority(existing, existing.state)
     const current = contactAuthority(rotating, rotating.state)
-    await database.batch([
+    const results = await database.batch([
       database.prepare(`UPDATE notification_contacts SET management_token_digest = ?, capability_generation = ?, state = ?, consent_at = ?, consent_version = ?, updated_at = ? WHERE ${previous.clause}`).bind(tokenDigest, generation, 'pending-reactivation', parsed.consentAt, parsed.consentVersion, now, ...previous.values),
       database.prepare(`UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = ? AND status IN (?, ?, ?) AND EXISTS (SELECT 1 FROM notification_contacts WHERE ${current.clause})`).bind('invalidated', now, now, existing.id, 'pending', 'queued', 'claimed', ...current.values),
       ...parsed.communitySlugs.flatMap(community => authorizedSubscriptionReplacement(rotating, community, parsed.selectedFrequencies, database, now)),
       await outboxStatement(rotating, token, 'reactivation', dependencies, now),
     ])
+    if (changed(results, 0) !== 1) throw new NotificationLifecycleError('Notification activation is unavailable', 409)
     return { state: 'pending-reactivation' }
   }
-  const kind = suppression ? 'reactivation' : 'first-activation'
-  const encrypted = await encrypt(JSON.stringify({ destination: parsed.contact, capability: token, kind }), config.outboxTransportKey, cryptoApi)
-  await database.batch([
-    database.prepare('INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(parsed.channel, parsed.contact, suppression?.destination_hash ?? destinationHash, tokenDigest, 1, suppression ? 'pending-reactivation' : 'active', parsed.consentAt, parsed.consentVersion, now, now),
-    ...parsed.communitySlugs.flatMap(community => parsed.selectedFrequencies.map(frequency => database.prepare('INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) SELECT id, ?, ?, ?, ? FROM notification_contacts WHERE channel = ? AND destination = ?').bind(community, frequency, now, now, parsed.channel, parsed.contact))),
-    database.prepare('INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, kind, created_at, updated_at) SELECT ?, id, ?, ?, ?, ?, ?, ?, ?, ? FROM notification_contacts WHERE channel = ? AND destination = ?').bind(opaqueId(cryptoApi), 1, 1, 'pending', encrypted.ciphertext, encrypted.iv, kind, now, now, parsed.channel, parsed.contact),
+  const firstActivation = await encrypt(JSON.stringify({ destination: parsed.contact, capability: token, kind: 'first-activation' }), config.outboxTransportKey, cryptoApi)
+  const reactivation = await encrypt(JSON.stringify({ destination: parsed.contact, capability: token, kind: 'reactivation' }), config.outboxTransportKey, cryptoApi)
+  const results = await database.batch([
+    database.prepare(`INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at)
+      SELECT ?, ?, ?, ?, ?, CASE WHEN EXISTS (SELECT 1 FROM notification_suppressions WHERE channel = ? AND destination_hash = ?) THEN 'pending-reactivation' ELSE 'active' END, ?, ?, ?, ?
+      WHERE NOT EXISTS (SELECT 1 FROM notification_contacts WHERE channel = ? AND destination = ?)`)
+      .bind(parsed.channel, parsed.contact, destinationHash, tokenDigest, 1, parsed.channel, destinationHash, parsed.consentAt, parsed.consentVersion, now, now, parsed.channel, parsed.contact),
+    ...parsed.communitySlugs.flatMap(community => parsed.selectedFrequencies.map(frequency => database.prepare(`INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at)
+      SELECT id, ?, ?, ?, ? FROM notification_contacts WHERE channel = ? AND destination = ? AND management_token_digest = ?`).bind(community, frequency, now, now, parsed.channel, parsed.contact, tokenDigest))),
+    database.prepare(`INSERT INTO notification_outbox (id, contact_id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, kind, created_at, updated_at)
+      SELECT ?, id, ?, ?, ?, CASE WHEN state = 'pending-reactivation' THEN ? ELSE ? END, CASE WHEN state = 'pending-reactivation' THEN ? ELSE ? END,
+      CASE WHEN state = 'pending-reactivation' THEN 'reactivation' ELSE 'first-activation' END, ?, ?
+      FROM notification_contacts WHERE channel = ? AND destination = ? AND management_token_digest = ?`)
+      .bind(opaqueId(cryptoApi), 1, 1, 'pending', reactivation.ciphertext, firstActivation.ciphertext, reactivation.iv, firstActivation.iv, now, now, parsed.channel, parsed.contact, tokenDigest),
   ])
-  return { state: suppression ? 'pending-reactivation' : 'active' }
+  if (changed(results, 0) !== 1) throw new NotificationLifecycleError('Notification activation is unavailable', 409)
+  const activated = await database.prepare('SELECT state FROM notification_contacts WHERE channel = ? AND destination = ? AND management_token_digest = ?').bind(parsed.channel, parsed.contact, tokenDigest).first<{ state: ContactRow['state'] }>()
+  if (!activated) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
+  return { state: activated.state === 'pending-reactivation' ? 'pending-reactivation' : 'active' }
 }
 
 /** Validates the public recovery payload before its shared abuse policy can reach subscriber state. */
@@ -244,58 +275,61 @@ const authorizedSubscriptionReplacement = (contact: ContactRow, community: strin
     ...selectedFrequencies.map(frequency => database.prepare(`INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM notification_contacts WHERE ${authority.clause})`).bind(contact.id, community, frequency, now, now, ...authority.values)),
   ]
 }
-export const updateNotificationFrequencies = async (token: unknown, community: unknown, selected: unknown, dependencies: NotificationDependencies) => {
+export const updateNotificationFrequencies = async (token: unknown, community: unknown, selected: unknown, dependencies: NotificationDependencies): Promise<NotificationManagementMutationResult> => {
   const input = parseManagement(community, selected, dependencies.config)
   const contact = await findContact(token, dependencies)
-  if (!contact || contact.state !== 'active') return unavailable
-  await dependencies.database.batch(authorizedSubscriptionReplacement(contact, input.community, input.frequencies, dependencies.database, nowIso(dependencies)))
-  return readNotificationManagement(token, dependencies)
+  if (!contact || contact.state !== 'active') return unavailableMutation
+  const authority = contactAuthority(contact, contact.state)
+  const results = await dependencies.database.batch([
+    dependencies.database.prepare(`UPDATE notification_contacts SET updated_at = updated_at WHERE ${authority.clause}`).bind(...authority.values),
+    ...authorizedSubscriptionReplacement(contact, input.community, input.frequencies, dependencies.database, nowIso(dependencies)),
+  ])
+  if (changed(results, 0) !== 1) return unavailableMutation
+  const management = await readNotificationManagement(token, dependencies)
+  return management.state === 'unavailable' ? unavailableMutation : { outcome: 'saved', management }
 }
-export const stopNotificationChannel = async (token: unknown, dependencies: NotificationDependencies): Promise<NotificationManagementResult> => {
+export const stopNotificationChannel = async (token: unknown, dependencies: NotificationDependencies): Promise<NotificationManagementMutationResult> => {
   const contact = await findContact(token, dependencies)
-  if (!contact) return unavailable
+  if (!contact) return unavailableMutation
   const now = nowIso(dependencies)
   const authority = contactAuthority(contact, contact.state)
-  await dependencies.database.batch([
+  const results = await dependencies.database.batch([
     dependencies.database.prepare(`UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = ? AND status IN (?, ?, ?) AND EXISTS (SELECT 1 FROM notification_contacts WHERE ${authority.clause})`).bind('invalidated', now, now, contact.id, 'pending', 'queued', 'claimed', ...authority.values),
     dependencies.database.prepare(`INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT channel, destination_hash, ?, ? FROM notification_contacts WHERE ${authority.clause} ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = excluded.reason, suppressed_at = excluded.suppressed_at`).bind('user-stop', now, ...authority.values),
     dependencies.database.prepare(`DELETE FROM notification_subscriptions WHERE contact_id = ? AND EXISTS (SELECT 1 FROM notification_contacts WHERE ${authority.clause})`).bind(contact.id, ...authority.values),
     dependencies.database.prepare(`DELETE FROM notification_contacts WHERE ${authority.clause}`).bind(...authority.values),
   ])
-  return unavailable
+  return changed(results, 3) === 1 ? { outcome: 'stopped' } : unavailableMutation
 }
 export const removeNotificationCommunity = async (token: unknown, community: unknown, dependencies: NotificationDependencies) => {
   if (typeof community !== 'string' || !dependencies.config.communitySlugs.includes(community)) throw new NotificationLifecycleError('Invalid notification management action')
   const contact = await findContact(token, dependencies)
-  if (!contact || contact.state !== 'active') return unavailable
+  if (!contact || contact.state !== 'active') return unavailableMutation
   const now = nowIso(dependencies)
   const authority = contactAuthority(contact, 'active')
-  await dependencies.database.batch([
+  const results = await dependencies.database.batch([
     dependencies.database.prepare(`DELETE FROM notification_subscriptions WHERE contact_id = ? AND community_slug = ? AND EXISTS (SELECT 1 FROM notification_contacts WHERE ${authority.clause})`).bind(contact.id, community, ...authority.values),
     dependencies.database.prepare(`UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = ? AND status IN (?, ?, ?) AND NOT EXISTS (SELECT 1 FROM notification_subscriptions WHERE contact_id = ?) AND EXISTS (SELECT 1 FROM notification_contacts WHERE ${authority.clause})`).bind('invalidated', now, now, contact.id, 'pending', 'queued', 'claimed', contact.id, ...authority.values),
     dependencies.database.prepare(`INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT channel, destination_hash, ?, ? FROM notification_contacts WHERE ${authority.clause} AND NOT EXISTS (SELECT 1 FROM notification_subscriptions WHERE contact_id = ?) ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = excluded.reason, suppressed_at = excluded.suppressed_at`).bind('user-stop', now, ...authority.values, contact.id),
     dependencies.database.prepare(`DELETE FROM notification_contacts WHERE ${authority.clause} AND NOT EXISTS (SELECT 1 FROM notification_subscriptions WHERE contact_id = ?)`).bind(...authority.values, contact.id),
   ])
-  return readNotificationManagement(token, dependencies)
+  if (changed(results, 3) === 1) return { outcome: 'stopped' } as const
+  if (changed(results, 0) < 1) return unavailableMutation
+  const management = await readNotificationManagement(token, dependencies)
+  return management.state === 'unavailable' ? unavailableMutation : { outcome: 'removed', management }
 }
-export const confirmNotificationReactivation = async (token: unknown, dependencies: NotificationDependencies): Promise<NotificationManagementResult> => {
+export const confirmNotificationReactivation = async (token: unknown, dependencies: NotificationDependencies): Promise<NotificationManagementMutationResult> => {
   const contact = await findContact(token, dependencies)
-  if (!contact || contact.state !== 'pending-reactivation') return unavailable
+  if (!contact || contact.state !== 'pending-reactivation') return unavailableMutation
   const suppression = await dependencies.database.prepare("SELECT id FROM notification_suppressions WHERE channel = ? AND destination_hash = ? AND reason = 'user-stop'").bind(contact.channel, contact.destination_hash).first<{ id: number }>()
-  if (!suppression) return unavailable
+  if (!suppression) return unavailableMutation
   const now = nowIso(dependencies)
   const authority = contactAuthority(contact, 'pending-reactivation')
-  await dependencies.database.batch([
+  const results = await dependencies.database.batch([
     dependencies.database.prepare(`UPDATE notification_contacts SET state = ?, updated_at = ? WHERE ${authority.clause} AND EXISTS (SELECT 1 FROM notification_suppressions WHERE channel = ? AND destination_hash = ? AND reason = 'user-stop')`).bind('active', now, ...authority.values, contact.channel, contact.destination_hash),
     dependencies.database.prepare(`DELETE FROM notification_suppressions WHERE channel = ? AND destination_hash = ? AND reason = 'user-stop' AND EXISTS (SELECT 1 FROM notification_contacts WHERE ${contactAuthority({ ...contact, state: 'active' }, 'active').clause})`).bind(contact.channel, contact.destination_hash, ...contactAuthority({ ...contact, state: 'active' }, 'active').values),
   ])
-  return readNotificationManagement(token, dependencies)
+  if (changed(results, 0) !== 1) return unavailableMutation
+  const management = await readNotificationManagement(token, dependencies)
+  return management.state === 'unavailable' ? unavailableMutation : { outcome: 'reactivated', management }
 }
-export const isDeliveryEligible = async ({ channel, contactFingerprint, communitySlug, frequency }: DeliveryEligibilityInput, dependencies: NotificationDependencies) => {
-  if (!channels.has(channel) || !frequencies.has(frequency) || !dependencies.config.communitySlugs.includes(communitySlug) || !isNotificationChannelReady(channel, dependencies.config)) return false
-  const contact = await dependencies.database.prepare('SELECT id FROM notification_contacts WHERE channel = ? AND destination_hash = ? AND state = ?').bind(channel, contactFingerprint, 'active').first<{ id: number }>()
-  if (!contact) return false
-  if (await dependencies.database.prepare('SELECT id FROM notification_suppressions WHERE channel = ? AND destination_hash = ?').bind(channel, contactFingerprint).first<{ id: number }>()) return false
-  return Boolean(await dependencies.database.prepare('SELECT id FROM notification_subscriptions WHERE contact_id = ? AND community_slug = ? AND frequency = ?').bind(contact.id, communitySlug, frequency).first<{ id: number }>())
-}
-export const isNotificationDeliveryEligible = async (channel: NotificationChannel, contactFingerprint: string, communitySlug: string, frequency: NotificationFrequency, dependencies: NotificationDependencies) => isDeliveryEligible({ channel, contactFingerprint, communitySlug, frequency, now: dependencies.now?.() ?? new Date() }, dependencies)

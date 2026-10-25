@@ -1,21 +1,21 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { parseWebPushSubscription, serializeWebPushSubscription } from '../server/utils/webPushSubscriptions.ts'
+import { parseWebPushSubscription } from '../server/utils/webPushSubscriptions.ts'
 
 const encode = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 const subscription = { endpoint: 'https://push.example.test/subscription', keys: { p256dh: 'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4', auth: encode(new Uint8Array(16).fill(2)) } }
 
 test('canonicalizes one exact HTTPS PushSubscription shape', () => {
   assert.deepEqual(parseWebPushSubscription(subscription), subscription)
-  assert.equal(serializeWebPushSubscription({ keys: { auth: subscription.keys.auth, p256dh: subscription.keys.p256dh }, endpoint: subscription.endpoint }), serializeWebPushSubscription(subscription))
+  assert.deepEqual(parseWebPushSubscription({ keys: { auth: subscription.keys.auth, p256dh: subscription.keys.p256dh }, endpoint: subscription.endpoint }), subscription)
 })
 
 test('native browser JSON expiration validates without changing destination identity', () => {
   const now = new Date('2026-10-04T12:00:00Z')
   for (const expirationTime of [null, now.getTime() + 1000]) {
     assert.deepEqual(parseWebPushSubscription({ ...subscription, expirationTime }, now), subscription)
-    assert.equal(serializeWebPushSubscription({ keys: subscription.keys, expirationTime: null, endpoint: subscription.endpoint }), serializeWebPushSubscription(subscription))
+    assert.deepEqual(parseWebPushSubscription({ keys: subscription.keys, expirationTime, endpoint: subscription.endpoint }, now), subscription)
   }
   for (const expirationTime of [undefined, -1, now.getTime(), NaN, Infinity, 'future', {}, 8.64e15 + 1]) assert.throws(() => parseWebPushSubscription({ ...subscription, expirationTime }, now))
   assert.throws(() => parseWebPushSubscription({ ...subscription, expirationTime: null, extra: true }))

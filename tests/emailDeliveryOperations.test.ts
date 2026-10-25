@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test, { type TestContext } from 'node:test'
@@ -25,7 +26,7 @@ const Database = createRequire(import.meta.url)('better-sqlite3') as new (filena
 const now = Date.parse('2026-10-04T12:00:00Z')
 const day = 86_400_000
 const sha = (value: string) => createHash('sha256').update(value).digest('hex')
-const sentinels = ['private-api-key', 'private-callback-bearer', 'private-cloudflare-token', 'suppression@example.test', 'final@example.test', 'private-provider-body', 'private-command-error', 'A'.repeat(43), 'message_123456789', 'callback_event_123456', 'final_delivery_123456']
+const sentinels = ['private-api-key', 'private-callback-bearer', 'private-cloudflare-token', 'suppression@example.test', 'final@example.test', 'private-provider-body', 'private-command-error', 'A'.repeat(43), 'callback_event_123456', 'final_delivery_123456', '201798300811.5787683@relay.domain.com']
 const safe = (value: unknown) => { for (const sentinel of sentinels) assert.ok(!String(typeof value === 'string' ? value : JSON.stringify(value)).includes(sentinel), sentinel) }
 
 if (process.env.NOTIFICATION_CONFIG_ISOLATION === 'true') test('generated notification configuration production/preview isolation and negative controls', async () => {
@@ -35,6 +36,21 @@ if (process.env.NOTIFICATION_CONFIG_ISOLATION === 'true') test('generated notifi
   const preview = JSON.parse(await readFile(process.env.NOTIFICATION_PREVIEW_CONFIG, 'utf8'))
   operations.validateNotificationDeploymentConfiguration(production, 'production')
   operations.validateNotificationDeploymentConfiguration(preview, 'preview')
+  assert.ok(production.triggers.crons.includes('* * * * *'), 'minute publication cron is required')
+  assert.ok(production.triggers.crons.includes('13 * * * *'), 'hourly planner cron is retained')
+  for (const cron of ['* * * * *', '13 * * * *']) {
+    const withoutCron = structuredClone(production)
+    withoutCron.triggers.crons = withoutCron.triggers.crons.filter((value: string) => value !== cron)
+    assert.throws(() => {
+      operations.validateNotificationDeploymentConfiguration(withoutCron, 'production')
+      assert.ok(withoutCron.triggers.crons.includes('* * * * *'), 'minute publication cron is required')
+    })
+  }
+  for (const field of ['producers', 'consumers']) {
+    const withoutQueue = structuredClone(production)
+    withoutQueue.queues[field] = withoutQueue.queues[field].filter((binding: { queue: string }) => binding.queue !== 'notification-messages')
+    assert.throws(() => operations.validateNotificationDeploymentConfiguration(withoutQueue, 'production'), field === 'producers' ? /queue/ : /dlq/)
+  }
   const withoutDlq = structuredClone(production)
   delete withoutDlq.queues.consumers.find((binding: { queue: string }) => binding.queue === 'notification-messages').dead_letter_queue
   assert.throws(() => operations.validateNotificationDeploymentConfiguration(withoutDlq, 'production'), /dlq/)
@@ -52,8 +68,13 @@ if (process.env.NOTIFICATION_CONFIG_ISOLATION === 'true') test('generated notifi
   assert.throws(() => operations.validateNotificationDeploymentConfiguration(withoutLogs, 'production'), /observability/)
 })
 
-const fixture = async (t: TestContext) => {
-  const directory = await mkdtemp('/tmp/email-operations-')
+const fixture = async (t: TestContext, contract: {
+  responseId?: unknown
+  storedId?: string
+  deliver?: boolean
+  callback?: (payload: Record<string, unknown>) => Record<string, unknown>
+} = {}) => {
+  const directory = await mkdtemp(join(tmpdir(), 'email-operations-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const config = {
     name: 'jednadvacetorg-web', main: 'index.mjs',
@@ -62,9 +83,9 @@ const fixture = async (t: TestContext) => {
     triggers: { crons: ['13 * * * *'] }, observability: { logs: { enabled: true, persist: true, invocation_logs: true } },
   }
   const configBytes = JSON.stringify(config)
-  const migrationNames = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_phase_7_constraints']
+  const migrationNames = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']
   const migrationBytes = await Promise.all(migrationNames.map(name => readFile(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')))
-  const migrationPaths = ['migration.sql', 'columns.sql', 'constraints.sql']
+  const migrationPaths = ['migration.sql', 'columns.sql', 'detach.sql', 'constraints.sql', 'restore.sql', 'lifecycle-columns.sql', 'lifecycle-constraints.sql']
   const moduleBytes = 'import "./chunk.mjs"; export default {}'
   const chunkBytes = 'export const message = "candidate"'
   const manifestBytes = '{"/asset.css":{"hash":"asset-byte-hash","size":12}}'
@@ -89,7 +110,8 @@ const fixture = async (t: TestContext) => {
   for (const sql of migrationBytes) sqlite.exec(sql)
   sqlite.exec('PRAGMA foreign_keys = ON; CREATE TABLE _hub_migrations (name TEXT);')
   for (const name of migrationNames) sqlite.prepare('INSERT INTO _hub_migrations VALUES (?)').run(name)
-  sqlite.exec("INSERT INTO notification_contacts (id, channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (1, 'email', 'suppression@example.test', 'synthetic-hash', 'synthetic-digest', 1, 'active', '2026-10-04', '1', '2026-10-04', '2026-10-04'); INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, provider_message_id, created_at, updated_at) VALUES ('suppression_delivery_123', 1, 1, 'synthetic-hash', 'synthetic-event', 0, 'created', 'submitted', 'message_123456789', '2026-10-04', '2026-10-04'); INSERT INTO notification_outbox (id, contact_id, expected_capability_generation, version, status, payload_ciphertext, payload_iv, kind, created_at, updated_at) VALUES ('outbox_123456789', 1, 1, 1, 'queued', 'encrypted', 'iv', 'event-email', '2026-10-04', '2026-10-04');")
+  sqlite.exec("INSERT INTO notification_contacts (id, channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (1, 'email', 'suppression@example.test', 'synthetic-hash', 'synthetic-digest', 1, 'active', '2026-10-04', '1', '2026-10-04', '2026-10-04'); INSERT INTO notification_outbox (id, contact_id, expected_capability_generation, version, status, payload_ciphertext, payload_iv, kind, created_at, updated_at) VALUES ('outbox_123456789', 1, 1, 1, 'queued', 'encrypted', 'iv', 'event-email', '2026-10-04', '2026-10-04');")
+  sqlite.prepare("INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, provider_message_id, created_at, updated_at) VALUES ('suppression_delivery_123', 1, 1, 'synthetic-hash', 'synthetic-event', 0, 'created', 'submitted', ?, '2026-10-04', '2026-10-04')").run(contract.storedId ?? '201798300811.5787683@relay.domain.com')
   sqlite.exec("INSERT INTO notification_contacts (id, channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (2, 'email', 'final@example.test', 'final-hash', 'final-digest', 1, 'active', '2026-10-04', '1', '2026-10-04', '2026-10-04'); INSERT INTO notification_event_deliveries (id, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, provider_message_id, created_at, updated_at) VALUES ('final_delivery_123456', 2, 1, 'final-hash', 'final-event', 0, 'created', 'pending', NULL, '2026-10-04', '2026-10-04')")
   const executions = new WeakMap<NotificationStatement, () => unknown>()
   const database: NotificationDatabase = {
@@ -159,17 +181,20 @@ const fixture = async (t: TestContext) => {
       assert.equal(init.redirect, 'error')
       if (url === expected.callbackUrl) {
         try {
-          await processBrevoCallbackBody(String(init.body), environment.NUXT_BREVO_CALLBACK_SECRET, new Headers(init.headers).get('authorization') ?? undefined, database)
+          const payload = JSON.parse(String(init.body))
+          const body = contract.callback && payload['X-Mailin-custom'] === environment.EMAIL_VERIFY_SUPPRESSION_DELIVERY_ID ? JSON.stringify(contract.callback(payload)) : String(init.body)
+          await processBrevoCallbackBody(body, environment.NUXT_BREVO_CALLBACK_SECRET, new Headers(init.headers).get('authorization') ?? undefined, database)
           return Response.json({ ok: true }, { status: 202 })
         } catch (error) { return Response.json({ error: 'private-provider-body' }, { status: (error as { statusCode: number }).statusCode }) }
       }
       if (url.endsWith('/api/notifications/readiness')) return Response.json({ email: publicEmail, sms: false, webPush: false }, { headers: { 'cache-control': 'no-store' } })
       if (url.endsWith('/v3/smtp/email')) {
         assert.equal(new Headers(init.headers).get('api-key'), environment.NUXT_BREVO_API_KEY)
-        if (sendStatus === 201 && new Headers(init.headers).get('X-Sib-Sandbox') !== 'drop') {
-          await processBrevoCallbackBody(JSON.stringify({ id: 'delivered_event_123456', event: 'delivered', 'X-Mailin-custom': environment.EMAIL_VERIFY_DELIVERY_ID, messageId: 'message_123456789' }), environment.NUXT_BREVO_CALLBACK_SECRET, `Bearer ${environment.NUXT_BREVO_CALLBACK_SECRET}`, database)
+        if (sendStatus === 201 && contract.deliver !== false && new Headers(init.headers).get('X-Sib-Sandbox') !== 'drop') {
+          const payload = { id: 26224, event: 'delivered', 'X-Mailin-custom': environment.EMAIL_VERIFY_DELIVERY_ID, 'message-id': contract.responseId ?? '<201798300811.5787683@relay.domain.com>', ts_event: 1_604_933_654 }
+          await processBrevoCallbackBody(JSON.stringify(contract.callback ? contract.callback(payload) : payload), environment.NUXT_BREVO_CALLBACK_SECRET, `Bearer ${environment.NUXT_BREVO_CALLBACK_SECRET}`, database)
         }
-        return Response.json({ messageId: 'message_123456789', extra: 'private-provider-body' }, { status: sendStatus })
+        return Response.json({ messageId: contract.responseId ?? '<201798300811.5787683@relay.domain.com>', extra: 'private-provider-body' }, { status: sendStatus })
       }
       if (url.endsWith(`/workers/scripts/${expected.worker}`)) {
         const form = new FormData()
@@ -453,6 +478,112 @@ test('callback dispatcher proves rejection, correlation, suppression and replay 
   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS count FROM notification_delivery_callbacks').get()!.count, 1)
   assert.equal(f.sqlite.prepare('SELECT status FROM notification_outbox').get()!.status, 'invalidated')
   safe(evidence)
+})
+
+for (const [label, responseId, storedId] of [
+  ['provider-id', 'provider-id', 'provider-id'],
+  ['official bracketed', '<201798300811.5787683@relay.domain.com>', '201798300811.5787683@relay.domain.com'],
+  ['official plain', '201798300811.5787683@relay.domain.com', '201798300811.5787683@relay.domain.com'],
+  ['punctuation and case', '<Provider.ID+Case/Part:tag=@Relay.Domain>', 'Provider.ID+Case/Part:tag=@Relay.Domain'],
+  ['256 UTF-8 bytes', 'ž'.repeat(128), 'ž'.repeat(128)],
+  ['256 wrapped UTF-8 bytes', `<${'ž'.repeat(127)}>`, 'ž'.repeat(127)],
+] as const) test(`offline CLI agrees with adapter and callback provider-ID contract: ${label}`, async t => {
+  let callbackCalls = 0
+  const f = await fixture(t, { responseId, storedId, callback: payload => {
+    // The real callback probe sends plain canonical IDs; replay an equivalent wrapper.
+    if (payload.event !== 'hard_bounce' || ++callbackCalls !== 3 || Buffer.byteLength(storedId) > 254) return payload
+    return { ...payload, 'message-id': `<${storedId}>` }
+  } })
+  for (const mode of ['sandbox', 'callback', 'live-canary'] as const) {
+    const evidence = await f.run(mode, { authorizeProbe: true })
+    assert.equal(evidence.evidenceKind, 'local-candidate')
+    assert.equal(evidence.gates[mode === 'live-canary' ? 'liveCanary' : mode], 'passed')
+    assert.equal(evidence.manualSwitch, false)
+    assert.equal(evidence.targetIdentity.length, 64)
+    assert.equal(evidence.bundleHash, f.expected.bundleHash)
+    assert.equal(evidence.migrationHash, f.expected.migrationHash)
+    assert.equal(evidence.configHash, f.expected.configHash)
+    assert.equal(Date.parse(evidence.expiresAt) - Date.parse(evidence.verifiedAt), day)
+    for (const gate of ['humanInbox', 'humanCalendar', 'humanLink', 'humanLogs'] as const) assert.equal(evidence.gates[gate], 'pending')
+    assert.ok(!JSON.stringify(evidence).includes(storedId))
+    safe(evidence)
+  }
+  assert.equal(f.requests.filter(request => request.url.endsWith('/smtp/email')).length, 2)
+  assert.equal(f.requests.filter(request => request.url === f.expected.callbackUrl).length, 4)
+  assert.deepEqual(f.sqlite.prepare('SELECT delivery_id, event, provider_message_id FROM notification_delivery_callbacks ORDER BY delivery_id').all(), [
+    { delivery_id: 'final_delivery_123456', event: 'delivered', provider_message_id: storedId },
+    { delivery_id: 'suppression_delivery_123', event: 'hard-bounce', provider_message_id: storedId },
+  ])
+  assert.deepEqual(f.sqlite.prepare('SELECT id, status, provider_message_id FROM notification_event_deliveries ORDER BY id').all(), [
+    { id: 'final_delivery_123456', status: 'delivered', provider_message_id: storedId },
+    { id: 'suppression_delivery_123', status: 'hard-bounce', provider_message_id: storedId },
+  ])
+  assert.deepEqual(f.sqlite.prepare('SELECT reason FROM notification_suppressions').all(), [{ reason: 'provider-bounce' }])
+  assert.deepEqual(f.sqlite.prepare('SELECT id FROM notification_contacts').all(), [{ id: 2 }])
+  assert.deepEqual(f.sqlite.prepare('SELECT status, payload_ciphertext, payload_iv FROM notification_outbox').get(), { status: 'invalidated', payload_ciphertext: null, payload_iv: null })
+})
+
+for (const [label, value] of [
+  ['257 UTF-8 bytes', `${'ž'.repeat(128)}x`],
+  ['257 wrapped UTF-8 bytes', `<${'ž'.repeat(127)}x>`],
+  ['257 ASCII bytes', 'x'.repeat(257)],
+  ['empty', ''], ['empty brackets', '<>'], ['unclosed', '<provider-id'], ['unopened', 'provider-id>'], ['nested', '<<provider-id>>'],
+  ['C0', 'provider\u0000id'], ['newline', 'provider\nid'], ['DEL', 'provider\u007fid'], ['C1', 'provider\u0085id'],
+] as const) test(`offline CLI rejects unsupported provider ID without evidence: ${label}`, async t => {
+  for (const mode of ['sandbox', 'callback', 'live-canary'] as const) {
+    const f = await fixture(t, { responseId: value, storedId: value, deliver: false })
+    const before = f.sqlite.prepare('SELECT * FROM notification_event_deliveries').all()
+    await assert.rejects(f.run(mode, { authorizeProbe: true }), error => {
+      safe(String(error))
+      assert.equal(String(error), `Error: Email verification failed: ${mode === 'callback' ? 'callback-probe' : 'send'}`)
+      return true
+    })
+    assert.equal(f.requests.filter(request => request.url.endsWith('/smtp/email')).length, mode === 'callback' ? 0 : 1)
+    assert.equal(f.requests.filter(request => request.url === f.expected.callbackUrl).length, 0)
+    assert.deepEqual(f.sqlite.prepare('SELECT * FROM notification_event_deliveries').all(), before)
+    assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM notification_delivery_callbacks').get()!.n, 0)
+    assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM notification_suppressions').get()!.n, 0)
+    assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM notification_contacts').get()!.n, 2)
+    assert.equal(f.sqlite.prepare('SELECT status FROM notification_outbox').get()!.status, 'queued')
+  }
+})
+
+for (const [label, mutation] of [
+  ['provider message conflict', { 'message-id': 'wrong-provider-id' }],
+  ['provider case conflict', { 'message-id': '201798300811.5787683@Relay.domain.com' }],
+  ['unknown local correlation', { 'X-Mailin-custom': 'delivery_unknown_123' }],
+  ['local alias only', { 'X-Mailin-custom': undefined, deliveryId: 'suppression_delivery_123' }],
+  ['message alias only', { 'message-id': undefined, messageId: '201798300811.5787683@relay.domain.com' }],
+  ['missing custom header', { 'X-Mailin-custom': undefined, email: 'suppression@example.test' }],
+  ['invalid timestamp', { ts_event: '1604933654' }],
+  ['unsafe timestamp', { ts_event: Number.MAX_SAFE_INTEGER + 1 }],
+  ['date alias only', { ts_event: undefined, date: '2020-11-09 15:54:14' }],
+  ['malformed message ID', { 'message-id': '<<provider-id>>' }],
+] as const) test(`offline CLI callback proof rejects ${label} using actual callback SQL`, async t => {
+  const f = await fixture(t, { callback: payload => ({ ...payload, ...mutation }) })
+  const tables = ['notification_event_deliveries', 'notification_delivery_callbacks', 'notification_suppressions', 'notification_contacts', 'notification_outbox']
+  const before = tables.map(table => f.sqlite.prepare(`SELECT * FROM ${table}`).all())
+  await assert.rejects(f.run('callback', { authorizeProbe: true }), error => {
+    safe(String(error))
+    assert.equal(String(error), 'Error: Email verification failed: callback-probe')
+    return true
+  })
+  assert.deepEqual(tables.map(table => f.sqlite.prepare(`SELECT * FROM ${table}`).all()), before)
+  assert.equal(f.requests.filter(request => request.url.endsWith('/smtp/email')).length, 0)
+  assert.equal(f.requests.filter(request => request.url === f.expected.callbackUrl).length, 3)
+})
+
+test('offline CLI live correlation rejects a callback message different from the adapter result', async t => {
+  const f = await fixture(t, { callback: payload => ({ ...payload, 'message-id': 'wrong-provider-id' }) })
+  await assert.rejects(f.run('live-canary', { authorizeProbe: true }), error => {
+    safe(String(error))
+    assert.equal(String(error), 'Error: Email verification failed: send')
+    return true
+  })
+  assert.equal(f.requests.filter(request => request.url.endsWith('/smtp/email')).length, 1)
+  assert.deepEqual(f.sqlite.prepare("SELECT status, provider_message_id FROM notification_event_deliveries WHERE id = 'final_delivery_123456'").get(), { status: 'delivered', provider_message_id: 'wrong-provider-id' })
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM notification_delivery_callbacks').get()!.n, 1)
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM notification_suppressions').get()!.n, 0)
 })
 
 test('callback HTTP success without durable mutation is insufficient', async t => {

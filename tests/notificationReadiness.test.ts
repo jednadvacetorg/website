@@ -64,7 +64,7 @@ test('real applied migration probe rejects old or unavailable D1 before direct a
   assert.equal(await notificationSchemaReady(database), false)
   await assert.rejects(activateNotificationChannel({ channel: 'email', contact: 'test@example.test', communitySlugs: ['brno'], frequencies: ['created'], consentAt: '2026-10-04', consentVersion: '2026-09' }, { database, config }), error => (error as { statusCode: number }).statusCode === 503)
   assert.equal(writes, 0)
-  for (const name of ['0001_phase_7_columns', '0002_phase_7_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+  for (const name of ['0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
   assert.equal(await notificationSchemaReady(database), true)
   const observed = { ...runtime, notificationExpectedTargetIdentity: '1'.repeat(64), notificationExpectedBundleHash: '2'.repeat(64), notificationExpectedMigrationHash: '3'.repeat(64), notificationExpectedConfigHash: '4'.repeat(64), notificationExpectedDeploymentId: '11111111-1111-1111-1111-111111111111' }
   const now = Date.now()

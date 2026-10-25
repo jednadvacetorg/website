@@ -2,17 +2,47 @@
 set -euo pipefail
 
 if [[ -z "${1:-}" || "${1:-}" == '--config-isolation' ]]; then
-  evidence_dir="$(mktemp -d /tmp/notification-config-isolation-XXXXXXXX)"
+  temp_root="$(realpath --no-symlinks "${TMPDIR:-/tmp}")"
+  resolved_temp_root="$(realpath "$temp_root")"
+  workspace_verification_root="$(realpath -m "$(git rev-parse --show-toplevel)/.data/verification-retention/runtime")"
+  # Keep temporary paths under /tmp while permitting one private workspace-backed
+  # store when the container filesystem is full. No arbitrary symlink target.
+  [[ "$temp_root" == /tmp/opencode/* && -d "$temp_root" && -O "$temp_root"
+    && ( "$resolved_temp_root" == /tmp/opencode/* || "$resolved_temp_root" == "$workspace_verification_root" || "$resolved_temp_root" == "$workspace_verification_root/"* ) ]] || { echo 'An owned verification TMPDIR under /tmp/opencode is required.' >&2; exit 1; }
+  layer_args=()
+  if [[ -n "${NOTIFICATION_SAFETY_VERIFY_LAYER:-}" ]]; then
+    verify_layer="$(realpath "$NOTIFICATION_SAFETY_VERIFY_LAYER")"
+    [[ ( "$verify_layer" == /tmp/opencode/* || "$verify_layer" == "$workspace_verification_root/"* ) && -O "$verify_layer" && -f "$verify_layer/nuxt.config.ts" ]] || { echo 'An owned local verification layer is required.' >&2; exit 1; }
+    layer_args=(--extends "$verify_layer")
+  fi
+  evidence_dir="$(mktemp -d "$temp_root/notification-config-isolation-XXXXXXXX")"
+  # Chromium's SingletonSocket needs a short physical path, even through aliases.
+  browser_temp_root="${NOTIFICATION_SAFETY_BROWSER_TMPDIR:-$temp_root}"
+  resolved_browser_root="$(realpath "$browser_temp_root")"
+  workspace_browser_root="$(realpath -m "$(git rev-parse --show-toplevel)/.data/b")"
+  [[ "$browser_temp_root" == /tmp/opencode/* && -d "$browser_temp_root" && -O "$browser_temp_root"
+    && ( "$resolved_browser_root" == /tmp/opencode/* || "$resolved_browser_root" == "$workspace_verification_root" || "$resolved_browser_root" == "$workspace_verification_root/"* || "$resolved_browser_root" == "$workspace_browser_root" ) ]] || { echo 'An owned browser temporary directory is required.' >&2; exit 1; }
+  mkdir -p "$browser_temp_root/browser-sockets"
+  screenshot_dir="${AGENT_BROWSER_SCREENSHOT_DIR:-/tmp/screenshots}"
+  [[ "$screenshot_dir" == /tmp/screenshots || "$screenshot_dir" == /tmp/screenshots/* ]] || { echo 'Screenshots must remain under /tmp/screenshots.' >&2; exit 1; }
   mkdir "$evidence_dir/home"
   worker_pid=''
-  browser_session="notification-isolation-${evidence_dir##*/}"
   browser_started=false
+  stop_worker() {
+    [[ -n "$worker_pid" ]] || return 0
+    kill -- "-$worker_pid" 2>/dev/null || true
+    for _ in {1..10}; do
+      if ! kill -0 "$worker_pid" 2>/dev/null; then break; fi
+      sleep 1
+    done
+    kill -KILL -- "-$worker_pid" 2>/dev/null || true
+    wait "$worker_pid" 2>/dev/null || true
+  }
   cleanup_isolation() {
     local failed=0
-    if [[ "$browser_started" == true ]]; then agent-browser --session "$browser_session" close || failed=1; fi
+    if [[ "$browser_started" == true ]]; then "${browser_command[@]}" close || failed=1; fi
     if [[ -n "$worker_pid" ]]; then
-      kill -- "-$worker_pid" 2>/dev/null || true
-      wait "$worker_pid" 2>/dev/null || true
+      stop_worker
       if ps -eo pgid=,stat= | node --input-type=module -e 'let s="";for await(const c of process.stdin)s+=c;process.exit(s.split("\n").some(l=>{const [p,state]=l.trim().split(/\s+/);return p===process.argv[1]&&!state?.startsWith("Z")})?0:1)' "$worker_pid"; then
         echo 'Owned Worker descendants remain.' >&2; failed=1
       fi
@@ -23,7 +53,7 @@ if [[ -z "${1:-}" || "${1:-}" == '--config-isolation' ]]; then
   trap cleanup_isolation EXIT
   # Empty dotenv and an allowlisted environment: inherited secrets/configuration
   # and Wrangler auth profiles cannot enter either build or local execution.
-  clean_env=(env -i "PATH=$PATH" "HOME=$evidence_dir/home" "TMPDIR=/tmp" NODE_ENV=production NODE_USE_ENV_PROXY=1 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 WRANGLER_SEND_METRICS=false)
+  clean_env=(env -i "PATH=$PATH" "HOME=$evidence_dir/home" "TMPDIR=$evidence_dir" NODE_ENV=production NODE_USE_ENV_PROXY=1 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 CLOUDFLARE_CF_FETCH_ENABLED=false WRANGLER_SEND_METRICS=false)
   while IFS= read -r variable; do clean_env+=("$variable"); done < <(node --input-type=module <<'JS'
 import { randomBytes, generateKeyPairSync, createHash } from 'node:crypto'
 const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
@@ -70,29 +100,53 @@ JS
     preview_env=()
     if [[ "$profile" == preview ]]; then preview_env=(PREVIEW_DEPLOY=1); fi
     # The Cloudflare package command invokes npm run build; preserve its separator.
-    if ! "${clean_env[@]}" "${preview_env[@]}" "NUXT_BUILD_DIR=$evidence_dir/$profile/nuxt" "CONTENT_LOCAL_DATABASE_PATH=$evidence_dir/$profile/content.sqlite" npm run build:cloudflare -- -- --dotenv /dev/null >"$evidence_dir/$profile/build.log" 2>&1; then
+    if ! timeout --kill-after=10s 480s "${clean_env[@]}" "${preview_env[@]}" "NUXT_BUILD_DIR=$evidence_dir/$profile/nuxt" "CONTENT_LOCAL_DATABASE_PATH=$evidence_dir/$profile/content.sqlite" npm run build:cloudflare -- -- --dotenv /dev/null "${layer_args[@]}" >"$evidence_dir/$profile/build.log" 2>&1; then
       echo "$profile build failed; see retained build.log." >&2; exit 1
     fi
     # CLI exit 0 is not a clean build when prerender/runtime reports errors.
     if node --input-type=module - "$evidence_dir/$profile/build.log" <<'JS'
 import { readFileSync } from 'node:fs'
-process.exit(/(?:\bERROR\b|\[500\]|Prerender Error)/.test(readFileSync(process.argv[2], 'utf8')) ? 0 : 1)
+import { stripVTControlCharacters } from 'node:util'
+process.exit(/(?:\bERROR\b|\[500\]|Prerender Error)/.test(stripVTControlCharacters(readFileSync(process.argv[2], 'utf8'))) ? 0 : 1)
 JS
     then echo "$profile build contains errors; retaining the actual artifact for diagnosis, not a passing build." >&2; fi
-    cp -a .output "$evidence_dir/$profile/output"
+    if [[ ${#layer_args[@]} -eq 0 ]]; then cp -a .output "$evidence_dir/$profile/output"; fi
     [[ -f "$evidence_dir/$profile/output/server/wrangler.json" ]] || { echo 'Actual generated Wrangler JSON missing.' >&2; exit 1; }
   done
   "${clean_env[@]}" NOTIFICATION_CONFIG_ISOLATION=true "NOTIFICATION_PRODUCTION_CONFIG=$evidence_dir/production/output/server/wrangler.json" "NOTIFICATION_PREVIEW_CONFIG=$evidence_dir/preview/output/server/wrangler.json" node --experimental-strip-types --test --test-name-pattern='generated notification configuration' tests/emailDeliveryOperations.test.ts >"$evidence_dir/generated-config-tests.log" 2>&1
   for profile in production preview; do
+    browser_session="ni-${evidence_dir##*-}-$profile"
+    mkdir "$browser_temp_root/home-$browser_session"
+    browser_command=("${clean_env[@]}" "HOME=$browser_temp_root/home-$browser_session" "TMPDIR=$browser_temp_root" "AGENT_BROWSER_SOCKET_DIR=$browser_temp_root/browser-sockets" agent-browser --session "$browser_session" --allowed-domains 127.0.0.1 --proxy http://127.0.0.1:9 --proxy-bypass localhost,127.0.0.1)
     port=8791
     base_url="http://127.0.0.1:$port"
     if curl --silent --max-time 1 "$base_url" >/dev/null 2>&1; then echo 'Owned port is already occupied.' >&2; exit 1; fi
     for migration in "$evidence_dir/$profile/output/server/db/migrations/sqlite/"*.sql; do
       "${clean_env[@]}" npm exec --offline -- wrangler d1 execute DB --local --config "$evidence_dir/$profile/output/server/wrangler.json" --file "$migration" --persist-to "$evidence_dir/$profile/storage" >"$evidence_dir/$profile/$(basename "$migration").apply.log" 2>&1
     done
+    # Bind the same owned synthetic inputs inside workerd, not just the Node
+    # launcher. Keep canonical generated config and its bindings unchanged.
+    "${clean_env[@]}" "NOTIFICATION_CANONICAL_CONFIG=$evidence_dir/$profile/output/server/wrangler.json" node --input-type=module <<'JS'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { dirname, join } from 'node:path'
+const path = process.env.NOTIFICATION_CANONICAL_CONFIG
+const canonical = readFileSync(path)
+const config = JSON.parse(canonical)
+const vars = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith('NUXT_')))
+const runtime = { ...config, vars: { ...config.vars, ...vars } }
+const overlay = JSON.stringify(runtime, null, 2)
+writeFileSync(join(dirname(path), 'wrangler.local.json'), overlay, { mode: 0o600 })
+writeFileSync(join(dirname(path), 'runtime-overlay-evidence.json'), JSON.stringify({
+  canonicalHash: createHash('sha256').update(canonical).digest('hex'),
+  runtimeHash: createHash('sha256').update(overlay).digest('hex'),
+  syntheticVariableNames: Object.keys(vars).sort(),
+  changedKeys: ['vars'],
+}, null, 2))
+JS
     # Installed Wrangler API supports an outboundService boundary; CLI --local
     # alone does not deny Worker fetches. No substitute Worker or remote binding.
-    setsid "${clean_env[@]}" "NOTIFICATION_WORKER_CONFIG=$evidence_dir/$profile/output/server/wrangler.json" "NOTIFICATION_WORKER_STORAGE=$evidence_dir/$profile/storage" node --input-type=module >"$evidence_dir/$profile/worker.log" 2>&1 <<'JS' &
+    setsid "${clean_env[@]}" "NOTIFICATION_WORKER_CONFIG=$evidence_dir/$profile/output/server/wrangler.local.json" "NOTIFICATION_WORKER_STORAGE=$evidence_dir/$profile/storage" node --input-type=module >"$evidence_dir/$profile/worker.log" 2>&1 <<'JS' &
 import { unstable_startWorker } from 'wrangler'
 let worker
 const stop = async () => { await worker?.dispose(); process.exit(0) }
@@ -139,15 +193,15 @@ for (const token of ['notification-ui-management-active', 'notification-ui-manag
   const response = await fetch(`${base}/api/notifications/manage/${token}`)
   assert.deepEqual(await response.json(), { state: 'unavailable' })
   const stopped = await fetch(`${base}/api/notifications/manage/${token}`, { method: 'POST', headers: headers(), body: JSON.stringify({ action: 'stop-channel' }) })
-  assert.deepEqual(await stopped.json(), { state: 'unavailable' })
+   assert.deepEqual(await stopped.json(), { outcome: 'unavailable' })
 }
 const html = await (await fetch(`${base}/kalendar`)).text(); safe(html)
 assert.ok(html.includes(process.env.NUXT_PUBLIC_NOTIFICATION_VAPID_PUBLIC_KEY), 'public key positive control')
 JS
     browser_started=true
-    agent-browser --session "$browser_session" --allowed-domains 127.0.0.1 open "$base_url/kalendar"
-    agent-browser --session "$browser_session" wait --fn '!!document.getElementById("__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.$config.public'
-    browser_result="$(agent-browser --session "$browser_session" eval 'JSON.stringify({public:document.getElementById("__nuxt").__vue_app__.config.globalProperties.$nuxt.$config.public,html:document.documentElement.outerHTML})' --json)"
+    "${browser_command[@]}" open "$base_url/kalendar"
+    "${browser_command[@]}" wait --fn '!!document.getElementById("__nuxt")?.__vue_app__?.config.globalProperties.$nuxt?.$config.public'
+    browser_result="$("${browser_command[@]}" eval 'JSON.stringify({public:document.getElementById("__nuxt").__vue_app__.config.globalProperties.$nuxt.$config.public,html:document.documentElement.outerHTML})' --json)"
     "${clean_env[@]}" "NOTIFICATION_BROWSER_RESULT=$browser_result" node --input-type=module <<'JS'
 import assert from 'node:assert/strict'
 const result = JSON.parse(process.env.NOTIFICATION_BROWSER_RESULT)
@@ -160,14 +214,13 @@ for (const key of ['notificationRootKey', 'notificationVapidPrivateKey', 'brevoA
   assert.ok(!data.html.includes(`"${key}"`), 'private property serialized in SSR/hydrated HTML')
 }
 JS
-    mkdir -p /tmp/screenshots
-    agent-browser --session "$browser_session" screenshot "/tmp/screenshots/notification-isolation-$profile-${evidence_dir##*/}-desktop.png"
-    agent-browser --session "$browser_session" set viewport 320 900
-    agent-browser --session "$browser_session" screenshot "/tmp/screenshots/notification-isolation-$profile-${evidence_dir##*/}-mobile.png"
-    agent-browser --session "$browser_session" close
+    mkdir -p "$screenshot_dir"
+    "${browser_command[@]}" screenshot "$screenshot_dir/notification-isolation-$profile-${evidence_dir##*/}-desktop.png"
+    "${browser_command[@]}" set viewport 320 900
+    "${browser_command[@]}" screenshot "$screenshot_dir/notification-isolation-$profile-${evidence_dir##*/}-mobile.png"
+    "${browser_command[@]}" close
     browser_started=false
-    kill -- "-$worker_pid" 2>/dev/null || true
-    wait "$worker_pid" 2>/dev/null || true
+    stop_worker
     if ps -eo pgid=,stat= | node --input-type=module -e 'let s="";for await(const c of process.stdin)s+=c;process.exit(s.split("\n").some(l=>{const [p,state]=l.trim().split(/\s+/);return p===process.argv[1]&&!state?.startsWith("Z")})?0:1)' "$worker_pid"; then
       echo 'Owned Worker descendants remain after profile stop.' >&2; exit 1
     fi
@@ -178,8 +231,9 @@ JS
   for profile in production preview; do
     node --input-type=module - "$evidence_dir/$profile/build.log" "$evidence_dir/$profile/worker.log" <<'JS'
 import { readFileSync } from 'node:fs'
-if (/(?:\bERROR\b|\[500\]|Prerender Error)/.test(readFileSync(process.argv[2], 'utf8'))) throw new Error('Build errors retained; configuration isolation is not a clean gate')
-if (/(?:\bERROR\b|\[500\]|Uncaught|unhandled rejection)/i.test(readFileSync(process.argv[3], 'utf8'))) throw new Error('Local Worker runtime errors retained; safety gate failed')
+import { stripVTControlCharacters } from 'node:util'
+if (/(?:\bERROR\b|\[500\]|Prerender Error)/.test(stripVTControlCharacters(readFileSync(process.argv[2], 'utf8')))) throw new Error('Build errors retained; configuration isolation is not a clean gate')
+if (/(?:\bERROR\b|\[500\]|Uncaught|unhandled rejection)/i.test(stripVTControlCharacters(readFileSync(process.argv[3], 'utf8')))) throw new Error('Local Worker runtime errors retained; safety gate failed')
 JS
   done
   echo 'Both generated profiles and actual built Workers passed configuration isolation.'

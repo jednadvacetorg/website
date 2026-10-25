@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "52bcf268-5af1-4ee4-be24-86ad2638a114",
+  "id": "4cb3f62b-dbd3-4e76-8b83-d8851261674f",
   "prevId": "dc35290f-582e-4ff8-9990-63f9fca797f7",
   "tables": {
     "notification_abuse_attempts": {
@@ -219,21 +219,7 @@
           "isUnique": false
         }
       },
-      "foreignKeys": {
-        "notification_delivery_callbacks_delivery_id_notification_event_deliveries_id_fk": {
-          "name": "notification_delivery_callbacks_delivery_id_notification_event_deliveries_id_fk",
-          "tableFrom": "notification_delivery_callbacks",
-          "tableTo": "notification_event_deliveries",
-          "columnsFrom": [
-            "delivery_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -395,18 +381,6 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {
-        "notification_event_deliveries_channel_check": {
-          "name": "notification_event_deliveries_channel_check",
-          "value": "\"notification_event_deliveries\".\"channel\" IN ('email', 'sms', 'web-push')"
-        },
-        "notification_event_deliveries_frequency_check": {
-          "name": "notification_event_deliveries_frequency_check",
-          "value": "\"notification_event_deliveries\".\"eligibility_frequency\" IN ('created', 'week-before', 'day-before')"
-        },
-        "notification_event_deliveries_reason_check": {
-          "name": "notification_event_deliveries_reason_check",
-          "value": "\"notification_event_deliveries\".\"reason\" IN ('created', 'week-before', 'day-before', 'updated', 'cancelled')"
-        },
         "notification_event_deliveries_status_check": {
           "name": "notification_event_deliveries_status_check",
           "value": "\"notification_event_deliveries\".\"status\" IN ('pending', 'submitted', 'delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed', 'failed')"

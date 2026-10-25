@@ -3,6 +3,7 @@ import { evaluateNotificationAbuse } from '../../utils/notificationAbuse.ts'
 import { NotificationLifecycleError, requestNotificationManagementRecovery, validateNotificationManagementRequest, type NotificationDatabase } from '../../utils/notifications.ts'
 import { notificationConfig } from '../../utils/notificationConfig.ts'
 import { notificationUiVerificationDecision } from '../../utils/notificationUiVerificationFixture.ts'
+import { publishPendingNotificationPointers, type NotificationMessagesQueue } from '../../utils/notificationMessagesQueue.ts'
 
 const genericRecoveryResponse = {
   message: 'Pokud pro tento kontakt existuje správa notifikací, pošleme ti odkaz. Zkus to prosím později, pokud ti už odkaz přišel.',
@@ -39,7 +40,27 @@ export default defineEventHandler(async (event) => {
       setResponseStatus(event, abuse.reason === 'rate-limited' ? 429 : 403)
       return { message: 'Požadavek na notifikace potřebuje ověření.' }
     }
-    await requestNotificationManagementRecovery(input, { database, config })
+    try {
+      await requestNotificationManagementRecovery(input, { database, config })
+    } catch (error) {
+      if (error instanceof NotificationLifecycleError && error.statusCode === 400) throw error
+      // An allowed recovery has the same wake even if absent, CAS-lost or storage failed.
+      // The publisher only sees durable rows; no successful mutation is invented here.
+    }
+    const queue = (event.context._platform as { cloudflare?: { env?: { NOTIFICATION_MESSAGES_QUEUE?: NotificationMessagesQueue } } } | undefined)?.cloudflare?.env?.NOTIFICATION_MESSAGES_QUEUE
+    const publication = Promise.resolve().then(async () => {
+      await publishPendingNotificationPointers({ send: async pointer => {
+        if (!queue?.send) throw new Error('Notification Queue unavailable')
+        return queue.send(pointer)
+      } }, { database, config }, { lifecycleLimit: 100, eventLimit: 0, budgetMs: 5000 })
+    }).catch(() => { console.error('[notifications] Lifecycle pointer publication failed') })
+    try {
+      if (typeof event.waitUntil === 'function') event.waitUntil(publication)
+      else await publication
+    } catch {
+      console.error('[notifications] Lifecycle pointer publication registration failed')
+      await publication
+    }
   } catch (error) {
     if (error instanceof NotificationLifecycleError && error.statusCode === 400) {
       setResponseStatus(event, 400)

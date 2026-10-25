@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
@@ -21,65 +21,118 @@ const Database = require('better-sqlite3') as new (filename: string) => {
 const root = resolve(process.cwd())
 const migrationPath = 'server/db/migrations/sqlite/0000_majestic_lightspeed.sql'
 const migrationDirectory = 'server/db/migrations/sqlite'
+// The pre-adoption reference must not move when this replacement history is committed.
+const preservedHistoryCommit = '85bd4e597d03aa9f733cae578147de0bbd556e84'
 const immutable = {
   '0000_majestic_lightspeed.sql': 'a1addce2b5571d2939bd36cb20995ebbb4874b8614a6db4cd7d42ea9e8234701',
   'meta/0000_snapshot.json': 'd062ed79d7e492a622082471c6a830550392239987632e2b8b3171203a0d9b62',
+  '0001_phase_7_columns.sql': '49c000ce01c3ea3e042494747894557a65236a38b2563ff764ac63306b6f4f92',
+  'meta/0001_snapshot.json': '526917342aef28b2b40a6c3c0e9aa799effa1565025e70d9ef1da70bf55c71da',
+  '0002_detach_event_callback_fk.sql': 'a92986e490c39f6bd3ba95ac19aa224659f31872a0100558d33f856c6d74d4dd',
+  'meta/0002_snapshot.json': '242af3d7d3618916c032d9198bacdb0de789ae0d5ea26b53d029081f3a819324',
+  '0003_restore_event_ledger_checks.sql': '73f2283572afeedda5f4ae91e130094799ccb967e55e989d8c096d29d23717b8',
+  'meta/0003_snapshot.json': 'ade85a430112e47423cfb2cd1842665f4cac60c057b12a04dc22eca8a6dc2760',
+  '0004_restore_event_callback_fk.sql': '597edddf6276bdedbc1afeebb8488d6dc78f6b7ee5c5efa3dbe70bb22b99ef55',
+  'meta/0004_snapshot.json': '100687f929fcef627b48adef43b2fff7065ddc8a030ed4ce5f4f77f584355fc6',
+}
+const approvedSql = {
+  ...Object.fromEntries(Object.entries(immutable).filter(([file]) => file.endsWith('.sql'))),
+  '0002_detach_event_callback_fk.sql': 'a92986e490c39f6bd3ba95ac19aa224659f31872a0100558d33f856c6d74d4dd',
+  '0003_restore_event_ledger_checks.sql': '73f2283572afeedda5f4ae91e130094799ccb967e55e989d8c096d29d23717b8',
+  '0004_restore_event_callback_fk.sql': '597edddf6276bdedbc1afeebb8488d6dc78f6b7ee5c5efa3dbe70bb22b99ef55',
+  '0005_lifecycle_email_columns.sql': '6504c301f85ea1503f7bf0f62653452d53eddeb9136d315919f96571592e577e',
+  '0006_lifecycle_email_constraints.sql': '35ce64741e6896ab566a601739cfa5d390b330942d3bafa4bcbff4272e055c36',
+}
+const repairSchemaHash = 'd865e972463311730b3771a67aa2a3984e70145781d27b25bc82d3e89477c05f'
+const finalSchemaHash = '5bc72d17fcca41694dae1576df89ea882967192409bc65bba751c1d969f8608e'
+const candidateMetadata = {
+  'meta/0005_snapshot.json': 'e951e04eda9f7d7729ca7602b7e1e2e36511f1da7602b6d015363eae00e84691',
+  'meta/0006_snapshot.json': 'f254574b4c3edee434a3fd72f0ad654c55a8ee5c334b04993675f0adddcff65b',
+  'meta/_journal.json': '8d961871686abe432fe4f4aae86f6106a9630f6f83ff1753fc08692eff99f23a',
+}
+const stageInputs = {
+  'repair-A.ts': '3ea8beca42339355c8decfde26e42f0d985df1aae985d43b8276d0df7c7beff8',
+  'repair-B.ts': '08c52599c8e7287c2279b659b74f6e3ade745cb1eca3fdaa60a64a2d9449c6bf',
+  'repair-C.ts': repairSchemaHash,
+  'stage-A.ts': 'a79d182f338cf3e7cd2829b5f57248402dc6b847a1450fcc137e940f84c255be',
+  'stage-B.ts': finalSchemaHash,
 }
 const hash = (value: Uint8Array) => createHash('sha256').update(value).digest('hex')
+const emittedSchemaPath = join(resolve(process.env.NUXT_BUILD_DIR || join(root, '.nuxt')), 'hub/db/schema.mjs')
+const assertStageInputs = async (directory: string) => {
+  for (const [file, expected] of Object.entries(stageInputs)) assert.equal(hash(await readFile(join(directory, file))), expected, `${file} approved independent schema input`)
+}
 const generationInventory = async () => {
-  const paths = ['server/db/schema.ts', '.nuxt/hub/db/schema.mjs',
+  const paths = ['server/db/schema.ts', emittedSchemaPath,
     ...(await readdir(join(root, migrationDirectory))).filter(file => file.endsWith('.sql')).map(file => `${migrationDirectory}/${file}`),
     ...(await readdir(join(root, migrationDirectory, 'meta'))).filter(file => file.endsWith('.json')).map(file => `${migrationDirectory}/meta/${file}`)]
-  return Object.fromEntries(await Promise.all(paths.sort().map(async path => [path, hash(await readFile(join(root, path)))])))
+  return Object.fromEntries(await Promise.all(paths.sort().map(async path => [path, hash(await readFile(resolve(root, path)))])))
 }
 const assertImmutable = async (directory: string) => {
   for (const [file, expected] of Object.entries(immutable)) assert.equal(hash(await readFile(join(directory, file))), expected, `${file} immutable hash`)
 }
+const historyInventory = async (directory: string) => {
+  const files = [...Object.keys(approvedSql), ...Object.keys(approvedSql).map((_, index) => `meta/${String(index).padStart(4, '0')}_snapshot.json`), 'meta/_journal.json']
+  return Object.fromEntries(await Promise.all(files.map(async file => [file, hash(await readFile(join(directory, file)))])))
+}
 const generationBaseline = async (directory: string, intermediate: boolean) => {
   assertWithinTmp(directory)
   await assertImmutable(join(root, migrationDirectory))
+  assert.equal(hash(await readFile(join(root, 'server/db/schema.ts'))), finalSchemaHash, 'final approved schema must remain exact')
+  await assertStageInputs(directory)
   if (intermediate) {
     await mkdir(join(directory, 'replay/meta'), { recursive: true })
-    for (const file of [...Object.keys(immutable), 'meta/_journal.json']) {
-      const original = execFileSync('git', ['show', `335ddfb:${migrationDirectory}/${file}`], { cwd: root })
-      await writeFile(join(directory, 'replay', file), original)
-    }
-    await cp(join(root, '.nuxt/hub/db/schema.mjs'), join(directory, 'intermediate-schema.mjs'))
-    await cp(join(root, 'server/db/schema.ts'), join(directory, 'intermediate-schema.ts'))
+    assert.deepEqual(await readdir(join(directory, 'replay')), ['meta'], 'replay baseline must start empty')
+    assert.deepEqual(await readdir(join(directory, 'replay/meta')), [], 'replay metadata must start empty')
+    for (const file of Object.keys(immutable)) await cp(join(root, migrationDirectory, file), join(directory, 'replay', file))
+    const journal = JSON.parse(await readFile(join(root, migrationDirectory, 'meta/_journal.json'), 'utf8')) as Journal
+    await writeFile(join(directory, 'replay/meta/_journal.json'), JSON.stringify({ ...journal, entries: journal.entries.slice(0, 5) }, null, 2))
+    const inputs = Object.fromEntries(await Promise.all(Object.keys(stageInputs).map(async file => [file, hash(await readFile(join(directory, file)))])))
+    await writeFile(join(directory, 'stage-inputs.json'), JSON.stringify(inputs, null, 2))
   } else {
     await assertImmutable(join(directory, 'replay'))
-    assert.equal(hash(await readFile(join(root, 'server/db/schema.ts'))), 'd865e972463311730b3771a67aa2a3984e70145781d27b25bc82d3e89477c05f', 'final approved schema must remain exact')
-    await cp(join(root, '.nuxt/hub/db/schema.mjs'), join(directory, 'final-schema.mjs'))
-    const inputs = Object.fromEntries(await Promise.all(['intermediate-schema.ts', 'intermediate-schema.mjs', 'final-schema.mjs'].map(async file => [file, hash(await readFile(join(directory, file)))])))
-    await writeFile(join(directory, 'inventory.json'), JSON.stringify({ working: await generationInventory(), inputs }, null, 2))
+    assert.deepEqual(JSON.parse(await readFile(join(directory, 'stage-inputs.json'), 'utf8')), stageInputs, 'stage inputs must predate replay generation')
+    await compareGeneratedHistory(join(root, migrationDirectory), join(directory, 'replay'))
+    await cp(emittedSchemaPath, join(directory, 'final-schema.mjs'))
+    const inputs = Object.fromEntries(await Promise.all([...Object.keys(stageInputs), 'stage-inputs.json', 'final-schema.mjs'].map(async file => [file, hash(await readFile(join(directory, file)))])))
+    await writeFile(join(directory, 'inventory.json'), JSON.stringify({ working: await generationInventory(), replay: await historyInventory(join(directory, 'replay')), inputs }, null, 2))
   }
-  return { mode: intermediate ? 'intermediate schema recorded; preserved history copied' : 'final candidate inventory recorded', directory }
+  return { mode: intermediate ? 'approved repair and lifecycle inputs recorded; immutable 0000–0004 replay parent copied; run upstream columns/constraints generation next' : 'final candidate inventory recorded; run upstream final-schema no-drift generation next', directory }
 }
 interface Journal { version: string, dialect: string, entries: Array<{ idx: number, version: string, when: number, tag: string, breakpoints: boolean }> }
 interface Snapshot { id: string, prevId: string, tables: Record<string, { columns: Record<string, { type: string }> }> }
 const compareGeneratedHistory = async (working: string, replay: string) => {
   await assertImmutable(working)
   await assertImmutable(replay)
+  assert.equal(hash(await readFile(join(root, 'server/db/schema.ts'))), finalSchemaHash, 'approved final schema hash')
+  for (const [file, expected] of Object.entries(candidateMetadata)) assert.equal(hash(await readFile(join(working, file))), expected, `${file} adopted candidate metadata`)
   const parseJournal = async (directory: string) => JSON.parse(await readFile(join(directory, 'meta/_journal.json'), 'utf8')) as Journal
   const actual = await parseJournal(working)
   const reproduced = await parseJournal(replay)
-  const expectedTags = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_phase_7_constraints']
+  const expectedTags = Object.keys(approvedSql).map(file => file.slice(0, -4))
   assert.deepEqual(actual.entries.map(entry => entry.tag), expectedTags)
   assert.deepEqual(reproduced.entries.map(entry => entry.tag), expectedTags)
-  const original = JSON.parse(execFileSync('git', ['show', `335ddfb:${migrationDirectory}/meta/_journal.json`], { cwd: root, encoding: 'utf8' })) as Journal
+  const original = JSON.parse(execFileSync('git', ['show', `${preservedHistoryCommit}:${migrationDirectory}/meta/_journal.json`], { cwd: root, encoding: 'utf8' })) as Journal
   for (const journal of [actual, reproduced]) {
     assert.equal(journal.version, original.version)
     assert.equal(journal.dialect, original.dialect)
     assert.deepEqual(journal.entries[0], original.entries[0])
-    assert.deepEqual(journal.entries.map(entry => entry.idx), [0, 1, 2])
+    assert.deepEqual(journal.entries[1], original.entries[1])
+    assert.deepEqual(journal.entries.slice(2, 5), [
+      { idx: 2, version: '6', when: 1792064604426, tag: '0002_detach_event_callback_fk', breakpoints: true },
+      { idx: 3, version: '6', when: 1792064604706, tag: '0003_restore_event_ledger_checks', breakpoints: true },
+      { idx: 4, version: '6', when: 1792064604956, tag: '0004_restore_event_callback_fk', breakpoints: true },
+    ])
+    assert.deepEqual(journal.entries.map(entry => entry.idx), [0, 1, 2, 3, 4, 5, 6])
   }
-  const withoutTimestamps = (journal: Journal) => ({ ...journal, entries: journal.entries.map((entry, index) => index ? { ...entry, when: 0 } : entry) })
+  const withoutTimestamps = (journal: Journal) => ({ ...journal, entries: journal.entries.map((entry, index) => index >= 5 ? { ...entry, when: 0 } : entry) })
   assert.deepEqual(withoutTimestamps(actual), withoutTimestamps(reproduced), 'journal structure differs')
   let workingParent = '00000000-0000-0000-0000-000000000000'
   let replayParent = workingParent
   const workingIds = new Set<string>()
   const replayIds = new Set<string>()
   for (const [index, tag] of expectedTags.entries()) {
+    for (const directory of [working, replay]) assert.equal(hash(await readFile(join(directory, `${tag}.sql`))), approvedSql[`${tag}.sql` as keyof typeof approvedSql], `${tag} approved SQL hash`)
     assert.deepEqual(await readFile(join(working, `${tag}.sql`)), await readFile(join(replay, `${tag}.sql`)), `${tag} SQL replay differs`)
     const file = `meta/${String(index).padStart(4, '0')}_snapshot.json`
     const left = JSON.parse(await readFile(join(working, file), 'utf8')) as Snapshot
@@ -93,42 +146,76 @@ const compareGeneratedHistory = async (working: string, replay: string) => {
     const { id: _leftId, prevId: _leftParent, ...leftSchema } = left
     const { id: _rightId, prevId: _rightParent, ...rightSchema } = right
     assert.deepEqual(leftSchema, rightSchema, `${file} schema/index/check/FK drift`)
+    const originalFinal = JSON.parse(execFileSync('git', ['show', `${preservedHistoryCommit}:${migrationDirectory}/meta/0002_snapshot.json`], { cwd: root, encoding: 'utf8' })) as Snapshot
+    const { id: _originalId, prevId: _originalParent, ...expectedSchema } = originalFinal
+    if (index === 2 || index === 3) {
+      const tables = expectedSchema.tables as Record<string, { foreignKeys: Record<string, unknown>, checkConstraints: Record<string, unknown>, columns: Record<string, { type: string }> }>
+      tables.notification_delivery_callbacks!.foreignKeys = {}
+      if (index === 2) for (const code of ['channel', 'frequency', 'reason']) delete tables.notification_event_deliveries!.checkConstraints[`notification_event_deliveries_${code}_check`]
+    }
+    if (index >= 2 && index <= 4) assert.deepEqual(leftSchema, expectedSchema, `${file} differs from approved repair-stage schema responsibility`)
+    if (index >= 5) {
+      const final = JSON.parse(await readFile(join(working, 'meta/0006_snapshot.json'), 'utf8'))
+      const { id: _finalId, prevId: _finalParent, ...expectedLifecycle } = final
+      if (index === 5) {
+        delete expectedLifecycle.tables.notification_lifecycle_email_callbacks
+        const checks = expectedLifecycle.tables.notification_outbox.checkConstraints
+        for (const key of Object.keys(checks)) if (!['notification_outbox_kind_check', 'notification_outbox_status_check'].includes(key)) delete checks[key]
+      }
+      assert.deepEqual(leftSchema, expectedLifecycle, `${file} differs from approved lifecycle-stage responsibility`)
+    }
     workingParent = left.id
     replayParent = right.id
   }
   for (const directory of [working, replay]) {
     assert.deepEqual((await readdir(directory)).filter(file => file.endsWith('.sql')).sort(), expectedTags.map(tag => `${tag}.sql`))
-    assert.deepEqual((await readdir(join(directory, 'meta'))).sort(), ['0000_snapshot.json', '0001_snapshot.json', '0002_snapshot.json', '_journal.json'])
+    assert.deepEqual((await readdir(join(directory, 'meta'))).sort(), [...expectedTags.map((_, index) => `${String(index).padStart(4, '0')}_snapshot.json`), '_journal.json'])
   }
 }
 const generationContract = async (directory: string) => {
   assertWithinTmp(directory)
+  assert.equal(hash(await readFile(join(root, 'server/db/schema.ts'))), finalSchemaHash, 'final approved source schema changed')
+  assert.deepEqual(JSON.parse(await readFile(join(directory, 'stage-inputs.json'), 'utf8')), stageInputs)
+  await assertStageInputs(directory)
   const baseline = JSON.parse(await readFile(join(directory, 'inventory.json'), 'utf8'))
   assert.deepEqual(await generationInventory(), baseline.working, 'source/emitted schema or working history changed; unexpected migration')
+  assert.deepEqual(await historyInventory(join(directory, 'replay')), baseline.replay, 'upstream replay no-drift probe changed history')
   for (const [file, expected] of Object.entries(baseline.inputs)) assert.equal(hash(await readFile(join(directory, file))), expected, `${file} generation input changed`)
   const working = join(root, migrationDirectory)
   const replay = join(directory, 'replay')
   await compareGeneratedHistory(working, replay)
   const negatives = [
     { file: '0001_phase_7_columns.sql', mutate: (value: string) => `${value}\nSELECT 1;` },
-    { file: 'meta/0002_snapshot.json', mutate: (value: string) => { const snapshot = JSON.parse(value) as Snapshot; snapshot.tables.notification_event_deliveries!.columns.channel!.type = 'integer'; return JSON.stringify(snapshot) } },
+    { file: 'meta/0004_snapshot.json', mutate: (value: string) => { const snapshot = JSON.parse(value) as Snapshot; snapshot.tables.notification_event_deliveries!.columns.channel!.type = 'integer'; return JSON.stringify(snapshot) } },
     { file: 'meta/0002_snapshot.json', mutate: (value: string) => JSON.stringify({ ...JSON.parse(value), prevId: '00000000-0000-0000-0000-000000000000' }) },
     { file: 'meta/_journal.json', mutate: (value: string) => { const journal = JSON.parse(value) as Journal; journal.entries[1]!.tag = '0001_wrong'; return JSON.stringify(journal) } },
     { file: '0000_majestic_lightspeed.sql', mutate: (value: string) => `${value}\nSELECT 1;` },
+    { file: 'meta/_journal.json', mutate: (value: string) => { const journal = JSON.parse(value) as Journal; journal.entries[1]!.when++; return JSON.stringify(journal) } },
+    { file: '0003_restore_event_ledger_checks.sql', mutate: (value: string) => `${value}\nSELECT 1;` },
+    { file: 'meta/0003_snapshot.json', mutate: (value: string) => { const snapshot = JSON.parse(value); snapshot.tables.notification_delivery_callbacks.foreignKeys = { unexpected: {} }; return JSON.stringify(snapshot) } },
+    { file: '0005_lifecycle_email_columns.sql', mutate: (value: string) => `${value}\nSELECT 1;` },
+    { file: '0006_lifecycle_email_constraints.sql', mutate: (value: string) => `${value}\nSELECT 1;` },
+    { file: 'meta/0005_snapshot.json', mutate: (value: string) => JSON.stringify({ ...JSON.parse(value), prevId: '00000000-0000-0000-0000-000000000000' }) },
+    { file: 'meta/0006_snapshot.json', mutate: (value: string) => { const snapshot = JSON.parse(value); snapshot.tables.notification_outbox.columns.email_attempt_version.type = 'text'; return JSON.stringify(snapshot) } },
+    { file: 'meta/_journal.json', mutate: (value: string) => { const journal = JSON.parse(value); journal.entries[4].when++; return JSON.stringify(journal) } },
+    ...Object.keys(immutable).map(file => ({ file, mutate: (value: string) => file.endsWith('.sql') ? `${value}\nSELECT 1;` : JSON.stringify({ ...JSON.parse(value), id: '00000000-0000-0000-0000-000000000000' }) })),
   ]
   for (const [index, negative] of negatives.entries()) {
     const copy = join(directory, `negative-${index}`)
     await cp(replay, copy, { recursive: true })
     await writeFile(join(copy, negative.file), negative.mutate(await readFile(join(copy, negative.file), 'utf8')))
     await assert.rejects(compareGeneratedHistory(working, copy), `negative control ${negative.file} was accepted`)
-    await rm(copy, { recursive: true })
   }
   const unexpected = join(directory, 'negative-extra')
   await cp(replay, unexpected, { recursive: true })
-  await writeFile(join(unexpected, '0003_unexpected.sql'), 'SELECT 1;')
+  await writeFile(join(unexpected, '0007_unexpected.sql'), 'SELECT 1;')
   await assert.rejects(compareGeneratedHistory(working, unexpected), 'unexpected next migration was accepted')
-  await rm(unexpected, { recursive: true })
-  return { inventory: baseline, replay: 'exact SQL and semantic snapshots/journal with linked 0000→0001→0002 ancestry', negativeControls: negatives.length + 1, noDrift: true }
+  const wrongInput = join(directory, 'negative-schema-input')
+  await mkdir(wrongInput, { recursive: true })
+  for (const file of Object.keys(stageInputs)) await cp(join(directory, file), join(wrongInput, file))
+  await writeFile(join(wrongInput, 'stage-A.ts'), `${await readFile(join(wrongInput, 'stage-A.ts'), 'utf8')}\n// drift`)
+  await assert.rejects(assertStageInputs(wrongInput), 'wrong schema input was accepted')
+  return { inventory: baseline, replay: 'exact seven SQL and semantic snapshots/journal; pinned 0000–0004 and independently linked columns→constraints ancestry; repair and lifecycle schema inputs pinned', negativeControls: negatives.length + 2, noDrift: 'working and replay inventories unchanged since pre-probe baseline' }
 }
 const notificationTables = {
   notification_abuse_attempts: ['id', 'requester_hash', 'attempted_at', 'expires_at'],
@@ -137,7 +224,8 @@ const notificationTables = {
   notification_event_deliveries: ['id', 'contact_id', 'channel', 'community_slug', 'eligibility_frequency', 'expected_capability_generation', 'destination_hash', 'event_uid', 'event_revision', 'reason', 'status', 'provider_message_id', 'created_at', 'updated_at', 'submitted_at'],
   notification_event_state: ['event_key', 'uid', 'starts_at', 'ends_at', 'venue', 'cancelled', 'notification_revision', 'updated_at'],
   notification_management_capabilities: ['token_digest', 'contact_id', 'expected_capability_generation', 'created_at', 'expires_at'],
-  notification_outbox: ['id', 'contact_id', 'version', 'expected_capability_generation', 'status', 'claim_token', 'claim_expires_at', 'payload_ciphertext', 'payload_iv', 'kind', 'created_at', 'updated_at', 'terminal_at'],
+  notification_lifecycle_email_callbacks: ['receipt_key', 'outbox_id', 'attempt_version', 'event', 'provider_message_id', 'received_at'],
+  notification_outbox: ['id', 'contact_id', 'version', 'expected_capability_generation', 'status', 'claim_token', 'claim_expires_at', 'payload_ciphertext', 'payload_iv', 'kind', 'created_at', 'updated_at', 'terminal_at', 'email_destination_hash', 'email_provider_message_id', 'email_delivery_status', 'email_attempted_at', 'email_attempt_version'],
   notification_subscriptions: ['id', 'contact_id', 'community_slug', 'frequency', 'created_at', 'updated_at'],
   notification_suppressions: ['id', 'channel', 'destination_hash', 'reason', 'suppressed_at'],
 } as const
@@ -149,6 +237,7 @@ const expectedIndexes = {
   notification_event_deliveries: ['notification_event_deliveries_dedupe_unique', 'notification_event_deliveries_status_idx', 'notification_event_deliveries_authority_idx'],
   notification_event_state: [],
   notification_management_capabilities: ['notification_management_capabilities_contact_idx'],
+  notification_lifecycle_email_callbacks: ['notification_lifecycle_email_callbacks_outbox_idx'],
   notification_outbox: ['notification_outbox_contact_status_idx'],
   notification_subscriptions: ['notification_subscriptions_identity_unique'],
   notification_suppressions: ['notification_suppressions_identity_unique'],
@@ -197,7 +286,8 @@ const inspectContract = (database: InstanceType<typeof Database>) => {
   assert.deepEqual(database.prepare('PRAGMA foreign_key_list(notification_event_deliveries)').all().map(row => [row.table, row.from, row.to, row.on_delete]), [['notification_contacts', 'contact_id', 'id', 'SET NULL']])
   assert.deepEqual(database.prepare('PRAGMA foreign_key_list(notification_delivery_callbacks)').all().map(row => [row.table, row.from, row.to, row.on_delete]), [['notification_event_deliveries', 'delivery_id', 'id', 'CASCADE']])
   assert.deepEqual(database.prepare('PRAGMA foreign_key_list(notification_management_capabilities)').all().map(row => [row.table, row.from, row.to, row.on_delete]), [['notification_contacts', 'contact_id', 'id', 'CASCADE']])
-  for (const table of ['notification_contacts', 'notification_event_deliveries', 'notification_outbox', 'notification_subscriptions', 'notification_suppressions']) {
+  assert.deepEqual(database.prepare('PRAGMA foreign_key_list(notification_lifecycle_email_callbacks)').all().map(row => [row.table, row.from, row.to, row.on_delete]), [['notification_outbox', 'outbox_id', 'id', 'CASCADE']])
+  for (const table of ['notification_contacts', 'notification_event_deliveries', 'notification_outbox', 'notification_subscriptions', 'notification_suppressions', 'notification_lifecycle_email_callbacks']) {
     const schema = database.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?").get(table)?.sql
     assert.ok(typeof schema === 'string' && schema.includes('CHECK'), `${table} must enforce its fixed codes in SQLite`)
   }
@@ -270,8 +360,50 @@ const exerciseConstraints = (database: InstanceType<typeof Database>) => {
   assert.throws(() => database.prepare('INSERT INTO notification_delivery_callbacks (provider_event_id, delivery_id, event, received_at) VALUES (?, ?, ?, ?)').run('provider-event-1', 'delivery-1', 'delivered', '2026-09-17T00:00:00.000Z'))
   database.prepare('INSERT INTO notification_management_capabilities (token_digest, contact_id, expected_capability_generation, created_at) VALUES (?, ?, ?, ?)').run('alias-digest', 1, 3, '2026-09-17T00:00:00.000Z')
   assert.throws(() => database.prepare('INSERT INTO notification_management_capabilities (token_digest, contact_id, expected_capability_generation, created_at) VALUES (?, ?, ?, ?)').run('orphan-alias', 999, 3, '2026-09-17T00:00:00.000Z'))
+  const attemptedAt = '2026-09-17T00:00:00.000Z'
+  const destinationHash = 'A'.repeat(43)
+  database.prepare("UPDATE notification_outbox SET email_destination_hash = ?, email_provider_message_id = ?, email_delivery_status = 'pending', email_attempted_at = ?, email_attempt_version = 7 WHERE id = 'outbox-pending'").run(destinationHash, 'Case/é@provider.test', attemptedAt)
+  for (const [column, values] of Object.entries({
+    email_destination_hash: ['', 'short', `${'A'.repeat(42)}!`],
+    email_provider_message_id: ['', 'é'.repeat(129), '<wrapped>', 'line\nfeed', 'nul\u0000byte', 'x\u007Fx', 'x\u0085x'],
+    email_delivery_status: ['unknown'],
+    email_attempted_at: ['bad'],
+    email_attempt_version: [0, -1, 1.5, 9, 'invalid'],
+  })) for (const value of values) assert.throws(() => database.prepare(`UPDATE notification_outbox SET ${column} = ? WHERE id = 'outbox-pending'`).run(value), `${column} invalid value must fail`)
+  for (const status of ['pending', 'submitted', 'delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed', 'failed']) database.prepare("UPDATE notification_outbox SET email_delivery_status = ? WHERE id = 'outbox-pending'").run(status)
+  database.prepare("UPDATE notification_outbox SET email_provider_message_id = ? WHERE id = 'outbox-pending'").run('é'.repeat(128))
+  assert.throws(() => database.prepare("UPDATE notification_outbox SET email_delivery_status = 'pending' WHERE id = 'event-sms'").run(), 'event outbox cannot acquire lifecycle evidence')
+  const insertReceipt = (key: string, outboxId: string, version: unknown, event: string, providerId: string | null, receivedAt = attemptedAt) => database.prepare('INSERT INTO notification_lifecycle_email_callbacks VALUES (?, ?, ?, ?, ?, ?)').run(key, outboxId, version, event, providerId, receivedAt)
+  for (const [index, event] of ['delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed'].entries()) insertReceipt(String(index).repeat(64), 'outbox-pending', 7, event, 'Case/é@provider.test')
+  assert.throws(() => insertReceipt('0'.repeat(64), 'outbox-pending', 7, 'delivered', 'provider'), 'duplicate receipt rejected')
+  assert.throws(() => insertReceipt('a'.repeat(64), 'missing', 7, 'delivered', 'provider'), 'receipt orphan rejected')
+  for (const version of [0, -1, 1.5, 'bad']) assert.throws(() => insertReceipt('a'.repeat(64), 'outbox-pending', version, 'delivered', 'provider'))
+  assert.throws(() => insertReceipt('a'.repeat(64), 'outbox-pending', 7, 'unknown', 'provider'))
+  assert.throws(() => insertReceipt('bad', 'outbox-pending', 7, 'delivered', 'provider'))
+  for (const provider of ['', null, 'é'.repeat(129), '<wrapped>', 'x\u0000x', 'x\u0085x']) assert.throws(() => insertReceipt('a'.repeat(64), 'outbox-pending', 7, 'delivered', provider))
+  assert.throws(() => insertReceipt('a'.repeat(64), 'outbox-pending', 7, 'delivered', 'provider', 'bad'))
+  database.exec('BEGIN')
+  try {
+    database.prepare("UPDATE notification_outbox SET email_delivery_status = 'delivered' WHERE id = 'outbox-pending'").run()
+    assert.throws(() => insertReceipt('a'.repeat(64), 'outbox-pending', 0, 'delivered', 'provider'))
+  } finally { database.exec('ROLLBACK') }
+  assert.equal(database.prepare("SELECT email_delivery_status FROM notification_outbox WHERE id = 'outbox-pending'").get()?.email_delivery_status, 'failed', 'rollback restores preceding valid change')
+  const eventHistory = database.prepare('SELECT * FROM notification_delivery_callbacks ORDER BY provider_event_id').all()
+  const suppressions = database.prepare('SELECT * FROM notification_suppressions ORDER BY id').all()
+  // This is a persistence rehearsal, not the deferred 06-18 runtime integration.
+  database.prepare("UPDATE notification_outbox SET contact_id = NULL, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL WHERE id = 'outbox-pending'").run()
   database.prepare('DELETE FROM notification_contacts WHERE id = ?').run(1)
   assert.deepEqual(database.prepare('SELECT contact_id, destination_hash FROM notification_event_deliveries WHERE id = ?').get('delivery-1'), { contact_id: null, destination_hash: 'destination-hash' }, 'delivery audit evidence must survive contact deletion without a recipient')
+  assert.deepEqual(database.prepare("SELECT contact_id, payload_ciphertext, payload_iv, claim_token, claim_expires_at, email_destination_hash, email_attempt_version FROM notification_outbox WHERE id = 'outbox-pending'").get(), { contact_id: null, payload_ciphertext: null, payload_iv: null, claim_token: null, claim_expires_at: null, email_destination_hash: destinationHash, email_attempt_version: 7 })
+  assert.equal(database.prepare('SELECT COUNT(*) count FROM notification_lifecycle_email_callbacks').get()?.count, 6)
+  assert.deepEqual(database.prepare('SELECT * FROM notification_delivery_callbacks ORDER BY provider_event_id').all(), eventHistory)
+  assert.deepEqual(database.prepare('SELECT * FROM notification_suppressions ORDER BY id').all(), suppressions)
+  const evidence = JSON.stringify(database.prepare('SELECT * FROM notification_lifecycle_email_callbacks').all())
+  for (const raw of ['alice@example.test', 'token-digest', 'alias-digest', 'ciphertext']) assert.ok(!evidence.includes(raw), 'receipt evidence must not retain contact/capability/payload')
+  database.prepare("INSERT INTO notification_outbox (id, version, expected_capability_generation, status, kind, created_at, updated_at) VALUES ('receipt-cleanup', 1, 1, 'consumed', 'first-activation', ?, ?)").run(attemptedAt, attemptedAt)
+  insertReceipt('f'.repeat(64), 'receipt-cleanup', 1, 'delivered', 'provider')
+  database.prepare("DELETE FROM notification_outbox WHERE id = 'receipt-cleanup'").run()
+  assert.equal(database.prepare("SELECT COUNT(*) count FROM notification_lifecycle_email_callbacks WHERE outbox_id = 'receipt-cleanup'").get()?.count, 0)
 }
 
 const planDetail = (database: InstanceType<typeof Database>, query: string, values: unknown[], index: string) => {
@@ -301,6 +433,7 @@ const applyWithNuxtHubRunner = async (database: InstanceType<typeof Database>, h
 
 const fullRehearsal = async () => {
   const migrations = await candidateMigrations()
+  await compareGeneratedHistory(join(root, migrationDirectory), join(root, migrationDirectory))
   const migrationHashes = await Promise.all(migrations.map(async migration => ({ migration: basename(migration), hash: createHash('sha256').update(await readFile(join(root, migration))).digest('hex') })))
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'notification-migration-'))
   assertWithinTmp(temporaryDirectory)
@@ -321,9 +454,13 @@ const fullRehearsal = async () => {
       upgrade.prepare("INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) VALUES ('sms', 'legacy-suppression', 'user-stop', 'suppressed')").run()
       upgrade.prepare("INSERT INTO notification_abuse_attempts (requester_hash, attempted_at, expires_at) VALUES ('legacy-requester', 'attempted', 'expires')").run()
       upgrade.prepare("INSERT INTO notification_event_state VALUES ('legacy-key', 'legacy-uid', 'start', 'end', 'venue', 0, 4, 'updated')").run()
-      const before = Object.fromEntries(Object.keys(notificationTables).map(table => [table, upgrade.prepare(`SELECT * FROM ${table}`).all()]))
+      const before = Object.fromEntries(upgrade.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name LIKE 'notification_%'").all().map(row => [String(row.name), upgrade.prepare(`SELECT * FROM ${row.name}`).all()]))
+      await applyWithNuxtHubRunner(upgrade, join(temporaryDirectory, 'upgrade-hub'), migrations.slice(0, 6))
+      assert.equal(upgrade.prepare("SELECT COUNT(*) count FROM sqlite_schema WHERE name = 'notification_lifecycle_email_callbacks'").get()?.count, 0, 'columns stage must not create the receipt child')
+      assert.deepEqual(upgrade.prepare("SELECT email_destination_hash, email_provider_message_id, email_delivery_status, email_attempted_at, email_attempt_version FROM notification_outbox WHERE id = 'legacy-outbox'").get(), { email_destination_hash: null, email_provider_message_id: null, email_delivery_status: null, email_attempted_at: null, email_attempt_version: null })
       await applyWithNuxtHubRunner(upgrade, join(temporaryDirectory, 'upgrade-hub'), migrations)
       inspectContract(upgrade)
+      assert.deepEqual(upgrade.prepare("SELECT email_destination_hash, email_provider_message_id, email_delivery_status, email_attempted_at, email_attempt_version FROM notification_outbox WHERE id = 'legacy-outbox'").get(), { email_destination_hash: null, email_provider_message_id: null, email_delivery_status: null, email_attempted_at: null, email_attempt_version: null }, 'constraint stage must preserve null old evidence without backfill')
       for (const [table, rows] of Object.entries(before)) {
         const after = upgrade.prepare(`SELECT * FROM ${table}`).all()
         assert.equal(after.length, rows.length, `${table} lost upgrade rows`)
@@ -355,6 +492,7 @@ const fullRehearsal = async () => {
       subscription: planDetail(database, 'SELECT id FROM notification_subscriptions WHERE contact_id = ? AND community_slug = ? AND frequency = ?', [1, 'brno', 'created'], 'notification_subscriptions_identity_unique'),
       outbox: planDetail(database, 'SELECT id FROM notification_outbox WHERE contact_id = ? AND status = ?', [1, 'queued'], 'notification_outbox_contact_status_idx'),
       abuse: planDetail(database, 'SELECT id FROM notification_abuse_attempts WHERE requester_hash = ? AND attempted_at >= ?', ['requester-hash', '2026-09-17T00:00:00.000Z'], 'notification_abuse_attempts_requester_attempted_idx'),
+      lifecycleReceipt: planDetail(database, 'SELECT receipt_key FROM notification_lifecycle_email_callbacks WHERE outbox_id = ?', ['outbox-pending'], 'notification_lifecycle_email_callbacks_outbox_idx'),
     }
     database.close()
 
@@ -370,11 +508,18 @@ const fullRehearsal = async () => {
 
 const bundleContract = async (configPath: string) => {
   const migrations = await candidateMigrations()
+  await compareGeneratedHistory(join(root, migrationDirectory), join(root, migrationDirectory))
   const resolvedConfigPath = resolve(root, configPath)
-  assert.ok(resolvedConfigPath.startsWith(`${root}${sep}`), 'bundle config must remain within the repository')
-  const config = JSON.parse(await readFile(resolvedConfigPath, 'utf8')) as { d1_databases?: Array<{ binding?: string, migrations_dir?: string }> }
+  const actualConfigPath = await realpath(resolvedConfigPath)
+  if (!actualConfigPath.startsWith(`${await realpath(root)}${sep}`)) {
+    const ownedRoot = await realpath(tmpdir())
+    assert.ok(ownedRoot.startsWith('/tmp/opencode/') && actualConfigPath.startsWith(`${ownedRoot}${sep}`), 'external bundle config must remain within the explicitly owned /tmp/opencode TMPDIR')
+    assert.ok(actualConfigPath.endsWith(`${sep}output${sep}server${sep}wrangler.json`), 'owned bundle config must be the actual generated output/server/wrangler.json')
+  }
+  const config = JSON.parse(await readFile(resolvedConfigPath, 'utf8')) as { d1_databases?: Array<{ binding?: string, migrations_dir?: string, migrations_table?: string }> }
   const database = config.d1_databases?.find(candidate => candidate.binding === 'DB')
   assert.ok(database?.migrations_dir, 'generated Wrangler config must include DB migration packaging')
+  assert.equal(database.migrations_table, '_hub_migrations', 'generated config must retain the NuxtHub migration ledger')
   const packagedDirectory = resolve(dirname(resolvedConfigPath), database.migrations_dir)
   assert.ok(packagedDirectory.startsWith(`${dirname(resolvedConfigPath)}${sep}`), 'DB migration directory must remain inside generated output')
   const packaged = (await readdir(packagedDirectory)).filter(file => file.endsWith('.sql')).sort()

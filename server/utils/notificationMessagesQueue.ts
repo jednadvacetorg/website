@@ -19,6 +19,7 @@ export interface NotificationQueueDependencies {
   config: NotificationLifecycleConfig
   crypto?: NotificationCrypto
   now?: () => Date
+  monotonicNow?: () => number
   barriers?: NotificationQueueBarriers
 }
 
@@ -43,12 +44,13 @@ export interface EventNotificationMessagePayload {
 }
 
 export type NotificationMessagePayload = LifecycleNotificationMessagePayload | EventNotificationMessagePayload
-export interface NotificationDeliveryAuthorization { expected_capability_generation: number, channel: 'email' | 'sms' | 'web-push', contact_id: number }
-export type NotificationDeliveryHook = (payload: NotificationMessagePayload, authorization: NotificationDeliveryAuthorization, authorize: () => Promise<boolean>) => Promise<void | BrevoAttemptResult | BrevoSmsAttemptResult | WebPushAttemptResult>
+export interface NotificationDeliveryAuthorization { expected_capability_generation: number, channel: 'email' | 'sms' | 'web-push', contact_id: number, lifecycleAttempt?: NotificationOutboxPointer }
+export type NotificationDeliveryHook = (payload: NotificationMessagePayload, authorization: NotificationDeliveryAuthorization, authorize: (signal?: AbortSignal) => Promise<boolean>) => Promise<void | BrevoAttemptResult | BrevoSmsAttemptResult | WebPushAttemptResult>
 
 interface PendingOutboxRow {
   id: unknown
   version: unknown
+  created_at: string
 }
 
 interface ClaimedOutboxRow {
@@ -108,23 +110,63 @@ export const parseNotificationOutboxPointer = (value: unknown): NotificationOutb
   return { outboxId: value.outboxId, version: version as number }
 }
 
-/** Publishes durable work as inert pointers; Queue acceptance never deletes or authorizes D1 payloads. */
-export const publishPendingNotificationPointers = async (queue: NotificationMessagesQueue, dependencies: NotificationQueueDependencies, limit = 25) => {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('Notification Queue batch limit is invalid')
-  const { results } = await dependencies.database.prepare('SELECT id, version FROM notification_outbox WHERE status = ? ORDER BY created_at, id LIMIT ?')
-    .bind('pending', limit).all<PendingOutboxRow>()
+/**
+ * Queue acceptance never authorizes delivery. Pages use a local cursor, not a persisted claim.
+ * Stop starting reads/sends at the wall deadline; a non-abortable in-flight send and its
+ * conditional D1 mark must settle and can exceed it. Never race an untracked send timer.
+ */
+export const publishPendingNotificationPointers = async (queue: NotificationMessagesQueue, dependencies: Omit<NotificationQueueDependencies, 'config'> & { config?: NotificationLifecycleConfig }, limits: number | { lifecycleLimit: number, eventLimit: number, budgetMs: number } = 25) => {
+  const legacy = typeof limits === 'number'
+  if (legacy && (!Number.isSafeInteger(limits) || limits < 1 || limits > 100)) throw new Error('Notification Queue batch limit is invalid')
+  const lifecycleLimit = legacy ? limits : limits.lifecycleLimit
+  const eventLimit = legacy ? limits : limits.eventLimit
+  const budgetMs = legacy ? 20000 : limits.budgetMs
+  if (!Number.isSafeInteger(lifecycleLimit) || lifecycleLimit < 0 || lifecycleLimit > 100
+    || !Number.isSafeInteger(eventLimit) || eventLimit < 0 || eventLimit > 300
+    || lifecycleLimit + eventLimit < 1 || !Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > 20000) throw new Error('Notification Queue publication budget is invalid')
+  const clock = dependencies.monotonicNow ?? (() => performance.now())
+  const started = clock()
+  const withinBudget = () => clock() - started < budgetMs
   let published = 0
-  for (const row of results) {
-    const version = row.version
-    if (typeof row.id !== 'string' || !row.id || !Number.isSafeInteger(version) || (version as number) < 1) throw new Error('Notification outbox pointer is invalid')
-    const pointer: NotificationOutboxPointer = { outboxId: row.id, version: row.version as number }
-    await queue.send(pointer)
-    await dependencies.barriers?.afterPublished?.(pointer)
-    await dependencies.database.prepare('UPDATE notification_outbox SET status = ?, updated_at = ? WHERE id = ? AND version = ? AND status = ?')
-      .bind('queued', nowIso(dependencies), pointer.outboxId, pointer.version, 'pending').run()
-    published += 1
+  let lifecyclePublished = 0
+  let eventPublished = 0
+  for (const lifecycle of [true, false]) {
+    const kind = lifecycle ? "kind IN ('first-activation', 'reactivation', 'management-recovery')" : "kind IN ('event-email', 'event-sms', 'event-web-push')"
+    const cap = lifecycle ? lifecycleLimit : eventLimit
+    let count = 0
+    let cursor: PendingOutboxRow | undefined
+    while (count < cap && (!legacy || published < limits) && withinBudget()) {
+      const pageSize = Math.min(100, cap - count, legacy ? limits - published : 400)
+      const { results } = await dependencies.database.prepare(`SELECT id, version, created_at FROM notification_outbox WHERE status = ? AND ${kind}${cursor ? ' AND (created_at > ? OR (created_at = ? AND id > ?))' : ''} ORDER BY created_at, id LIMIT ?`)
+        .bind('pending', ...(cursor ? [cursor.created_at, cursor.created_at, cursor.id] : []), pageSize).all<PendingOutboxRow>()
+      if (!results.length) break
+      for (const row of results) {
+        if (!withinBudget()) break
+        const version = row.version
+        if (typeof row.id !== 'string' || !row.id || typeof row.created_at !== 'string' || !Number.isSafeInteger(version) || (version as number) < 1) throw new Error('Notification outbox pointer is invalid')
+        const pointer: NotificationOutboxPointer = { outboxId: row.id, version: version as number }
+        await queue.send(pointer)
+        await dependencies.barriers?.afterPublished?.(pointer)
+        await dependencies.database.prepare('UPDATE notification_outbox SET status = ?, updated_at = ? WHERE id = ? AND version = ? AND status = ?')
+          .bind('queued', (dependencies.now?.() ?? new Date()).toISOString(), pointer.outboxId, pointer.version, 'pending').run()
+        // Counts durable Queue acceptances, even when concurrent consumption/revocation wins marking.
+        published++
+        count++
+        if (lifecycle) lifecyclePublished++
+        else eventPublished++
+        cursor = row
+      }
+      if (results.length < pageSize) break
+    }
   }
-  return { published }
+  // Do not start even accounting after the deadline. Null metrics mean not observed,
+  // never a false zero backlog; an already-started read can itself exceed the budget.
+  const pending = withinBudget() ? await dependencies.database.prepare(`SELECT
+    COALESCE(SUM(CASE WHEN kind IN ('first-activation', 'reactivation', 'management-recovery') THEN 1 ELSE 0 END), 0) AS lifecycle,
+    COALESCE(SUM(CASE WHEN kind IN ('event-email', 'event-sms', 'event-web-push') THEN 1 ELSE 0 END), 0) AS events,
+    MIN(created_at) AS oldest FROM notification_outbox WHERE status = 'pending'`).first<{ lifecycle: number, events: number, oldest: string | null }>() : null
+  const elapsedMs = clock() - started
+  return { published, lifecyclePublished, eventPublished, pendingLifecycle: pending?.lifecycle ?? null, pendingEvents: pending?.events ?? null, oldestPendingAt: pending?.oldest ?? null, elapsedMs, budgetExhausted: elapsedMs >= budgetMs }
 }
 
 const releaseClaim = async (pointer: NotificationOutboxPointer, token: string, dependencies: NotificationQueueDependencies) => {
@@ -193,9 +235,10 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
 
   let payload: NotificationMessagePayload
   let authorization: NotificationDeliveryAuthorization | null
-  let authorize!: () => Promise<boolean>
+  let authorize!: (signal?: AbortSignal) => Promise<boolean>
   let authorizationLost = false
   let authorizationError: unknown
+  let lifecycleReserved = false
   try {
     const row = await dependencies.database.prepare('SELECT payload_ciphertext, payload_iv FROM notification_outbox WHERE id = ? AND version = ? AND status = ? AND claim_token = ?')
       .bind(pointer.outboxId, pointer.version, 'claimed', token).first<ClaimedOutboxRow>()
@@ -227,23 +270,46 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
          : [pointer.outboxId, pointer.version, 'claimed', token, nowIso(dependencies), payload.kind, payload.destination, capabilityDigest]
     const readAuthorization = () => dependencies.database.prepare(authorizationSql).bind(...authorizationValues()).first<NotificationDeliveryAuthorization>()
     authorization = await readAuthorization()
-    authorize = async () => {
+    if (authorization?.channel === 'email' && !eventPayload) authorization.lifecycleAttempt = pointer
+    authorize = async (signal) => {
       try {
+        if (signal?.aborted) return false
         // Probes must precede the final subscriber read: awaiting one afterwards
         // would let a concurrent stop invalidate the authority we just read.
-        if (!await notificationSchemaReady(dependencies.database)) { authorizationLost = true; return false }
+        const schemaReady = await notificationSchemaReady(dependencies.database)
+        if (signal?.aborted) return false
+        if (!schemaReady) { authorizationLost = true; return false }
         const current = await readAuthorization()
+        if (signal?.aborted) return false
         if (current && !isNotificationChannelReady(current.channel, dependencies.config)) authorizationLost = true
         if (!current) authorizationLost = true
         if (current && !authorizationLost && eventPayload) {
           // Reserve every event attempt before transport so recovery cannot mistake
           // in-flight work for unsent work. Only an owned SMS/push transient result
           // clears this reservation; a process crash remains deliberately ambiguous.
-          const attempt = await dependencies.database.prepare(`UPDATE notification_event_deliveries SET submitted_at = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND submitted_at IS NULL AND EXISTS (${authorizationSql})`).bind(nowIso(dependencies), nowIso(dependencies), eventPayload.deliveryId, ...authorizationValues()).run()
+           const attempt = await dependencies.database.prepare(`UPDATE notification_event_deliveries SET submitted_at = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND submitted_at IS NULL AND EXISTS (${authorizationSql})`).bind(nowIso(dependencies), nowIso(dependencies), eventPayload.deliveryId, ...authorizationValues()).run()
+           if (signal?.aborted) return false
           if (changed(attempt) !== 1) authorizationLost = true
+        } else if (current?.channel === 'email' && !authorizationLost) {
+          // Consume the single email attempt in the final CAS itself. A crash after
+          // this commit is ambiguous, never permission to resubmit. All preparation
+          // and probes have finished; the next operation at the adapter is fetch.
+          const attemptedAt = nowIso(dependencies)
+          const attempt = await dependencies.database.prepare(`UPDATE notification_outbox SET
+            email_destination_hash = (SELECT destination_hash FROM notification_contacts WHERE id = notification_outbox.contact_id),
+            email_attempt_version = version, email_attempted_at = ?, email_delivery_status = 'pending',
+            version = version + 1, status = 'consumed', payload_ciphertext = NULL, payload_iv = NULL,
+            claim_token = NULL, claim_expires_at = NULL, terminal_at = ?, updated_at = ?
+            WHERE id = ? AND version = ? AND email_attempt_version IS NULL
+            AND contact_id = ? AND expected_capability_generation = ? AND EXISTS (${authorizationSql})`)
+             .bind(attemptedAt, attemptedAt, attemptedAt, pointer.outboxId, pointer.version, current.contact_id, current.expected_capability_generation, ...authorizationValues()).run()
+          if (signal?.aborted) return false
+          lifecycleReserved = changed(attempt) === 1
+          if (!lifecycleReserved) authorizationLost = true
         }
         return Boolean(current) && !authorizationLost
       } catch (error) {
+        if (signal?.aborted) return false
         authorizationError = error
         throw error
       }
@@ -273,6 +339,17 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
         return { delivered: false, stale: true }
       }
       if (isProviderAttempt(result) && !result.attempted && result.status !== 'invalid-request') throw new Error('Notification provider invocation is unavailable')
+      if (lifecycleReserved && isProviderAttempt(result)) {
+        const providerMessageId = 'providerMessageId' in result ? result.providerMessageId : undefined
+        await dependencies.database.prepare(`UPDATE notification_outbox SET
+          email_delivery_status = CASE WHEN email_delivery_status = 'pending' THEN ? ELSE email_delivery_status END,
+          email_provider_message_id = COALESCE(email_provider_message_id, ?),
+          status = CASE WHEN email_delivery_status = 'pending' AND ? <> 'submitted' THEN 'invalidated' ELSE status END
+          WHERE id = ? AND email_attempt_version = ? AND expected_capability_generation = ?
+          AND (email_provider_message_id IS NULL OR ? IS NULL OR email_provider_message_id = ?)`)
+          .bind(result.status === 'submitted' ? 'submitted' : 'failed', providerMessageId ?? null, result.status, pointer.outboxId, pointer.version, authorization.expected_capability_generation, providerMessageId ?? null, providerMessageId ?? null).run()
+        return { delivered: result.status === 'submitted', stale: false }
+      }
       if (isProviderAttempt(result) && result.status === 'stale-endpoint' && authorization.channel === 'web-push') {
         await removeStaleWebPushContact(pointer, token, authorization, dependencies)
         return { delivered: false, stale: false }

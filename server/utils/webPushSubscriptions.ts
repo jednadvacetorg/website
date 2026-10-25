@@ -36,8 +36,6 @@ export const parseWebPushSubscription = (value: unknown, now = new Date()): Cano
   return { endpoint: endpoint.toString(), keys: { auth: decodeBase64Url(keys.auth, 16), p256dh: decodeBase64Url(keys.p256dh, 65) } }
 }
 
-export const serializeWebPushSubscription = (value: unknown) => JSON.stringify(parseWebPushSubscription(value))
-
 /** Async point validation is required before activation/recovery writes, not in synchronous dispatch parsing. */
 export const validateWebPushSubscriptionPoint = async (subscription: CanonicalWebPushSubscription, subtle: SubtleCrypto) => {
   const encoded = subscription.keys.p256dh

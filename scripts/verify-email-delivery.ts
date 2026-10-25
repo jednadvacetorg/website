@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-import { sendBrevoEventEmail } from '../server/utils/brevoEmail.ts'
+import { normalizeBrevoProviderId, sendBrevoEventEmail } from '../server/utils/brevoEmail.ts'
 import { operationalEvidence, optionalVapidConfiguration } from '../server/utils/notificationConfig.ts'
 import { sendBrevoLifecycleSms } from '../server/utils/brevoSms.ts'
 import { sendWebPush } from '../server/utils/webPush.ts'
@@ -488,11 +488,18 @@ export const runEmailVerification = async (options: EmailVerificationOptions, de
       const deliveryId = text(required(env, 'EMAIL_VERIFY_SUPPRESSION_DELIVERY_ID'), /^[A-Za-z0-9_-]{12,128}$/)
       const finalId = text(required(env, 'EMAIL_VERIFY_DELIVERY_ID'), /^[A-Za-z0-9_-]{12,128}$/)
       check(deliveryId !== finalId && required(env, 'EMAIL_VERIFY_SUPPRESSION_RECIPIENT').trim().toLowerCase() !== required(env, 'EMAIL_VERIFY_FINAL_RECIPIENT').trim().toLowerCase(), 'canary-identity')
-      const eventId = text(required(env, 'EMAIL_VERIFY_CALLBACK_EVENT_ID'), /^[A-Za-z0-9_-]{12,128}$/)
       const before = (await commandRows(callbackSql(deliveryId)))[0]
       check(before && before.id === deliveryId && before.destination === required(env, 'EMAIL_VERIFY_SUPPRESSION_RECIPIENT').trim().toLowerCase() && before.status === 'submitted' && before.receipts === 0 && before.suppressed === 0 && before.contact_present === 1 && Number.isSafeInteger(before.contact_id) && Number(before.contact_id) > 0, 'callback-fixture')
       const contactId = Number(before.contact_id)
-      const payload = { id: eventId, event: 'hardbounce', 'X-Mailin-custom': deliveryId, messageId: text(before.provider_message_id, /^[A-Za-z0-9_-]{12,256}$/), date: new Date(dependencies.now()).toISOString() }
+      const providerMessageId = normalizeBrevoProviderId(before.provider_message_id)
+      check(providerMessageId === before.provider_message_id, 'callback-fixture')
+      const payload = {
+        id: 26224,
+        event: 'hard_bounce',
+        'X-Mailin-custom': deliveryId,
+        'message-id': providerMessageId,
+        ts_event: Math.floor(dependencies.now() / 1_000),
+      }
       const post = async (body: unknown, authenticated: boolean) => {
         const response = await fetchResponse(String(expected.callbackUrl), { method: 'POST', headers: { 'content-type': 'application/json', ...(authenticated ? { authorization: `Bearer ${callbackSecret}` } : {}) }, body: JSON.stringify(body) })
         await responseBytes(response)

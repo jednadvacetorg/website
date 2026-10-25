@@ -1,5 +1,5 @@
 import type { CalendarEventProjection } from './calendarEventProjection.ts'
-import type { LifecycleNotificationMessagePayload } from './notificationMessagesQueue.ts'
+import type { LifecycleNotificationMessagePayload, NotificationOutboxPointer } from './notificationMessagesQueue.ts'
 
 export interface BrevoEmailConfig {
   apiKey: string
@@ -67,7 +67,78 @@ export const composeBrevoEventEmail = (message: BrevoEventEmail) => {
   return { subject: `${message.cancelled ? 'Zrušeno: ' : ''}${event.title}`, text, html, ics: eventIcs(message) }
 }
 
-const boundedMessageId = (value: unknown) => typeof value === 'object' && value !== null && 'messageId' in value && typeof value.messageId === 'string' && value.messageId.length <= 256 ? value.messageId : undefined
+/** Normalizes the provider-owned message identifier without applying local-ID rules. */
+export const normalizeBrevoProviderId = (value: unknown) => {
+  if (typeof value !== 'string' || !value || new TextEncoder().encode(value).byteLength > 256 || /[\u0000-\u001F\u007F-\u009F]/.test(value)) return
+  const startsBracketed = value.startsWith('<')
+  const endsBracketed = value.endsWith('>')
+  if (startsBracketed !== endsBracketed) return
+  const normalized = startsBracketed ? value.slice(1, -1) : value
+  return normalized && !(startsBracketed && /[<>]/.test(normalized)) && !/[\u0000-\u001F\u007F-\u009F]/.test(normalized) ? normalized : undefined
+}
+
+const boundedMessageId = (value: unknown) => typeof value === 'object' && value !== null && 'messageId' in value ? normalizeBrevoProviderId(value.messageId) : undefined
+
+/** One deadline owns headers and raw body bytes, including transports which ignore abort. */
+const requestEmail = async (config: BrevoEmailConfig, body: string, fetcher: typeof fetch): Promise<BrevoAttemptResult> => {
+  const controller = new AbortController()
+  let disposed = false
+  let response: Response | undefined
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  let complete = false
+  let timer: ReturnType<typeof setTimeout>
+  const deadline = new Promise<BrevoAttemptResult>(resolve => {
+    timer = setTimeout(() => {
+      disposed = true
+      controller.abort()
+      resolve({ attempted: true, status: 'transport' })
+    }, 10_000)
+  })
+  try {
+    return await Promise.race([deadline, (async (): Promise<BrevoAttemptResult> => {
+      const received = await fetcher('https://api.brevo.com/v3/smtp/email', {
+        method: 'POST', headers: { 'api-key': config.apiKey, 'content-type': 'application/json', ...(config.sandbox ? { 'X-Sib-Sandbox': 'drop' } : {}) },
+        body, signal: controller.signal,
+      })
+      if (disposed) {
+        void received.body?.cancel().catch(() => {})
+        return { attempted: true, status: 'transport' }
+      }
+      response = received
+      const httpStatus = response.status
+      if (httpStatus !== 201 && httpStatus !== 202) return { attempted: true, status: httpStatus === 429 ? 'rate-limited' : httpStatus === 401 || httpStatus === 403 ? 'auth' : httpStatus >= 500 ? 'provider-5xx' : 'invalid-request', httpStatus }
+      const length = response.headers.get('content-length')
+      let data: unknown
+      if (!(length && /^\d+$/.test(length) && Number(length) > 16_384) && response.body) {
+        reader = response.body.getReader()
+        const chunks: Uint8Array[] = []
+        let size = 0
+        while (!disposed) {
+          const chunk = await reader.read()
+          if (disposed) return { attempted: true, status: 'transport' }
+          if (chunk.done) { complete = true; break }
+          size += chunk.value.byteLength
+          if (size > 16_384) return { attempted: true, status: 'invalid-request', httpStatus, providerMessageId: undefined }
+          chunks.push(chunk.value)
+        }
+        const bytes = new Uint8Array(size)
+        let offset = 0
+        for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+        try { data = JSON.parse(new TextDecoder().decode(bytes)) } catch { /* Fixed invalid-request below. */ }
+      }
+      const providerMessageId = boundedMessageId(data)
+      return { attempted: true, status: providerMessageId ? 'submitted' : 'invalid-request', httpStatus, providerMessageId }
+    })()])
+  } catch { return { attempted: true, status: 'transport' } }
+  finally {
+    disposed = true
+    clearTimeout(timer!)
+    if (reader) {
+      if (!complete) void reader.cancel().catch(() => {})
+      reader.releaseLock()
+    } else if (response) void response.body?.cancel().catch(() => {})
+  }
+}
 
 export const composeBrevoLifecycleEmail = (message: LifecycleNotificationMessagePayload) => {
   if (!/^[A-Za-z0-9_-]{43}$/.test(message.capability)) throw new Error('Notification management capability is invalid')
@@ -85,33 +156,21 @@ export const composeBrevoLifecycleEmail = (message: LifecycleNotificationMessage
 }
 
 /** Lifecycle mail has no event attachment and makes exactly one transport attempt. */
-export const sendBrevoLifecycleEmail = async (config: BrevoEmailConfig, message: LifecycleNotificationMessagePayload, fetcher: typeof fetch = fetch): Promise<BrevoAttemptResult> => {
+export const sendBrevoLifecycleEmail = async (config: BrevoEmailConfig, message: LifecycleNotificationMessagePayload & { attempt?: NotificationOutboxPointer }, fetcher: typeof fetch = fetch): Promise<BrevoAttemptResult> => {
   if (config.senderEmail !== 'noreply@jednadvacet.org' || !config.apiKey.trim() || !config.senderName.trim()) return { attempted: false, status: 'auth' }
-  const content = composeBrevoLifecycleEmail(message)
   try {
-    const response = await fetcher('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST', headers: { 'api-key': config.apiKey, 'content-type': 'application/json', ...(config.sandbox ? { 'X-Sib-Sandbox': 'drop' } : {}) },
-      body: JSON.stringify({ sender: { name: config.senderName, email: config.senderEmail }, to: [{ email: message.destination }], subject: content.subject, textContent: content.text, htmlContent: content.html }),
-    })
-    let data: unknown
-    try { data = await response.json() } catch { data = undefined }
-    if (response.status === 201 || response.status === 202) return { attempted: true, status: boundedMessageId(data) ? 'submitted' : 'invalid-request', httpStatus: response.status, providerMessageId: boundedMessageId(data) }
-    return { attempted: true, status: response.status === 429 ? 'rate-limited' : response.status === 401 || response.status === 403 ? 'auth' : response.status >= 500 ? 'provider-5xx' : 'invalid-request', httpStatus: response.status }
-  } catch { return { attempted: true, status: 'transport' } }
+    const content = composeBrevoLifecycleEmail(message)
+    const body = JSON.stringify({ sender: { name: config.senderName, email: config.senderEmail }, to: [{ email: message.destination }], subject: content.subject, textContent: content.text, htmlContent: content.html, ...(message.attempt ? { headers: { 'X-Mailin-custom': `lifecycle:v1:${message.attempt.outboxId}:${message.attempt.version}` } } : {}) })
+    return requestEmail(config, body, fetcher)
+  } catch { return { attempted: false, status: 'invalid-request' } }
 }
 
 /** Makes exactly one Worker-native transactional request and never returns provider response text. */
 export const sendBrevoEventEmail = async (config: BrevoEmailConfig, message: BrevoEventEmail, fetcher: typeof fetch = fetch): Promise<BrevoAttemptResult> => {
   if (config.senderEmail !== 'noreply@jednadvacet.org' || !config.apiKey.trim() || !config.senderName.trim()) return { attempted: false, status: 'auth' }
-  const content = composeBrevoEventEmail(message)
   try {
-    const response = await fetcher('https://api.brevo.com/v3/smtp/email', {
-      method: 'POST', headers: { 'api-key': config.apiKey, 'content-type': 'application/json', ...(config.sandbox ? { 'X-Sib-Sandbox': 'drop' } : {}) },
-      body: JSON.stringify({ sender: { name: config.senderName, email: config.senderEmail }, to: [{ email: message.recipient }], subject: content.subject, textContent: content.text, htmlContent: content.html, attachment: [{ name: 'event.ics', content: base64Utf8(content.ics) }], headers: { 'X-Mailin-custom': message.deliveryId } }),
-    })
-    let data: unknown
-    try { data = await response.json() } catch { data = undefined }
-    if (response.status === 201 || response.status === 202) return { attempted: true, status: boundedMessageId(data) ? 'submitted' : 'invalid-request', httpStatus: response.status, providerMessageId: boundedMessageId(data) }
-    return { attempted: true, status: response.status === 429 ? 'rate-limited' : response.status === 401 || response.status === 403 ? 'auth' : response.status >= 500 ? 'provider-5xx' : 'invalid-request', httpStatus: response.status }
-  } catch { return { attempted: true, status: 'transport' } }
+    const content = composeBrevoEventEmail(message)
+    const body = JSON.stringify({ sender: { name: config.senderName, email: config.senderEmail }, to: [{ email: message.recipient }], subject: content.subject, textContent: content.text, htmlContent: content.html, attachment: [{ name: 'event.ics', content: base64Utf8(content.ics) }], headers: { 'X-Mailin-custom': message.deliveryId } })
+    return requestEmail(config, body, fetcher)
+  } catch { return { attempted: false, status: 'invalid-request' } }
 }

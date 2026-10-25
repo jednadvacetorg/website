@@ -63,10 +63,11 @@ export const evaluateNotificationAbuse = async (requesterIp: unknown, challengeT
     const attemptsInWindow = count.count as number
     const attemptsInMinute = minuteCount.count as number
     if (attemptsInMinute > 1) return { allowed: false, reason: 'rate-limited' }
-    if (attemptsInWindow < 6) return { allowed: true }
+    // Low-volume requests may omit a token, but a supplied token is always verified.
+    if (attemptsInWindow < 6 && challengeToken === undefined) return { allowed: true }
     return await verifyTurnstile(typeof challengeToken === 'string' ? challengeToken : undefined, requesterIp, dependencies)
       ? { allowed: true }
-      : { allowed: false, reason: typeof challengeToken === 'string' && challengeToken ? 'challenge-failed' : 'challenge-required' }
+      : { allowed: false, reason: challengeToken === undefined ? 'challenge-required' : 'challenge-failed' }
   } catch {
     return { allowed: false, reason: 'challenge-failed' }
   }
