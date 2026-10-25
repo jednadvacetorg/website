@@ -142,7 +142,7 @@ export default defineNuxtConfig({
     blob: isPreviewDeploy
       // The protected blob route remains in the Worker bundle, but review apps
       // deliberately receive no R2 resource or binding.
-      ? false
+      ? { driver: 'fs', dir: '/tmp/jednadvacet-preview-blob' }
       : process.env.NODE_ENV === 'production'
         ? { driver: 'cloudflare-r2', binding: 'BLOB', bucketName: 'files-jednadvacet-org' }
         : { driver: 'fs', dir: '.data/blob' },
