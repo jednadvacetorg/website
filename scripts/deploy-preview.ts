@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -93,7 +93,9 @@ const build = async (directory: string) => {
       maxBuffer: 8 * 1024 * 1024,
     }, error => error ? reject(new Error('preview build failed')) : accept())
   })
-  return join(directory, 'nuxt', 'dist', 'server', 'wrangler.json')
+  const output = join(process.cwd(), '.output')
+  await cp(output, join(directory, 'output'), { recursive: true })
+  return join(directory, 'output', 'server', 'wrangler.json')
 }
 
 const resolvedConfig = async (generatedPath: string, directory: string, target: Target) => {
@@ -128,13 +130,14 @@ export const runPreviewDeployment = async (options: Options) => {
     const generated = await build(directory)
     const configPath = await resolvedConfig(generated, directory, options.target)
     const config = JSON.parse(await readFile(configPath, 'utf8'))
-    validatePreviewConfiguration(config, options.target === 'claimed' ? { accountId: claimedAccountId, databaseId: claimedDatabaseId } : undefined)
+    validatePreviewConfiguration(config)
     if (options.dryRun) {
       await command(['deploy', '--dry-run', '--keep-vars', '--config', configPath], { quiet: true })
       process.stdout.write(JSON.stringify({ target: options.target, dryRun: true, worker: workerName, database: previewDatabase }) + '\n')
       return
     }
     await createResources(configPath, options.target)
+    validatePreviewConfiguration(JSON.parse(await readFile(configPath, 'utf8')), options.target === 'claimed' ? { accountId: claimedAccountId, databaseId: claimedDatabaseId } : undefined)
     const receipt = await command(['deploy', ...(options.target === 'temporary' ? ['--temporary'] : []), '--keep-vars', '--config', configPath], { quiet: true })
     const previewUrl = receipt.match(/https:\/\/[a-z0-9.-]+\.workers\.dev\/?/i)?.[0]
     if (!previewUrl) throw new Error('Cloudflare did not return a preview URL')
