@@ -108,6 +108,8 @@ If authorized switch enablement creates a new deployment UUID without changing r
 
 ## Human approval and rollback
 
+Recovery is neutral while its channel or supplied database schema is not ready: the HTTP response remains generic 202, but the existing management capability and recovery work are not rotated or replaced. Readiness at request time does not guarantee a later provider receipt; Queue consumption still rechecks current authority and readiness before transport. Brevo callbacks authenticate before reading and enforce the 64 KiB byte ceiling during stream consumption, not only after JSON buffering.
+
 Human review must inspect the live canary sender, Czech HTML/text, token-scoped management link, non-RSVP `event.ics`, and PII-safe Cloudflare logs before enabling delivery. The reviewer must explicitly approve the exact bundle evidence.
 
 If an authorized production check fails, stop sending, disable the manual switch through the existing reviewed Worker configuration workflow, and redeploy the reviewed disabled candidate with the existing `npx wrangler deploy --config .output/server/wrangler.json` operator command. This verifier has no rollback/deploy mode. Provisioning/replacing credentials uses existing Brevo and `npx wrangler secret put <NAME> --config .output/server/wrangler.json` workflows with secret input on stdin, never an argument. Each write/deployment still requires explicit target/candidate authorization. Coordinate API-key/callback-bearer replacement, then obtain fresh preflight/callback evidence; never reuse a suppressed canary as final-delivery proof or unsuppress it to manufacture success. Root replacement has the limitations above; do not invent a former-root recovery path.

@@ -1,4 +1,4 @@
-import { createError, defineEventHandler, getHeader, readRawBody, setResponseStatus } from 'h3'
+import { createError, defineEventHandler, getHeader, getRequestWebStream, setResponseStatus } from 'h3'
 import { applyBrevoCallback, normalizeBrevoCallback } from '../../utils/brevoCallbacks.ts'
 import type { NotificationDatabase } from '../../utils/notifications.ts'
 
@@ -12,9 +12,13 @@ const secureEqual = (left: string, right: string) => {
   return difference === 0
 }
 
+const assertCallbackAuthorization = (secret: unknown, authorization: string | undefined) => {
+  if (typeof secret !== 'string' || !secret.trim() || !authorization || !secureEqual(authorization, `Bearer ${secret}`)) throw createError({ statusCode: 401, statusMessage: 'Invalid callback authorization' })
+}
+
 /** Processes already-bounded normalized callbacks; exported for boundary tests. */
 export const processBrevoCallbackBody = async (rawBody: string, secret: unknown, authorization: string | undefined, database: NotificationDatabase) => {
-  if (typeof secret !== 'string' || !secret.trim() || !authorization || !secureEqual(authorization, `Bearer ${secret}`)) throw createError({ statusCode: 401, statusMessage: 'Invalid callback authorization' })
+  assertCallbackAuthorization(secret, authorization)
   if (new TextEncoder().encode(rawBody).byteLength > maxBytes) throw createError({ statusCode: 413, statusMessage: 'Invalid callback payload' })
   let body: unknown
   try { body = JSON.parse(rawBody) } catch { throw createError({ statusCode: 400, statusMessage: 'Invalid callback payload' }) }
@@ -29,9 +33,35 @@ export const processBrevoCallbackBody = async (rawBody: string, secret: unknown,
 export default defineEventHandler(async (event) => {
   const database = (event.context._platform as { cloudflare?: { env?: { DB?: NotificationDatabase } } } | undefined)?.cloudflare?.env?.DB
   if (!database?.prepare || !database.batch) throw createError({ statusCode: 503, statusMessage: 'Notification callback unavailable' })
-  const rawBody = await readRawBody(event)
-  if (rawBody === undefined) throw createError({ statusCode: 400, statusMessage: 'Invalid callback payload' })
-  await processBrevoCallbackBody(rawBody, useRuntimeConfig(event).brevoCallbackSecret, getHeader(event, 'authorization'), database)
+  const secret = useRuntimeConfig(event).brevoCallbackSecret
+  const authorization = getHeader(event, 'authorization')
+  assertCallbackAuthorization(secret, authorization)
+  if (Number(getHeader(event, 'content-length')) > maxBytes) throw createError({ statusCode: 413, statusMessage: 'Invalid callback payload' })
+  const reader = getRequestWebStream(event)?.getReader()
+  if (!reader) throw createError({ statusCode: 400, statusMessage: 'Invalid callback payload' })
+  const decoder = new TextDecoder()
+  let bytes = 0
+  let rawBody = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      bytes += value.byteLength
+      if (bytes > maxBytes) {
+        // Web requests (including Workers) propagate cancellation to the source.
+        // H3's Node bridge has no cancel hook; pause it instead of letting its
+        // data listener enqueue into a cancelled stream.
+        if (event.web) await reader.cancel().catch(() => {})
+        else event.node.req.pause()
+        throw createError({ statusCode: 413, statusMessage: 'Invalid callback payload' })
+      }
+      rawBody += decoder.decode(value, { stream: true })
+    }
+    rawBody += decoder.decode()
+  } finally {
+    reader.releaseLock()
+  }
+  await processBrevoCallbackBody(rawBody, secret, authorization, database)
   setResponseStatus(event, 202)
   return { ok: true }
 })

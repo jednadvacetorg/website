@@ -707,7 +707,7 @@ test('activation wakes only real committed outcomes including updated and pendin
 
 test('allowed real recovery registers identical generic wake for eligible, absent and failed storage; Queue failures expose no existence', async t => {
   const previous = runtimeConfig
-  runtimeConfig = managementRuntime
+  runtimeConfig = readyEmailRuntime()
   t.after(() => { runtimeConfig = previous })
   const logs: unknown[][] = []
   const error = console.error
@@ -741,6 +741,41 @@ test('allowed real recovery registers identical generic wake for eligible, absen
   })
   assert.equal(new Set(bodies).size, 1)
   assert.ok(bodies.every(body => !body.includes('Alice') && !body.includes('Queue')))
+})
+
+test('HTTP recovery with disabled or expired delivery preserves the old management link and generic response', async t => {
+  const previous = runtimeConfig
+  t.after(() => { runtimeConfig = previous })
+  for (const scenario of ['disabled', 'expired'] as const) await t.test(scenario, async () => {
+    runtimeConfig = readyEmailRuntime()
+    if (scenario === 'disabled') runtimeConfig.notificationEmailManualEnabled = false
+    else {
+      const evidence = JSON.parse(String(runtimeConfig.notificationEmailEvidence))
+      evidence.verifiedAt = new Date(Date.now() - 3600000).toISOString()
+      evidence.expiresAt = new Date(Date.now() - 1000).toISOString()
+      runtimeConfig.notificationEmailEvidence = JSON.stringify(evidence)
+    }
+    const storage = managementDatabase()
+    try {
+      await seedManagement(storage.database)
+      const before = storage.snapshot()
+      const responses: string[] = []
+      await withRoutes(async base => {
+        for (const [index, contact] of ['Alice@example.com', 'absent@example.test'].entries()) {
+          const response = await fetch(`${base}/recover`, { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Connecting-IP': `192.0.2.${80 + index}` }, body: JSON.stringify({ channel: 'email', contact }) })
+          assert.equal(response.status, 202)
+          responses.push(await response.text())
+        }
+        const oldLink = await fetch(`${base}/manage/${managementToken}`)
+        assert.equal((await oldLink.json()).state, 'active')
+      }, storage.database, { promises: [], queue: { send: async () => {} } })
+      assert.equal(new Set(responses).size, 1)
+      const after = storage.snapshot()
+      assert.deepEqual(after.slice(0, 3), before.slice(0, 3))
+      assert.equal(after[3]!.length, before[3]!.length, 'no replacement recovery message is created')
+      assert.deepEqual(after[4], before[4])
+    } finally { storage.close() }
+  })
 })
 
 test('absent real recovery without Queue distinguishes an empty outbox from unrelated pending work only in diagnostics', async t => {

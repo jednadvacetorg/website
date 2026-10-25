@@ -3,7 +3,7 @@ import { createServer } from 'node:http'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
-import { createApp, eventHandler, toNodeListener } from 'h3'
+import { createApp, eventHandler, toNodeListener, toWebHandler } from 'h3'
 
 import { applyBrevoCallback, normalizeBrevoCallback } from '../server/utils/brevoCallbacks.ts'
 import { sendBrevoEventEmail } from '../server/utils/brevoEmail.ts'
@@ -96,6 +96,51 @@ const postCallback = (baseUrl: string, body: string, authorization?: string) => 
   method: 'POST',
   headers: authorization ? { authorization } : undefined,
   body,
+})
+
+test('callback authentication and byte limits stop streamed bodies before full consumption', async t => {
+  const limit = 64 * 1024
+  for (const scenario of ['unauthorized', 'declared-oversize', 'chunked-oversize', 'multibyte-oversize', 'exact-limit'] as const) await t.test(scenario, async () => {
+    const { sqlite, database } = createDatabase()
+    t.after(() => sqlite.close())
+    seedDelivery(sqlite, 'submitted', '201798300811.5787683@relay.domain.com')
+    const app = createApp()
+    app.use('/brevo', eventHandler(event => {
+      event.context._platform = { cloudflare: { env: { DB: database } } }
+      return callbackRoute(event)
+    }))
+    const valid = callbackBody('delivered')
+    const text = scenario === 'exact-limit' ? valid.padEnd(limit, ' ')
+      : scenario === 'multibyte-oversize' ? JSON.stringify({ padding: 'ž'.repeat(40000) })
+      : 'x'.repeat(limit * 2)
+    const bytes = new TextEncoder().encode(text)
+    let offset = 0
+    let reads = 0
+    let cancelled = false
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads++
+        const end = Math.min(offset + 8192, bytes.length)
+        controller.enqueue(bytes.slice(offset, end))
+        offset = end
+        if (offset === bytes.length) controller.close()
+      },
+      cancel() { cancelled = true },
+    }, { highWaterMark: 0 })
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    if (scenario !== 'unauthorized') headers.authorization = 'Bearer callback-secret-for-tests'
+    if (scenario === 'declared-oversize') headers['content-length'] = String(bytes.length)
+    const request = new Request('http://localhost/brevo', { method: 'POST', headers, body, duplex: 'half' } as RequestInit)
+    const response = await toWebHandler(app)(request)
+    assert.equal(response.status, scenario === 'unauthorized' ? 401 : scenario === 'exact-limit' ? 202 : 413)
+    if (scenario === 'unauthorized' || scenario === 'declared-oversize') assert.equal(reads, 0)
+    else if (scenario !== 'exact-limit') {
+      assert.equal(cancelled, true)
+      assert.ok(offset < bytes.length, 'oversized stream must not be consumed in full')
+      assert.ok(offset <= limit + 8192, 'read at most one chunk beyond the byte limit')
+    }
+    assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_delivery_callbacks').get().n, scenario === 'exact-limit' ? 1 : 0)
+  })
 })
 
 test('Brevo callbacks retain only documented opaque correlation and fixed categories', () => {
@@ -412,7 +457,7 @@ test('callback racing generation recovery cannot delete or invalidate replacemen
   const raced = applyBrevoCallback(callback('hard-bounce'), { ...database, batch: async statements => { entered(); await paused; return database.batch(statements) } })
   await ready
   const config = await notificationConfig({ notificationCommunitySlugs: 'brno', notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''), notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09' })
-  await requestNotificationManagementRecovery({ channel: 'email', contact: 'synthetic@example.test' }, { database, config })
+  await requestNotificationManagementRecovery({ channel: 'email', contact: 'synthetic@example.test' }, { database, config: { ...config, emailSmsEnabled: true, emailSmsFirstMessageReady: true, emailSmsEventDeliveryReady: true, emailDeliveryReady: true } })
   release()
   await raced
   assert.equal(sqlite.prepare('SELECT capability_generation FROM notification_contacts').get().capability_generation, 8)

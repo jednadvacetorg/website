@@ -145,6 +145,34 @@ test('activation stores one plaintext contact, one row per frequency, and an enc
   assert.equal(typeof outbox?.payload_iv, 'string')
 })
 
+test('unavailable recovery preserves the existing capability, subscriptions and pending work', async t => {
+  for (const scenario of ['email-disabled', 'email-evidence-expired', 'sms-disabled', 'push-disabled', 'schema-unavailable'] as const) await t.test(scenario, async () => {
+    const { database, query } = disposableDatabase()
+    const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
+    const channel = scenario === 'sms-disabled' ? 'sms' : scenario === 'push-disabled' ? 'web-push' : 'email'
+    const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
+    const contact = channel === 'email' ? input.contact : channel === 'sms' ? '+420777123456' : {
+      endpoint: 'https://push.example.test/recovery-device', expirationTime: null,
+      keys: { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.from(new Uint8Array(16).fill(2)).toString('base64url') },
+    }
+    await activateNotificationChannel({ ...input, channel, contact }, { database, config: ready, crypto: predictableCrypto })
+    const token = tokenForByte(0)
+    assert.equal((await readNotificationManagement(token, { database, config: ready })).state, 'active')
+    if (scenario === 'schema-unavailable') await database.prepare('DROP TABLE notification_lifecycle_email_callbacks').run()
+    const snapshot = () => ({ contacts: query('SELECT * FROM notification_contacts'), subscriptions: query('SELECT * FROM notification_subscriptions'), outbox: query('SELECT * FROM notification_outbox') })
+    const before = snapshot()
+    const unavailable = { ...ready,
+      emailSmsEnabled: scenario !== 'email-disabled',
+      emailDeliveryReady: scenario !== 'email-evidence-expired',
+      smsEnabled: scenario !== 'sms-disabled',
+      webPushEnabled: scenario !== 'push-disabled',
+    }
+    assert.equal(await requestNotificationManagementRecovery({ channel, contact }, { database, config: unavailable }), undefined)
+    assert.deepEqual(snapshot(), before)
+    assert.equal((await readNotificationManagement(token, { database, config: unavailable })).state, 'active')
+  })
+})
+
 test('fresh activation atomically rolls back every lifecycle row after a late outbox failure', async () => {
   const { database, query } = disposableDatabase(sql => sql.startsWith('INSERT INTO notification_outbox'))
 

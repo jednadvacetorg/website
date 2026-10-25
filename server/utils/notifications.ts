@@ -221,6 +221,9 @@ export const requestNotificationManagementRecovery = async (input: unknown, depe
     try { await validateWebPushSubscriptionPoint(JSON.parse(parsed.contact), cryptoApi.subtle) }
     catch { throw new NotificationLifecycleError('Invalid notification recovery') }
   }
+  // Keep the current management capability usable while its replacement cannot
+  // be delivered. The HTTP boundary still returns its non-enumerating response.
+  if (!isNotificationChannelReady(parsed.channel, dependencies.config) || !await notificationSchemaReady(dependencies.database)) return
   const existing = await dependencies.database.prepare('SELECT id, channel, destination, destination_hash, management_token_digest, state, capability_generation FROM notification_contacts WHERE channel = ? AND destination = ?')
     .bind(parsed.channel, parsed.contact).first<ContactRow>()
   if (!existing || (existing.state !== 'active' && existing.state !== 'pending-reactivation')) return
