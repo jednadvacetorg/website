@@ -31,13 +31,29 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Deploy to temporary Cloudflare account
+      - name: Build preview profile
+        env:
+          PREVIEW_DEPLOY: "1"
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: npm run build:cloudflare
+
+      # Wrangler's supported temporary-account flow can provision the generated
+      # bindings, but it does not expose credentials to NuxtHub's native D1 migration
+      # CLI. Keep this pre-existing browser preview working while the full refresh
+      # lifecycle remains explicitly blocked in the deployment script.
+      - name: Deploy temporary browser preview
         id: deploy
         run: |
           set -euo pipefail
-          # The shared command captures Wrangler output before it reaches CI logs.
-          # It emits only sanitized JSON and never writes a claim URL or token.
-          node --experimental-strip-types scripts/deploy-preview.ts --target temporary
+          raw_log="$(mktemp)"
+          trap 'rm -f "$raw_log"' EXIT
+          npx wrangler deploy --temporary --keep-vars --config .output/server/wrangler.json >"$raw_log" 2>&1
+          preview_url="$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev[^[:space:]]*' "$raw_log" | head -n1 || true)"
+          if [ -z "$preview_url" ]; then
+            echo '::error::Temporary deployment did not provide a public Worker URL.'
+            exit 1
+          fi
+          printf 'preview_url=%s\n' "$preview_url" >> "$GITHUB_OUTPUT"
 
       - name: Write preview metadata artifact
         env:

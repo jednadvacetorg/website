@@ -31,3 +31,12 @@ test('preview deployment configuration requires isolated durable bindings and re
     assert.throws(() => validatePreviewConfiguration(candidate, { accountId: '714b23e75ab1b6d8ea3267b59c6ee76f', databaseId: '8d615dae-df24-49f6-9465-681826d6ae02' }))
   }
 })
+
+test('a resolved claimed config must pin the expected account and database', () => {
+  const resolved = preview()
+  resolved.account_id = '714b23e75ab1b6d8ea3267b59c6ee76f'
+  validatePreviewConfiguration(resolved, { accountId: '714b23e75ab1b6d8ea3267b59c6ee76f', databaseId: '8d615dae-df24-49f6-9465-681826d6ae02' })
+
+  ;(resolved.d1_databases as { database_id: string }[])[0]!.database_id = 'other-preview-database'
+  assert.throws(() => validatePreviewConfiguration(resolved, { accountId: '714b23e75ab1b6d8ea3267b59c6ee76f', databaseId: '8d615dae-df24-49f6-9465-681826d6ae02' }), /preview D1 is invalid/)
+})

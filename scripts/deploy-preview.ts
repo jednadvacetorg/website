@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { appendFile, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 type Target = 'claimed' | 'temporary'
@@ -14,7 +15,6 @@ const workerName = 'jednadvacetorg-web'
 const previewDatabase = 'web-preview'
 const productionDatabaseId = '76d271b2-5335-40ba-81dd-bf7e1ef79522'
 const productionKvId = 'fc1c8f97503145fd8f6563fd22358ab6'
-const queues = ['portal-events', 'notification-messages', 'notification-messages-dlq']
 const crons = ['47 3 * * *', '13 * * * *', '* * * * *']
 
 const object = (value: unknown, message = 'invalid JSON') => {
@@ -63,7 +63,15 @@ export const validatePreviewConfiguration = (input: unknown, target?: { accountI
 
 const wrangler = resolve('node_modules/.bin/wrangler')
 const command: Command = (args, options = {}) => new Promise((accept, reject) => {
-  const child = execFile(wrangler, [...args, '--env-file', '/dev/null'], { env: { PATH: process.env.PATH, HOME: process.env.HOME, WRANGLER_SEND_METRICS: 'false' }, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
+  const child = execFile(wrangler, [...args, '--env-file', '/dev/null'], {
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      WRANGLER_SEND_METRICS: 'false',
+      ...(process.env.CLOUDFLARE_API_TOKEN ? { CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN } : {}),
+    },
+    maxBuffer: 2 * 1024 * 1024,
+  }, (error, stdout, stderr) => {
     // Never pass raw Wrangler output (claim URLs and temporary tokens can occur there).
     if (error) reject(new Error(`Cloudflare command failed: ${args.slice(0, 3).join(' ')}`))
     else accept(`${stdout}${stderr}`)
@@ -82,11 +90,30 @@ const accountIds = (value: unknown) => {
   const response = object(value); const accountRows = response.accounts ?? (response.result && typeof response.result === 'object' ? object(response.result).accounts : [])
   return objects(accountRows).map(row => String(row.id ?? row.account_id ?? ''))
 }
-const workerUrl = (receipt: string) => receipt.match(/https:\/\/[a-z0-9.-]+\.workers\.dev\/?/i)?.[0]
+const workerUrl = (receipt: string) => receipt.match(/https:\/\/[a-z0-9.-]+\.workers\.dev\/?/i)?.[0]?.replace(/\/$/, '')
 
-const buildPreview = async () => new Promise<void>((accept, reject) => {
-  execFile('npm', ['run', 'build:cloudflare'], { env: { PATH: process.env.PATH, HOME: process.env.HOME, PREVIEW_DEPLOY: '1', NODE_OPTIONS: '--max-old-space-size=4096' }, maxBuffer: 8 * 1024 * 1024 }, error => error ? reject(new Error('preview build failed')) : accept())
-})
+const buildPreview = async () => {
+  // Keep Nuxt's generated modules out of the shared default build directory. A stale
+  // directory resolves Nuxt Image's internal aliases from the wrong package root.
+  const buildDir = await mkdtemp(join(tmpdir(), 'jednadvacet-preview-build-'))
+  try {
+    await new Promise<void>((accept, reject) => {
+      execFile('npm', ['run', 'build:cloudflare'], {
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          PREVIEW_DEPLOY: '1',
+          NUXT_BUILD_DIR: join(buildDir, 'nuxt'),
+          CONTENT_LOCAL_DATABASE_PATH: join(buildDir, 'content.sqlite'),
+          NODE_OPTIONS: '--max-old-space-size=4096',
+        },
+        maxBuffer: 8 * 1024 * 1024,
+      }, error => error ? reject(new Error('preview build failed')) : accept())
+    })
+  } finally {
+    await rm(buildDir, { recursive: true, force: true })
+  }
+}
 
 const resolvedConfig = async (target: Target, input?: { accountId: string, databaseId: string }) => {
   const original = join(process.cwd(), '.output', 'server', 'wrangler.json')
@@ -102,28 +129,23 @@ const resolvedConfig = async (target: Target, input?: { accountId: string, datab
   return path
 }
 
-const ensureClaimedResources = async (run: Command, config: string, target: { accountId: string, databaseId: string }) => {
+const verifyClaimedDatabase = async (run: Command, config: string, target: { accountId: string, databaseId: string }) => {
   const databases = objects(await jsonCommand(run, ['d1', 'list', '--json', ...configArgs(config)]))
   if (!databases.some(row => row.uuid === target.databaseId && row.name === previewDatabase)) throw new Error('pinned preview D1 ownership could not be verified')
-  const namespaces = objects(await jsonCommand(run, ['kv', 'namespace', 'list', '--json', ...configArgs(config)]))
-  let namespace = namespaces.find(row => row.title === 'portal-events-snapshots-preview' || row.name === 'portal-events-snapshots-preview')
-  if (!namespace) {
-    await run(['kv', 'namespace', 'create', 'portal-events-snapshots-preview', '--binding', 'PORTAL_EVENT_SNAPSHOTS', '--update-config', ...configArgs(config)])
-    namespace = objects(await jsonCommand(run, ['kv', 'namespace', 'list', '--json', ...configArgs(config)])).find(row => row.title === 'portal-events-snapshots-preview' || row.name === 'portal-events-snapshots-preview')
-  }
-  if (!namespace?.id) throw new Error('preview KV ownership could not be verified')
-  const configValue = await readJson(config); const kv = objects(configValue.kv_namespaces).find(row => row.binding === 'PORTAL_EVENT_SNAPSHOTS')!
-  kv.id = namespace.id
-  await writeFile(config, `${JSON.stringify(configValue, null, 2)}\n`, { mode: 0o600 })
-  const listed = await run(['queues', 'list', ...configArgs(config)])
-  for (const queue of queues) if (!listed.split('\n').some(line => line.trim().startsWith(queue))) await run(['queues', 'create', queue, ...configArgs(config)])
-  return String(namespace.id)
 }
 
 const migrate = async (config: string, target: { accountId: string, databaseId: string }) => {
   const tool = resolve('node_modules/.bin/nuxt-db')
+  const apiToken = process.env.CLOUDFLARE_API_TOKEN
+  if (!apiToken) throw new Error('native NuxtHub migration requires CLOUDFLARE_API_TOKEN; Wrangler login credentials are intentionally not read from its private cache')
   await new Promise<void>((accept, reject) => execFile(tool, ['migrate', '--dotenv', '/dev/null'], {
-    env: { PATH: process.env.PATH, HOME: process.env.HOME, NUXT_HUB_CLOUDFLARE_ACCOUNT_ID: target.accountId, NUXT_HUB_CLOUDFLARE_DATABASE_ID: target.databaseId },
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      NUXT_HUB_CLOUDFLARE_ACCOUNT_ID: target.accountId,
+      NUXT_HUB_CLOUDFLARE_DATABASE_ID: target.databaseId,
+      NUXT_HUB_CLOUDFLARE_API_TOKEN: apiToken,
+    },
     maxBuffer: 2 * 1024 * 1024,
   }, error => error ? reject(new Error('native NuxtHub migration failed')) : accept()))
   void config
@@ -151,15 +173,14 @@ export const runPreviewDeployment = async (options: Options, run: Command = comm
   if (target && !accountIds(await jsonCommand(run, ['whoami', '--json'])).includes(target.accountId)) throw new Error('authenticated account does not own the pinned preview target')
   await buildPreview()
   const config = await resolvedConfig(options.target, target)
-  validatePreviewConfiguration(await readJson(config))
+  validatePreviewConfiguration(await readJson(config), target)
   if (options.dryRun) {
     await run(['deploy', '--dry-run', '--keep-vars', ...configArgs(config)])
     process.stdout.write(JSON.stringify({ target: options.target, dryRun: true, worker: workerName }) + '\n')
     return
   }
-  if (!target) throw new Error('temporary target resource provisioning requires supported Wrangler temporary credential reuse')
-  const kvId = await ensureClaimedResources(run, config, target)
-  validatePreviewConfiguration(await readJson(config), { ...target, kvId })
+  if (!target) throw new Error('temporary mode cannot run native NuxtHub migrations because Wrangler does not expose temporary credentials to its other supported CLI commands')
+  await verifyClaimedDatabase(run, config, target)
   await migrate(config, target)
   const before = objects(await jsonCommand(run, ['secret', 'list', '--name', workerName, '--format', 'json', ...configArgs(config)])).map(row => String(row.name)).sort()
   const adminToken = randomBytes(32).toString('base64url')
