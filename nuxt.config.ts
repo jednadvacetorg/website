@@ -140,7 +140,9 @@ export default defineNuxtConfig({
     // Preview builds compile Blob support for the protected route but receive
     // no production R2 binding. Their rendered pages read the public CDN.
     blob: isPreviewDeploy
-      ? { driver: 'cloudflare-r2', binding: 'BLOB' }
+      // The protected blob route remains in the Worker bundle, but review apps
+      // deliberately receive no R2 resource or binding.
+      ? false
       : process.env.NODE_ENV === 'production'
         ? { driver: 'cloudflare-r2', binding: 'BLOB', bucketName: 'files-jednadvacet-org' }
         : { driver: 'fs', dir: '.data/blob' },
@@ -174,12 +176,19 @@ export default defineNuxtConfig({
   },
 
   nitro: {
+    replace: {
+      __PREVIEW_DEPLOY__: JSON.stringify(isPreviewDeploy),
+    },
     experimental: {
       tasks: true,
     },
     // Scheduled runs refresh generated maps and Portal event snapshots.
     scheduledTasks: isPreviewDeploy
-      ? {}
+      ? {
+          [portalEventsCron]: 'portal-events',
+          [notificationMessagesCron]: 'notification-messages',
+          [notificationPublicationCron]: 'notification-publication',
+        }
       : {
           [communityMapsCron]: 'community-maps',
           [portalEventsCron]: 'portal-events',
@@ -202,7 +211,11 @@ export default defineNuxtConfig({
     storage: isPreviewDeploy
       ? {
           miners: { driver: 'memory' },
-          portalEvents: { driver: 'memory' },
+          portalEvents: {
+            driver: 'cloudflare-kv-binding',
+            binding: 'PORTAL_EVENT_SNAPSHOTS',
+            base: 'portal-events:v3',
+          },
         }
       : {
           miners: {
@@ -264,7 +277,11 @@ export default defineNuxtConfig({
         // Temporary PR previews run in an unrelated Cloudflare account and
         // must never receive the production event snapshot namespace.
         kv_namespaces: isPreviewDeploy
-          ? []
+          ? [
+              {
+                binding: 'PORTAL_EVENT_SNAPSHOTS',
+              },
+            ]
           : [
               {
                 binding: 'PORTAL_EVENT_SNAPSHOTS',
@@ -272,7 +289,31 @@ export default defineNuxtConfig({
               },
             ],
         queues: isPreviewDeploy
-          ? undefined
+          ? {
+              producers: [
+                { binding: 'PORTAL_EVENTS_QUEUE', queue: portalEventsQueue },
+                { binding: 'NOTIFICATION_MESSAGES_QUEUE', queue: notificationMessagesQueue },
+              ],
+              consumers: [
+                {
+                  queue: portalEventsQueue,
+                  max_batch_size: 100,
+                  max_batch_timeout: 5,
+                  max_retries: 3,
+                  retry_delay: 60,
+                  max_concurrency: 1,
+                },
+                {
+                  queue: notificationMessagesQueue,
+                  max_batch_size: 10,
+                  max_batch_timeout: 5,
+                  max_retries: 5,
+                  retry_delay: 60,
+                  max_concurrency: 1,
+                  dead_letter_queue: notificationMessagesDeadLetterQueue,
+                },
+              ],
+            }
           : {
               producers: [
                 {
@@ -319,7 +360,9 @@ export default defineNuxtConfig({
               ],
             },
         triggers: isPreviewDeploy
-          ? undefined
+          ? {
+              crons: [portalEventsCron, notificationMessagesCron, notificationPublicationCron],
+            }
           : {
               crons: [communityMapsCron, portalEventsCron, ...(isDevelopment ? [] : [notificationMessagesCron, notificationPublicationCron])],
             },
