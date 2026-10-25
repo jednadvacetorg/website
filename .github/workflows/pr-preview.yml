@@ -37,9 +37,7 @@ jobs:
           set -euo pipefail
           # The shared command captures Wrangler output before it reaches CI logs.
           # It emits only sanitized JSON and never writes a claim URL or token.
-          receipt="$(node --experimental-strip-types scripts/deploy-preview.ts --target temporary)"
-          preview_url="$(node -e 'const value=JSON.parse(process.argv[1]); if (!/^https:\/\/[a-z0-9.-]+\.workers\.dev\/?$/i.test(value.previewUrl)) process.exit(1); process.stdout.write(value.previewUrl)' "$receipt")"
-          echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
+          node --experimental-strip-types scripts/deploy-preview.ts --target temporary
 
       - name: Write preview metadata artifact
         env:
