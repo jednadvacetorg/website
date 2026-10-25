@@ -37,6 +37,14 @@ jobs:
           NODE_OPTIONS: --max-old-space-size=4096
         run: npm run build:cloudflare
 
+      - name: Validate isolated preview bindings
+        run: |
+          node --experimental-strip-types --input-type=module <<'JS'
+          import { readFile } from 'node:fs/promises'
+          import { validatePreviewConfiguration } from './scripts/deploy-preview.ts'
+          validatePreviewConfiguration(JSON.parse(await readFile('.output/server/wrangler.json', 'utf8')))
+          JS
+
       # Wrangler's supported temporary-account flow can provision the generated
       # bindings, but it does not expose credentials to NuxtHub's native D1 migration
       # CLI. Keep this pre-existing browser preview working while the full refresh

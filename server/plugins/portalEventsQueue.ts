@@ -19,7 +19,7 @@ import {
 // Replaced by Nitro at build time so preview behaviour cannot be enabled by a
 // runtime variable in a deployed production Worker.
 declare const __PREVIEW_DEPLOY__: boolean
-const isPreviewDeploy = __PREVIEW_DEPLOY__
+const isPreviewDeploy = typeof __PREVIEW_DEPLOY__ !== 'undefined' && __PREVIEW_DEPLOY__
 
 export default defineNitroPlugin((nitroApp) => {
   nitroApp.hooks.hook('cloudflare:queue', async queueEvent => {

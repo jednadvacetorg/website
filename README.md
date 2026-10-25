@@ -121,19 +121,22 @@ Image dále obsahuje:
 
 ## Náhledové verze (review apps)
 
-Ke každému pull requestu se přes [dočasný Cloudflare účet](https://developers.cloudflare.com/workers/platform/claim-deployments/) nasadí izolovaný náhled. Stejný příkaz používá CI i lokální ověření:
+Ke každému pull requestu se přes [dočasný Cloudflare účet](https://developers.cloudflare.com/workers/platform/claim-deployments/) nasadí izolovaný náhled bez produkčních přístupů:
 
 ```bash
-node --experimental-strip-types scripts/deploy-preview.ts --target temporary
+PREVIEW_DEPLOY=1 npm run build:cloudflare
+npx wrangler deploy --temporary --config .output/server/wrangler.json
 ```
 
-Pro již ověřený testovací účet použij explicitně dodanou cílovou konfiguraci a vlastní přihlášení do Cloudflare:
+CI zachytává výstup Wrangleru soukromě, protože obsahuje odkaz pro převzetí účtu. Dočasný náhled zatím neprovádí nativní migrace ani prvotní refresh: Wrangler neposkytuje dočasný token příkazu NuxtHubu pro migrace.
+
+Pro již ověřený účet Learned Mantis použij cílovou konfiguraci a vlastní přihlášení do Cloudflare:
 
 ```bash
 node --experimental-strip-types scripts/deploy-preview.ts --target claimed --config /cesta/k/claimed-test.wrangler.json
 ```
 
-Příkaz vytvoří jen izolované D1/KV/fronty pro náhled, před nasazením kontroluje jejich identitu a po refreshi čeká na skutečná data a iCalendar. Náhled nepotřebuje Google přihlašovací údaje; R2 a mapové zdroje se do něj nenasazují. Upozornění zůstávají vypnutá a test skutečného odeslání vyžaduje vlastní nastavení poskytovatele, vybrané příjemce a samostatné schválení.
+Příkaz používá existující testovací D1, doplní izolované KV/fronty, spustí nativní migrace a po refreshi čeká na skutečná data a iCalendar. Přihlášení použije přes podporovaný `wrangler auth token --json`; token nevypisuje. Náhled nepotřebuje Google přihlašovací údaje; R2 a mapové zdroje se do něj nenasazují. Upozornění zůstávají vypnutá a test skutečného odeslání vyžaduje vlastní nastavení poskytovatele a vybrané příjemce.
 
 - Náhled **nemá přístup k produkční databázi**.
 - **Vyprší za ~60 min**; po každém commitu se nasadí čerstvý.

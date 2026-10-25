@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import ICAL from 'ical.js'
 
 type Target = 'claimed' | 'temporary'
 type Options = { target: Target, config?: string, dryRun: boolean }
@@ -68,6 +69,7 @@ const command: Command = (args, options = {}) => new Promise((accept, reject) =>
       PATH: process.env.PATH,
       HOME: process.env.HOME,
       WRANGLER_SEND_METRICS: 'false',
+      WRANGLER_WRITE_LOGS: 'false',
       ...(process.env.CLOUDFLARE_API_TOKEN ? { CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN } : {}),
     },
     maxBuffer: 2 * 1024 * 1024,
@@ -134,14 +136,18 @@ const verifyClaimedDatabase = async (run: Command, config: string, target: { acc
   if (!databases.some(row => row.uuid === target.databaseId && row.name === previewDatabase)) throw new Error('pinned preview D1 ownership could not be verified')
 }
 
-const migrate = async (config: string, target: { accountId: string, databaseId: string }) => {
+const migrate = async (config: string, target: { accountId: string, databaseId: string }, run: Command) => {
   const tool = resolve('node_modules/.bin/nuxt-db')
+  // Use Wrangler's supported credential export, not its private on-disk cache.
   const apiToken = process.env.CLOUDFLARE_API_TOKEN
-  if (!apiToken) throw new Error('native NuxtHub migration requires CLOUDFLARE_API_TOKEN; Wrangler login credentials are intentionally not read from its private cache')
+    || object(await jsonCommand(run, ['auth', 'token', '--json', ...configArgs(config)])).token
+  if (typeof apiToken !== 'string' || !apiToken) throw new Error('native migration requires a Wrangler login or scoped API token')
   await new Promise<void>((accept, reject) => execFile(tool, ['migrate', '--dotenv', '/dev/null'], {
     env: {
       PATH: process.env.PATH,
       HOME: process.env.HOME,
+      PREVIEW_DEPLOY: '1',
+      NUXT_BUILD_DIR: resolve('.nuxt'),
       NUXT_HUB_CLOUDFLARE_ACCOUNT_ID: target.accountId,
       NUXT_HUB_CLOUDFLARE_DATABASE_ID: target.databaseId,
       NUXT_HUB_CLOUDFLARE_API_TOKEN: apiToken,
@@ -151,16 +157,34 @@ const migrate = async (config: string, target: { accountId: string, databaseId: 
   void config
 }
 
+/** Check the public JSON/iCalendar contract, including matching event identity and time. */
+export const previewFeedsReady = (events: unknown, calendar: string, readiness: unknown) => {
+  if (!Array.isArray(events) || !events.length) return false
+  const state = object(readiness)
+  if (state.email !== false || state.sms !== false || state.webPush !== false) return false
+  try {
+    const feed = new ICAL.Component(ICAL.parse(calendar))
+    if (feed.name !== 'vcalendar') return false
+    const entries = feed.getAllSubcomponents('vevent').map(item => new ICAL.Event(item))
+    return events.every(value => {
+      const event = object(value)
+      return typeof event.id === 'string' && typeof event.title === 'string'
+        && typeof event.start === 'string' && entries.some(entry => entry.uid === `meetup-event-${event.id}@einundzwanzig.space`
+          && entry.startDate.toJSDate().getTime() === Date.parse(event.start as string))
+    })
+  } catch { return false }
+}
+
 const refreshAndWait = async (url: string, adminToken: string) => {
   const headers = { authorization: `Bearer ${adminToken}` }
-  const refresh = await fetch(`${url}api/events/refresh`, { method: 'POST', headers })
+  const refresh = await fetch(`${url}/api/events/refresh`, { method: 'POST', headers, signal: AbortSignal.timeout(15_000) })
   if (refresh.status !== 202) throw new Error('preview refresh was not accepted')
   const deadline = Date.now() + 120_000
   while (Date.now() < deadline) {
-    const [events, ical, readiness] = await Promise.all([fetch(`${url}api/events?community=all`), fetch(`${url}ical/all`), fetch(`${url}api/notifications/readiness`)])
+    const [events, ical, readiness] = await Promise.all(['/api/events?community=all', '/ical/all', '/api/notifications/readiness'].map(path => fetch(`${url}${path}`, { signal: AbortSignal.timeout(15_000) })))
     const eventBody = await events.text(); const calendar = await ical.text()
-    if (events.ok && /"events"\s*:\s*\[/.test(eventBody) && calendar.includes('BEGIN:VCALENDAR') && calendar.includes('BEGIN:VEVENT') && readiness.ok && JSON.stringify(await readiness.json()) === JSON.stringify({ email: false, sms: false, webPush: false })) {
-      const repeat = await fetch(`${url}api/events?community=all`)
+    if (events.ok && ical.ok && readiness.ok && previewFeedsReady(JSON.parse(eventBody), calendar, await readiness.json())) {
+      const repeat = await fetch(`${url}/api/events?community=all`, { signal: AbortSignal.timeout(15_000) })
       if (repeat.ok) return
     }
     await new Promise(resolve => setTimeout(resolve, 2_000))
@@ -181,7 +205,7 @@ export const runPreviewDeployment = async (options: Options, run: Command = comm
   }
   if (!target) throw new Error('temporary mode cannot run native NuxtHub migrations because Wrangler does not expose temporary credentials to its other supported CLI commands')
   await verifyClaimedDatabase(run, config, target)
-  await migrate(config, target)
+  await migrate(config, target, run)
   const before = objects(await jsonCommand(run, ['secret', 'list', '--name', workerName, '--format', 'json', ...configArgs(config)])).map(row => String(row.name)).sort()
   const adminToken = randomBytes(32).toString('base64url')
   await run(['secret', 'put', 'NUXT_EVENTS_ADMIN_TOKEN', '--name', workerName, ...configArgs(config)], { input: adminToken })
