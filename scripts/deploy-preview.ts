@@ -93,7 +93,7 @@ const build = async (directory: string) => {
       maxBuffer: 8 * 1024 * 1024,
     }, error => error ? reject(new Error('preview build failed')) : accept())
   })
-  return join(directory, '.output', 'server', 'wrangler.json')
+  return join(directory, 'nuxt', 'dist', 'server', 'wrangler.json')
 }
 
 const resolvedConfig = async (generatedPath: string, directory: string, target: Target) => {
