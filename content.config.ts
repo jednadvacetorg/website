@@ -99,6 +99,7 @@ export default defineContentConfig({
       },
       schema: z.object({
         ...commonSchema,
+        ogImage: z.string().optional(),
       }),
     }),
 

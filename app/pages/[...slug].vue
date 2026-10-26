@@ -21,6 +21,18 @@ if (!result.value) {
   throw createError({ statusCode: 404, statusMessage: 'Page not found', fatal: true })
 }
 
+const site = useSiteConfig()
+const ogImage = computed(() => {
+  if (result.value?.type !== 'page' || !result.value.item.ogImage) return undefined
+  return new URL(result.value.item.ogImage, site.url).href
+})
+
+useSeoMeta({
+  ogImage: () => ogImage.value,
+  twitterImage: () => ogImage.value,
+  twitterCard: () => ogImage.value ? 'summary_large_image' : undefined,
+})
+
 </script>
 
 <template>
