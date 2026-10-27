@@ -6,6 +6,12 @@ Email delivery remains disabled until all reviewed production gates pass. The ve
 
 ## Required production prerequisites
 
+### Isolated preview testing
+
+Only a `PREVIEW_DEPLOY` build can test delivery without production-observation records. Root/Turnstile/provider credentials and all existing channel, first-message and event-delivery switches still apply; missing credentials or disabled switches remain fail-closed. No new runtime bypass switch exists. The private Turnstile expected hostname must be a `*.workers.dev` host and determines the HTTPS management-link origin; request headers cannot choose it. Production builds always retain the original evidence gates and `https://jednadvacet.org` management origin, regardless of runtime hostname settings.
+
+Preview testing does not prove production readiness. Keep switches off outside an explicitly authorized recipient/message test. SMS lifecycle copy is bounded to one GSM-7 segment even with the longer Learned Mantis URL; overlong messages fail rather than being truncated or sent multipart.
+
 An authorized operator supplies `CLOUDFLARE_API_TOKEN` through the environment and `NUXT_BREVO_API_KEY` through the environment/API header. Use narrowly scoped authenticated read access to Worker deployments/content/settings/schedules, Queues, the intended DNS zone and D1. The existing installed Wrangler executable is used only for bounded read-only D1 `SELECT` queries, addressed by database UUID and account ID. There is no credential discovery or provider CLI dependency. Brevo must verify `Jednadvacet.org <noreply@jednadvacet.org>` and the SPF, DKIM, and DMARC evidence for the `jednadvacet.org` sending domain. Do not use `noreply@b.jednadvacet.org`. Inbound mail remains deferred to a future dedicated receiving subdomain and is not configured or tested in this runbook.
 
 Store `NUXT_BREVO_API_KEY`, `NUXT_BREVO_CALLBACK_SECRET`, and one `NUXT_NOTIFICATION_ROOT_KEY` as Cloudflare Worker secrets. Generate the root as one unpadded base64url 32-byte value and never print it. The Worker internally derives non-extractable, purpose-separated AES-GCM outbox and HMAC suppression/abuse keys with fixed HKDF context labels. Replacing the root is a deliberate deployment and can temporarily make retained encrypted work or hashes unavailable; there is no compatibility or recovery path through a former root. Configure Brevo to call the deployed HTTPS `/api/notifications/brevo-events` endpoint with the callback bearer; never place secrets in a URL, command line, log, or this document.

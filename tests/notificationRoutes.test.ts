@@ -246,7 +246,7 @@ test('recovery keeps its JSON contact contract independent from activation field
     assert.equal(challenge.status, 403)
     const success = await fetch(`${baseUrl}/recover`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'email', contact: 'guide@example.test', turnstileToken: fixtureToken, email: 'not-an-email', telephone: 'invalid' }) })
     assert.equal(success.status, 202)
-    assert.match((await success.json() as { message: string }).message, /Pokud pro tento kontakt/)
+    assert.match((await success.json() as { message: string }).message, /Pokud máš na tomto kontaktu odběr/)
   })
 })
 
@@ -351,7 +351,7 @@ for (const channel of ['email', 'sms'] as const) {
       const accepted = await post('single-use')
       assert.equal(accepted.status, 202)
       const generic = await accepted.text()
-      assert.ok(generic.includes('Pokud pro tento kontakt'))
+      assert.ok(generic.includes('Pokud máš na tomto kontaktu odběr'))
       const callsBeforeRateLimit = calls
       assert.equal((await post('new-token')).status, 429)
       assert.equal(calls, callsBeforeRateLimit, 'a token does not bypass the minute limit')
@@ -810,7 +810,7 @@ test('absent real recovery without Queue distinguishes an empty outbox from unre
         const response = await fetch(`${base}/recover`, { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '192.0.2.65' }, body: JSON.stringify({ channel: 'email', contact: 'absent@example.test' }) })
         assert.equal(response.status, 202)
         bodies.push(await response.text())
-        assert.deepEqual(JSON.parse(bodies.at(-1)!), { message: 'Pokud pro tento kontakt existuje správa notifikací, pošleme ti odkaz. Zkus to prosím později, pokud ti už odkaz přišel.' })
+        assert.deepEqual(JSON.parse(bodies.at(-1)!), { message: 'Pokud máš na tomto kontaktu odběr, pošleme ti nový odkaz pro správu. Zkontroluj i spam a použij nejnovější odkaz. Pokud zpráva nepřijde, počkej alespoň minutu a zkus to znovu.' })
         assert.equal(promises.length, 1)
         assert.deepEqual(events[0]!.context.nitro._waitUntilPromises, promises)
         await promises[0]
@@ -904,7 +904,7 @@ test('real H3 registration rejection awaits the exact promise and cannot erase a
         const result = await response.json() as { state?: string, outcome?: string, message?: string }
         if (operation === 'activate') assert.equal(result.state, 'active')
         if (operation === 'confirm-reactivation') assert.equal(result.outcome, 'reactivated')
-        if (operation === 'recover') assert.ok(result.message?.includes('Pokud pro tento kontakt'))
+        if (operation === 'recover') assert.ok(result.message?.includes('Pokud máš na tomto kontaktu odběr'))
         assert.equal(completed, true)
         assert.equal(promises.length, 0)
         assert.equal(events[0]!.context.nitro._waitUntilPromises!.length, 1)

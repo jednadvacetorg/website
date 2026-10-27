@@ -43,7 +43,7 @@ const utcEventTime = (value: unknown) => {
 export const normalizeBrevoCallback = (value: unknown): BrevoCallbackEvent | undefined => {
   if (!isRecord(value)) return
   const event = typeof value.event === 'string' ? value.event.toLowerCase() : ''
-  const kind = callbackKinds[event]
+  const kind = Object.hasOwn(callbackKinds, event) ? callbackKinds[event] : undefined
   const id = value.id
   const deliveryId = value['X-Mailin-custom']
   const providerMessageId = normalizeBrevoProviderId(value['message-id'])
@@ -73,8 +73,9 @@ const suppressionReason: Partial<Record<BrevoCallbackKind, 'provider-bounce' | '
 }
 
 /** Applies a callback by opaque delivery ID only; provider IDs must agree once persisted. */
-export const applyBrevoCallback = async (event: BrevoCallbackEvent, database: NotificationDatabase) => {
+export const applyBrevoCallback = async (event: BrevoCallbackEvent, database: NotificationDatabase, channel: 'email' | 'sms' = 'email') => {
   if (event.deliveryId.startsWith('lifecycle:')) {
+    if (channel !== 'email') return { applied: false, suppressed: false }
     const match = /^lifecycle:v1:([A-Za-z0-9_-]{12,256}):([1-9][0-9]*)$/.exec(event.deliveryId)
     const version = Number(match?.[2])
     if (!match || !Number.isSafeInteger(version) || !event.providerMessageId || normalizeBrevoProviderId(event.providerMessageId) !== event.providerMessageId) return { applied: false, suppressed: false }
@@ -133,25 +134,42 @@ export const applyBrevoCallback = async (event: BrevoCallbackEvent, database: No
     return { applied, suppressed: applied && Boolean(reason) && committed[2]?.meta?.changes === 1 }
   }
   const delivery = await database.prepare('SELECT id, channel, contact_id, expected_capability_generation, destination_hash, provider_message_id, status FROM notification_event_deliveries WHERE id = ?').bind(event.deliveryId).first<DeliveryRow>()
-  if (!delivery || delivery.channel !== 'email' || (delivery.provider_message_id && event.providerMessageId && delivery.provider_message_id !== event.providerMessageId)) return { applied: false, suppressed: false }
+  if (!delivery || delivery.channel !== channel || (delivery.provider_message_id && event.providerMessageId && delivery.provider_message_id !== event.providerMessageId)) return { applied: false, suppressed: false }
+  if (channel === 'sms' && (!event.providerMessageId || delivery.provider_message_id !== event.providerMessageId || !['submitted', 'delivered', 'soft-bounce', 'hard-bounce', 'blocked', 'unsubscribed'].includes(delivery.status))) return { applied: false, suppressed: false }
 
   const now = new Date().toISOString()
   const receipt = await receiptKey(event)
-  const receiptGuard = "EXISTS (SELECT 1 FROM notification_delivery_callbacks WHERE provider_event_id = ? AND delivery_id = ? AND event = ? AND provider_message_id IS ?) AND EXISTS (SELECT 1 FROM notification_event_deliveries WHERE id = ? AND channel = 'email' AND (provider_message_id IS NULL OR ? IS NULL OR provider_message_id = ?))"
-  const guardValues = [receipt, event.deliveryId, event.kind, event.providerMessageId ?? null, event.deliveryId, event.providerMessageId ?? null, event.providerMessageId ?? null]
+  const providerGuard = channel === 'sms' ? "provider_message_id = ? AND status IN ('submitted', 'delivered', 'soft-bounce', 'hard-bounce', 'blocked', 'unsubscribed')" : '(provider_message_id IS NULL OR ? IS NULL OR provider_message_id = ?)'
+  const providerValues = channel === 'sms' ? [event.providerMessageId!] : [event.providerMessageId ?? null, event.providerMessageId ?? null]
+  const owner = `EXISTS (SELECT 1 FROM notification_event_deliveries WHERE id = ? AND channel = ? AND ${providerGuard})`
+  const ownerValues = [event.deliveryId, channel, ...providerValues]
+  const receiptGuard = `EXISTS (SELECT 1 FROM notification_delivery_callbacks WHERE provider_event_id = ? AND delivery_id = ? AND event = ? AND provider_message_id IS ?) AND ${owner}`
+  const guardValues = [receipt, event.deliveryId, event.kind, event.providerMessageId ?? null, ...ownerValues]
   const statements = [
-    database.prepare("INSERT INTO notification_delivery_callbacks (provider_event_id, delivery_id, event, provider_message_id, received_at) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM notification_event_deliveries WHERE id = ? AND channel = 'email' AND (provider_message_id IS NULL OR ? IS NULL OR provider_message_id = ?)) ON CONFLICT(provider_event_id) DO NOTHING").bind(receipt, event.deliveryId, event.kind, event.providerMessageId ?? null, event.occurredAt, event.deliveryId, event.providerMessageId ?? null, event.providerMessageId ?? null),
+    database.prepare(`INSERT INTO notification_delivery_callbacks (provider_event_id, delivery_id, event, provider_message_id, received_at) SELECT ?, ?, ?, ?, ? WHERE ${owner} ON CONFLICT(provider_event_id) DO NOTHING`).bind(receipt, event.deliveryId, event.kind, event.providerMessageId ?? null, event.occurredAt, ...ownerValues),
     database.prepare(`UPDATE notification_event_deliveries SET status = CASE WHEN (CASE status WHEN 'delivered' THEN 1 WHEN 'soft-bounce' THEN 2 WHEN 'blocked' THEN 2 WHEN 'hard-bounce' THEN 3 WHEN 'complaint' THEN 3 WHEN 'unsubscribed' THEN 3 ELSE 0 END) < ? THEN ? ELSE status END, provider_message_id = COALESCE(provider_message_id, ?), updated_at = ? WHERE id = ? AND ${receiptGuard}`).bind(terminalRank[event.kind], event.kind, event.providerMessageId ?? null, now, event.deliveryId, ...guardValues),
   ]
   const reason = suppressionReason[event.kind]
   if (reason) {
     statements.push(
-      database.prepare(`INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT ?, ?, ?, ? WHERE ${receiptGuard} ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = CASE WHEN notification_suppressions.reason = 'user-stop' THEN excluded.reason ELSE notification_suppressions.reason END`).bind('email', delivery.destination_hash, reason, now, ...guardValues),
+      database.prepare(`INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT ?, ?, ?, ? WHERE ${receiptGuard} ON CONFLICT(channel, destination_hash) DO UPDATE SET reason = CASE WHEN notification_suppressions.reason = 'user-stop' THEN excluded.reason ELSE notification_suppressions.reason END`).bind(channel, delivery.destination_hash, reason, now, ...guardValues),
       database.prepare(`UPDATE notification_outbox SET version = version + 1, status = ?, payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE contact_id = ? AND expected_capability_generation = ? AND status IN (?, ?, ?) AND EXISTS (SELECT 1 FROM notification_contacts WHERE id = ? AND capability_generation = ?) AND ${receiptGuard}`).bind('invalidated', now, now, delivery.contact_id, delivery.expected_capability_generation, 'pending', 'queued', 'claimed', delivery.contact_id, delivery.expected_capability_generation, ...guardValues),
-      database.prepare(`DELETE FROM notification_contacts WHERE id = ? AND channel = 'email' AND capability_generation = ? AND ${receiptGuard}`).bind(delivery.contact_id, delivery.expected_capability_generation, ...guardValues),
+      database.prepare(`DELETE FROM notification_contacts WHERE id = ? AND channel = ? AND capability_generation = ? AND ${receiptGuard}`).bind(delivery.contact_id, channel, delivery.expected_capability_generation, ...guardValues),
     )
   }
   const committed = await database.batch(statements) as { meta?: { changes?: number } }[]
   const applied = committed[0]?.meta?.changes === 1
   return { applied, suppressed: applied && Boolean(reason) }
+}
+
+/** Narrows SMS's distinct documented wire format without retaining recipient data. */
+export const normalizeBrevoSmsCallback = (value: unknown): (Omit<BrevoCallbackEvent, 'deliveryId' | 'providerMessageId'> & { providerMessageId: string }) | undefined => {
+  if (!isRecord(value) || value.type !== 'transactional') return
+  const kinds: Record<string, BrevoCallbackKind> = { delivered: 'delivered', soft_bounce: 'soft-bounce', hard_bounce: 'hard-bounce', rejected: 'blocked', unsubscribed: 'unsubscribed' }
+  const kind = typeof value.msg_status === 'string' && Object.hasOwn(kinds, value.msg_status) ? kinds[value.msg_status] : undefined
+  const providerMessageId = typeof value.messageId === 'number' && Number.isSafeInteger(value.messageId) && value.messageId > 0 ? String(value.messageId)
+    : typeof value.messageId === 'string' && /^[1-9][0-9]{0,255}$/.test(value.messageId) ? value.messageId : undefined
+  const occurredAt = utcEventTime(value.ts_event)
+  if (!kind || !providerMessageId || !occurredAt || typeof value.id !== 'number' || !Number.isSafeInteger(value.id) || value.id <= 0) return
+  return { id: String(value.id), kind, providerMessageId, occurredAt }
 }

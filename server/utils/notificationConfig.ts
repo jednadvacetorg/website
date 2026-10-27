@@ -1,6 +1,10 @@
 import type { NotificationChannel, NotificationCrypto, NotificationLifecycleConfig } from './notifications.ts'
 import type { VapidConfiguration } from './webPush.ts'
 
+// Nitro replaces this constant with a literal; runtime secrets cannot relax production.
+declare const __PREVIEW_DEPLOY__: boolean
+const isPreviewDeploy = typeof __PREVIEW_DEPLOY__ !== 'undefined' && __PREVIEW_DEPLOY__
+
 export class NotificationConfigurationError extends Error {
   constructor() {
     super('Notification configuration is unavailable')
@@ -84,7 +88,7 @@ export const operationalEvidence = async (channel: NotificationChannel, value: R
     const publicConfig = value.public as Record<string, unknown> | undefined
     const material = channel === 'email'
       ? [value.notificationRootKey, value.brevoApiKey, value.brevoCallbackSecret, value.brevoSenderName, value.brevoSenderEmail]
-      : channel === 'sms' ? [value.notificationRootKey, value.brevoApiKey, value.brevoSenderName]
+      : channel === 'sms' ? [value.notificationRootKey, value.brevoApiKey, value.brevoSmsSender]
         : [value.notificationRootKey, value.notificationVapidPrivateKey, publicConfig?.notificationVapidPublicKey ?? value.notificationVapidPublicKey, value.notificationVapidSubject]
     const keyHash = Array.from(new Uint8Array(await cryptoApi.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(material)))), byte => byte.toString(16).padStart(2, '0')).join('')
     if (row.keyHash !== keyHash) return () => false
@@ -169,21 +173,24 @@ const emailDelivery = (value: Record<string, unknown>) => {
 
 const smsDelivery = (value: Record<string, unknown>) => {
   const apiKey = optionalPrivateText(value.brevoApiKey)
-  const sender = optionalPrivateText(value.brevoSenderName)
+  const sender = optionalPrivateText(value.brevoSmsSender)
   return Boolean(apiKey && apiKey.length >= 24
     && sender && /^(?:[A-Za-z0-9]{1,11}|\d{1,15})$/.test(sender))
 }
 
 /** Loads only private runtime configuration into non-extractable Worker Web Crypto keys. */
 export const notificationConfig = async (value: Record<string, unknown>, cryptoApi = defaultCrypto(), now = Date.now): Promise<NotificationLifecycleConfig> => {
+  const expectedHostname = requiredHostname(value.notificationTurnstileExpectedHostname)
+  if (isPreviewDeploy && !expectedHostname.endsWith('.workers.dev')) throw new NotificationConfigurationError()
   const email = emailDelivery(value)
   const webPushDelivery = await optionalVapidConfiguration(value, cryptoApi)
-  const [emailEvidence, smsEvidence, pushEvidence] = await Promise.all([
+  const [emailEvidence, smsEvidence, pushEvidence] = isPreviewDeploy ? [() => true, () => true, () => true] : await Promise.all([
     operationalEvidence('email', value, cryptoApi, now),
     operationalEvidence('sms', value, cryptoApi, now),
     operationalEvidence('web-push', value, cryptoApi, now),
   ])
   return {
+   managementOrigin: isPreviewDeploy ? `https://${expectedHostname}` : 'https://jednadvacet.org',
   communitySlugs: typeof value.notificationCommunitySlugs === 'string'
     ? value.notificationCommunitySlugs.split(',').map(slug => slug.trim()).filter(Boolean)
     : [],
@@ -198,7 +205,7 @@ export const notificationConfig = async (value: Record<string, unknown>, cryptoA
    })(),
   turnstile: {
     secret: requiredPrivateText(value.notificationTurnstileSecret),
-    expectedHostname: requiredHostname(value.notificationTurnstileExpectedHostname),
+     expectedHostname,
   },
   consentVersion: typeof value.notificationConsentVersion === 'string' ? value.notificationConsentVersion : '',
   emailSmsEnabled: asBoolean(value.notificationEmailSmsEnabled),

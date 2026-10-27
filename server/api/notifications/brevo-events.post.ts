@@ -1,5 +1,5 @@
 import { createError, defineEventHandler, getHeader, getRequestWebStream, setResponseStatus } from 'h3'
-import { applyBrevoCallback, normalizeBrevoCallback } from '../../utils/brevoCallbacks.ts'
+import { applyBrevoCallback, normalizeBrevoCallback, normalizeBrevoSmsCallback } from '../../utils/brevoCallbacks.ts'
 import type { NotificationDatabase } from '../../utils/notifications.ts'
 
 const maxBytes = 64 * 1024
@@ -17,7 +17,7 @@ const assertCallbackAuthorization = (secret: unknown, authorization: string | un
 }
 
 /** Processes already-bounded normalized callbacks; exported for boundary tests. */
-export const processBrevoCallbackBody = async (rawBody: string, secret: unknown, authorization: string | undefined, database: NotificationDatabase) => {
+export const processBrevoCallbackBody = async (rawBody: string, secret: unknown, authorization: string | undefined, database: NotificationDatabase, channel: 'email' | 'sms' = 'email') => {
   assertCallbackAuthorization(secret, authorization)
   if (new TextEncoder().encode(rawBody).byteLength > maxBytes) throw createError({ statusCode: 413, statusMessage: 'Invalid callback payload' })
   let body: unknown
@@ -25,12 +25,20 @@ export const processBrevoCallbackBody = async (rawBody: string, secret: unknown,
   const values = Array.isArray(body) ? body : [body]
   if (!values.length || values.length > maxEvents) throw createError({ statusCode: 400, statusMessage: 'Invalid callback payload' })
   for (const value of values) {
+    if (channel === 'sms') {
+      const callback = normalizeBrevoSmsCallback(value)
+      if (!callback) continue
+      const matches = await database.prepare("SELECT id FROM notification_event_deliveries WHERE channel = 'sms' AND provider_message_id = ? LIMIT 2").bind(callback.providerMessageId).all<{ id: string }>()
+      // Never guess by phone number, tags or references, nor choose an ambiguous attempt.
+      if (matches.results.length === 1) await applyBrevoCallback({ ...callback, deliveryId: matches.results[0]!.id }, database, 'sms')
+      continue
+    }
     const callback = normalizeBrevoCallback(value)
     if (callback) await applyBrevoCallback(callback, database)
   }
 }
 
-export default defineEventHandler(async (event) => {
+export const createBrevoCallbackHandler = (channel: 'email' | 'sms') => defineEventHandler(async (event) => {
   const database = (event.context._platform as { cloudflare?: { env?: { DB?: NotificationDatabase } } } | undefined)?.cloudflare?.env?.DB
   if (!database?.prepare || !database.batch) throw createError({ statusCode: 503, statusMessage: 'Notification callback unavailable' })
   const secret = useRuntimeConfig(event).brevoCallbackSecret
@@ -61,7 +69,9 @@ export default defineEventHandler(async (event) => {
   } finally {
     reader.releaseLock()
   }
-  await processBrevoCallbackBody(rawBody, secret, authorization, database)
+  await processBrevoCallbackBody(rawBody, secret, authorization, database, channel)
   setResponseStatus(event, 202)
   return { ok: true }
 })
+
+export default createBrevoCallbackHandler('email')

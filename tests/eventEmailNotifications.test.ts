@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 
 import { dueEventEmailReasons, planEventNotifications } from '../server/utils/eventEmailNotifications.ts'
+import { composeBrevoEventSms } from '../server/utils/brevoSms.ts'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
 import { activateNotificationChannel, readNotificationManagement, requestNotificationManagementRecovery, stopNotificationChannel, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 import type { PortalCalendarEvent } from '../server/utils/portalEvents.ts'
@@ -57,10 +58,16 @@ test('one shared traversal plans three independently deduped channels with exact
     sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)
     sqlite.prepare("INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) SELECT id, 'brno', 'created', 'created', 'updated' FROM notification_contacts WHERE channel = ?").run(channel)
   }
-  const results = await Promise.all([planEventNotifications([item()], ready), planEventNotifications([item()], ready)])
+  const source = item({ event: { ...item().event, osm_name: 'Bar', osm_address: 'Ulice 1, Brno', location: 'Zadní salonek' } })
+  const results = await Promise.all([planEventNotifications([source], ready), planEventNotifications([source], ready)])
   assert.equal(results.reduce((sum, result) => sum + result.planned, 0), 3)
   assert.deepEqual(sqlite.prepare('SELECT channel, community_slug, eligibility_frequency FROM notification_event_deliveries ORDER BY channel').all(), ['email', 'sms', 'web-push'].map(channel => ({ channel, community_slug: 'brno', eligibility_frequency: 'created' })))
   assert.deepEqual(sqlite.prepare("SELECT kind FROM notification_outbox WHERE kind LIKE 'event-%' ORDER BY kind").all(), [{ kind: 'event-email' }, { kind: 'event-sms' }, { kind: 'event-web-push' }])
+  const smsRow = sqlite.prepare("SELECT payload_ciphertext, payload_iv FROM notification_outbox WHERE kind = 'event-sms'").get() as { payload_ciphertext: string, payload_iv: string }
+  const smsPayload = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(smsRow.payload_iv) }, config.outboxTransportKey, decode(smsRow.payload_ciphertext))))
+  assert.equal(smsPayload.event.location, 'Bar, Ulice 1, Brno, Zadní salonek')
+  assert.equal(smsPayload.event.communityUrl, 'https://jednadvacet.org/brno')
+  assert.equal(composeBrevoEventSms({ ...smsPayload, recipient: smsPayload.destination }), 'Meetup\n12. 1. 2026 13:00\nBar, Ulice 1, Brno, Zadni salonek\n\nhttps://jednadvacet.org/brno')
   const updated = item({ event: { ...item().event, location: 'New venue' }, changedAt: '2026-01-02T00:00:00Z' })
   sqlite.prepare("UPDATE notification_event_deliveries SET status = 'submitted'").run()
   assert.equal((await planEventNotifications([updated], ready)).planned, 3)

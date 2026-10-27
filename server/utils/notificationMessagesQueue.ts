@@ -38,7 +38,7 @@ export interface EventNotificationMessagePayload {
   destination: string
   deliveryId: string
   managementCapability: string
-  event: { title: string, description?: string, location?: string, url?: string, start: string, end: string, uid: string, sequence: number, cancelled?: boolean }
+  event: { title: string, description?: string, location?: string, url?: string, communityUrl?: string, start: string, end: string, uid: string, sequence: number, cancelled?: boolean }
   reason: 'created' | 'week-before' | 'day-before' | 'updated' | 'cancelled'
   kind: 'event-email' | 'event-sms' | 'event-web-push'
 }
@@ -93,6 +93,7 @@ const parsePayload = (plaintext: string): NotificationMessagePayload => {
   if (value.kind === 'event-email' || value.kind === 'event-sms' || value.kind === 'event-web-push') {
     if (Object.keys(value).length !== 6 || typeof value.deliveryId !== 'string' || !value.deliveryId || typeof value.managementCapability !== 'string' || !value.managementCapability || typeof value.reason !== 'string' || !['created', 'week-before', 'day-before', 'updated', 'cancelled'].includes(value.reason) || !isRecord(value.event) || typeof value.event.title !== 'string' || typeof value.event.start !== 'string' || typeof value.event.end !== 'string' || typeof value.event.uid !== 'string' || !Number.isSafeInteger(value.event.sequence)) throw new Error('Notification outbox payload is invalid')
     if (!Number.isFinite(Date.parse(value.event.start)) || !Number.isFinite(Date.parse(value.event.end)) || (value.event.cancelled !== undefined && typeof value.event.cancelled !== 'boolean') || (value.event.url !== undefined && typeof value.event.url !== 'string')) throw new Error('Notification outbox payload is invalid')
+    if ((value.event.location !== undefined && typeof value.event.location !== 'string') || (value.event.communityUrl !== undefined && typeof value.event.communityUrl !== 'string')) throw new Error('Notification outbox payload is invalid')
     return value as unknown as EventNotificationMessagePayload
   }
   if (Object.keys(value).length !== 3 || typeof value.capability !== 'string' || !value.capability) throw new Error('Notification outbox payload is invalid')

@@ -6,7 +6,7 @@ import { notificationUiVerificationDecision } from '../../utils/notificationUiVe
 import { publishPendingNotificationPointers, type NotificationMessagesQueue } from '../../utils/notificationMessagesQueue.ts'
 
 const genericRecoveryResponse = {
-  message: 'Pokud pro tento kontakt existuje správa notifikací, pošleme ti odkaz. Zkus to prosím později, pokud ti už odkaz přišel.',
+  message: 'Pokud máš na tomto kontaktu odběr, pošleme ti nový odkaz pro správu. Zkontroluj i spam a použij nejnovější odkaz. Pokud zpráva nepřijde, počkej alespoň minutu a zkus to znovu.',
 }
 
 export default defineEventHandler(async (event) => {

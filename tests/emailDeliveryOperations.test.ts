@@ -58,7 +58,7 @@ if (process.env.NOTIFICATION_CONFIG_ISOLATION === 'true') test('generated notifi
   withProductionDatabase.d1_databases = structuredClone(production.d1_databases)
   assert.throws(() => operations.validateNotificationDeploymentConfiguration(withProductionDatabase, 'preview'), /preview-d1/)
   for (const field of ['queues', 'kv_namespaces', 'r2_buckets', 'triggers']) {
-    assert.throws(() => operations.validateNotificationDeploymentConfiguration({ ...preview, [field]: structuredClone(production[field]) }, 'preview'), /preview-production-binding/, field)
+    assert.throws(() => operations.validateNotificationDeploymentConfiguration({ ...preview, [field]: structuredClone(production[field]) }, 'preview'), field === 'kv_namespaces' ? /preview-kv/ : /preview-production-binding/, field)
   }
   const withRemoteDatabase = structuredClone(production)
   withRemoteDatabase.d1_databases[0].remote = true
@@ -259,7 +259,7 @@ test('SMS operations probe submits once with private management link and never c
   const observation = { ...identity, channel: 'sms', manualSwitch: false, evidenceKind: 'local-candidate', gates: Object.fromEntries(['account', 'credits', 'country', 'compliance', 'sender', 'sharedManagementStop'].map(gate => [gate, 'passed'])) }
   await f.save('probe.json', observation)
   let calls = 0
-  const dependencies = { ...f.dependencies, environment: { NUXT_BREVO_API_KEY: 'private-api-key', NUXT_BREVO_SENDER_NAME: 'Jednadvacet', NOTIFICATION_VERIFY_RECIPIENT: '+420777123456', NOTIFICATION_VERIFY_MANAGEMENT_TOKEN: 'A'.repeat(43) }, command: async () => { throw Error('unexpected command') }, fetch: (async (url, init) => {
+  const dependencies = { ...f.dependencies, environment: { NUXT_BREVO_API_KEY: 'private-api-key', NUXT_BREVO_SMS_SENDER: 'Jednadvacet', NOTIFICATION_VERIFY_RECIPIENT: '+420777123456', NOTIFICATION_VERIFY_MANAGEMENT_TOKEN: 'A'.repeat(43) }, command: async () => { throw Error('unexpected command') }, fetch: (async (url, init) => {
     calls++
     assert.equal(String(url), 'https://api.brevo.com/v3/transactionalSMS/send')
     const body = JSON.parse(String(init?.body))
@@ -342,14 +342,14 @@ test('multichannel observation review reuses runtime gates, joint switches and o
   const identity = await operations.runEmailVerification(options, f.dependencies)
   const runtime: Record<string, unknown> = {
     notificationSmsEnabled: true, notificationWebPushEnabled: true,
-    notificationRootKey: 'private-root-material', brevoApiKey: 'private-api-key', brevoCallbackSecret: 'private-callback-bearer', brevoSenderName: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org',
+    notificationRootKey: 'private-root-material', brevoApiKey: 'private-api-key', brevoCallbackSecret: 'private-callback-bearer', brevoSenderName: 'Jednadvacet.org', brevoSmsSender: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org',
     notificationVapidPrivateKey: 'private-vapid-material', notificationVapidPublicKey: 'public-vapid', notificationVapidSubject: 'mailto:synthetic@example.test',
   }
   for (const field of ['targetIdentity', 'deploymentId', 'bundleHash', 'migrationHash', 'configHash'] as const) runtime[`notificationExpected${field[0]!.toUpperCase()}${field.slice(1)}`] = identity[field]
   const allGates = ['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs', 'account', 'credits', 'country', 'compliance', 'sharedManagementStop', 'vapid', 'protocol', 'interoperability', 'browser:chromium', 'firstMessage', 'eventDelivery']
   for (const [channel, name, material] of [
     ['email', 'Email', [runtime.notificationRootKey, runtime.brevoApiKey, runtime.brevoCallbackSecret, runtime.brevoSenderName, runtime.brevoSenderEmail]],
-    ['sms', 'Sms', [runtime.notificationRootKey, runtime.brevoApiKey, runtime.brevoSenderName]],
+    ['sms', 'Sms', [runtime.notificationRootKey, runtime.brevoApiKey, runtime.brevoSmsSender]],
     ['web-push', 'WebPush', [runtime.notificationRootKey, runtime.notificationVapidPrivateKey, runtime.notificationVapidPublicKey, runtime.notificationVapidSubject]],
   ] as const) runtime[`notification${name}Evidence`] = JSON.stringify({ ...identity, channel, evidenceKind: 'production-observation', mode: 'readiness', manualSwitch: true, verifiedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 60_000).toISOString(), keyHash: sha(JSON.stringify(material)), interoperability: ['chromium'], gates: Object.fromEntries(allGates.map(gate => [gate, 'passed'])) })
   const review = { ...options, mode: 'readiness' as const, target: 'production' as const, expectedSwitch: true, approveReadiness: true, evidencePath: join(f.directory, 'observations.json') }

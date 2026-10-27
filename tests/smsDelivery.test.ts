@@ -11,6 +11,27 @@ const senders = {
   lifecycle: (fetcher: typeof fetch) => sendBrevoLifecycleSms(config, { recipient: message.recipient, capability: 'a'.repeat(43), kind: 'first-activation' }, fetcher),
 }
 
+test('preview lifecycle SMS never shortens a capability URL or sends multiple segments', async () => {
+  const managementOrigin = 'https://jednadvacetorg-web.learned-mantis.workers.dev'
+  for (const kind of ['first-activation', 'management-recovery', 'reactivation'] as const) {
+    const lifecycle = { recipient: message.recipient, capability: 'a'.repeat(43), kind }
+    if (kind !== 'reactivation') {
+      assert.throws(() => composeBrevoLifecycleSms(lifecycle, managementOrigin), /one GSM-7 segment/)
+      assert.deepEqual(await sendBrevoLifecycleSms({ ...config, managementOrigin }, lifecycle, async () => assert.fail('oversized SMS must not send')), { attempted: false, status: 'invalid-request' })
+      continue
+    }
+    const content = composeBrevoLifecycleSms(lifecycle, managementOrigin)
+    assert.ok(content.includes(`${managementOrigin}/notifications/manage/${lifecycle.capability}`))
+    assert.equal(gsm7OneSegment(content), content)
+    assert.ok(content.length <= 160)
+    const result = await sendBrevoLifecycleSms({ ...config, managementOrigin }, lifecycle, async (_url, request) => {
+      assert.equal(JSON.parse(request!.body as string).content, content)
+      return Response.json({ messageId: 123 }, { status: 201 })
+    })
+    assert.equal(result.status, 'submitted')
+  }
+})
+
 for (const [kind, send] of Object.entries(senders)) for (const stall of ['headers', 'body', 'read']) test(`${kind} SMS settles at the shared 10000ms deadline despite ignored ${stall} abort`, async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   let signal: AbortSignal | undefined
@@ -155,4 +176,42 @@ test('normalizes Czech and unsupported characters before enforcing one GSM-7 seg
   assert.equal(gsm7OneSegment('Příliš žluťoučký kůň €'), 'Prilis zlutoucky kun €')
   assert.equal(gsm7OneSegment('Bitcoin ⚡'), 'Bitcoin ?')
   assert.throws(() => gsm7OneSegment('^'.repeat(81)), /one GSM-7 segment/)
+})
+
+test('event SMS uses whole lines, full location and a separate community link', () => {
+  const event = { title: 'Bitcoin v Brně', start: '2026-10-01T17:00:00Z', location: 'Bar, Ulice 1, Brno, vzadu', url: 'https://example.test/e', communityUrl: 'https://jednadvacet.org/brno' }
+  const expected = 'Bitcoin v Brne\n1. 10. 2026 19:00\nBar, Ulice 1, Brno, vzadu\nhttps://example.test/e\n\nhttps://jednadvacet.org/brno'
+  for (const reason of ['created', 'week-before', 'day-before'] as const) assert.equal(composeBrevoEventSms({ ...message, event, reason }), expected)
+  assert.equal(composeBrevoEventSms({ ...message, event, reason: 'updated' }), `Zmena akce:\n${expected}`)
+  assert.equal(composeBrevoEventSms({ ...message, event, reason: 'cancelled' }), `Akce zrusena:\n${expected}`)
+})
+
+test('event SMS removes only trailing whole lines, counting GSM extension escapes', () => {
+  const base = { ...message, event: { ...message.event, title: 'x'.repeat(100), location: 'Bar, Ulice 1', url: 'https://example.test/event', communityUrl: 'https://jednadvacet.org/brno' } }
+  assert.equal(composeBrevoEventSms(base), `${base.event.title}\n12. 10. 2026 14:00\nBar, Ulice 1\nhttps://example.test/event`)
+  const extensions = { ...base, event: { ...base.event, title: '^'.repeat(65) } }
+  assert.equal(composeBrevoEventSms(extensions), `${extensions.event.title}\n12. 10. 2026 14:00`)
+  const longLocation = { ...base, event: { ...base.event, title: 'Meetup', location: 'x'.repeat(161) } }
+  assert.equal(composeBrevoEventSms(longLocation), 'Meetup\n12. 10. 2026 14:00')
+  const multilineTitle = { ...message, event: { ...message.event, title: 'Meetup\r\nBrno' } }
+  assert.equal(composeBrevoEventSms(multilineTitle), 'Meetup Brno\n12. 10. 2026 14:00')
+  assert.throws(() => composeBrevoEventSms({ ...message, event: { ...message.event, title: 'x'.repeat(150) } }), /one GSM-7 segment/)
+})
+
+test('event SMS applies Prague winter, summer and DST transition times', () => {
+  for (const [start, date] of [
+    ['2026-01-15T18:00:00Z', '15. 1. 2026 19:00'],
+    ['2026-07-15T18:00:00Z', '15. 7. 2026 20:00'],
+    ['2026-03-29T00:30:00Z', '29. 3. 2026 1:30'],
+    ['2026-03-29T01:30:00Z', '29. 3. 2026 3:30'],
+  ]) assert.equal(composeBrevoEventSms({ ...message, event: { title: 'Meetup', start: start! } }), `Meetup\n${date}`)
+})
+
+test('production activation and recovery SMS use the requested copy and keep the whole management URL', () => {
+  for (const kind of ['first-activation', 'management-recovery'] as const) {
+    const capability = 'a'.repeat(43)
+    const text = composeBrevoLifecycleSms({ recipient: message.recipient, capability, kind })
+    assert.equal(text, `Prihlaseno k odberu kalendare 21.\n\nNotifikace muzes nastavit zde: https://jednadvacet.org/notifications/manage/${capability}`)
+    assert.equal(gsm7OneSegment(text), text)
+  }
 })

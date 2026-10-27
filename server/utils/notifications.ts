@@ -25,6 +25,8 @@ export interface NotificationLifecycleConfig {
   turnstile: { secret: string, expectedHostname: string }
   outboxTransportKey: CryptoKey
   consentVersion: string
+  /** Set by the build-specific configuration, never from an HTTP request origin. */
+  managementOrigin?: string
   emailSmsEnabled: boolean
   emailSmsFirstMessageReady: boolean
   emailSmsEventDeliveryReady: boolean

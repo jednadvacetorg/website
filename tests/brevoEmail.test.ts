@@ -122,6 +122,21 @@ test('composer escapes HTML and creates a non-interactive PUBLISH attachment', (
   assert.doesNotMatch(composed.ics, /ATTENDEE/)
 })
 
+test('event email presents a full Czech date in Prague time, separate from the title and location', () => {
+  for (const [start, expected] of [
+    ['2026-01-15T18:00:00Z', 'čtvrtek 15. ledna 2026 v 19:00'],
+    ['2026-07-15T18:00:00Z', 'středa 15. července 2026 v 20:00'],
+    ['2026-03-29T00:30:00Z', 'neděle 29. března 2026 v 1:30'],
+    ['2026-03-29T01:30:00Z', 'neděle 29. března 2026 v 3:30'],
+  ]) {
+    const result = composeBrevoEventEmail({ ...message, event: { ...message.event, start: start! } })
+    assert.ok(result.text.includes(`${message.event.title}\n\n${expected}\n\n${message.event.location}`))
+    assert.ok(result.html.includes(`<p>${expected}</p><p>${message.event.location}</p>`))
+    assert.ok(!result.text.includes(start!))
+  }
+  assert.equal(composeBrevoLifecycleEmail({ destination: 'test@example.test', capability: 'a'.repeat(43), kind: 'first-activation' }).subject, 'Odběr kalendáře 21 je aktivní')
+})
+
 test('all lifecycle kinds carry the exact bounded HTTPS management link without event content', async () => {
   const capability = 'a'.repeat(43)
   for (const kind of ['first-activation', 'reactivation', 'management-recovery'] as const) {
@@ -140,6 +155,20 @@ test('all lifecycle kinds carry the exact bounded HTTPS management link without 
     assert.equal(calls, 1)
   }
   assert.throws(() => composeBrevoLifecycleEmail({ destination: 'synthetic@example.test', capability: '<script>', kind: 'first-activation' }))
+})
+
+test('lifecycle email uses the configured preview origin for every management link', async () => {
+  const managementOrigin = 'https://jednadvacetorg-web.learned-mantis.workers.dev'
+  for (const kind of ['first-activation', 'reactivation', 'management-recovery'] as const) {
+    const result = await sendBrevoLifecycleEmail({ ...config, managementOrigin }, { destination: 'synthetic@example.test', capability: 'a'.repeat(43), kind }, async (_url, request) => {
+      const body = JSON.parse(request!.body as string)
+      assert.ok(body.textContent.includes(`${managementOrigin}/notifications/manage/`))
+      assert.ok(body.htmlContent.includes(`${managementOrigin}/notifications/manage/`))
+      assert.ok(!body.textContent.includes('https://jednadvacet.org/'))
+      return Response.json({ messageId: 'synthetic-preview-id' }, { status: 201 })
+    })
+    assert.equal(result.status, 'submitted')
+  }
 })
 
 test('composer preserves Czech UTF-8, stable revisions, and cancellation semantics in a CRLF attachment', () => {

@@ -6,6 +6,7 @@ export interface BrevoEmailConfig {
   senderName: string
   senderEmail: 'noreply@jednadvacet.org'
   sandbox?: boolean
+  managementOrigin?: string
 }
 
 export interface BrevoEventEmail {
@@ -61,9 +62,10 @@ export const eventIcs = (message: BrevoEventEmail) => {
 
 export const composeBrevoEventEmail = (message: BrevoEventEmail) => {
   const event = message.event
-  const details = [event.title, event.start, event.location, event.description, event.url].filter((value): value is string => Boolean(value)).join('\n')
+  const date = new Intl.DateTimeFormat('cs-CZ', { dateStyle: 'full', timeStyle: 'short', timeZone: 'Europe/Prague' }).format(new Date(event.start))
+  const details = [event.title, date, event.location, event.description, event.url].filter((value): value is string => Boolean(value)).join('\n\n')
   const text = `${details}\n\nNastavení odběru: ${message.managementUrl}`
-  const html = `<p><strong>${escapeHtml(event.title)}</strong></p><p>${escapeHtml(event.start)}${event.location ? `<br>${escapeHtml(event.location)}` : ''}</p>${event.description ? `<p>${escapeHtml(event.description).replace(/\n/g, '<br>')}</p>` : ''}${event.url ? `<p><a href="${escapeHtml(event.url)}">Podrobnosti o akci</a></p>` : ''}<p><a href="${escapeHtml(message.managementUrl)}">Nastavení odběru</a></p>`
+  const html = `<p><strong>${escapeHtml(event.title)}</strong></p><p>${escapeHtml(date)}</p>${event.location ? `<p>${escapeHtml(event.location)}</p>` : ''}${event.description ? `<p>${escapeHtml(event.description).replace(/\n/g, '<br>')}</p>` : ''}${event.url ? `<p><a href="${escapeHtml(event.url)}">Podrobnosti o akci</a></p>` : ''}<p><a href="${escapeHtml(message.managementUrl)}">Nastavení odběru</a></p>`
   return { subject: `${message.cancelled ? 'Zrušeno: ' : ''}${event.title}`, text, html, ics: eventIcs(message) }
 }
 
@@ -140,16 +142,16 @@ const requestEmail = async (config: BrevoEmailConfig, body: string, fetcher: typ
   }
 }
 
-export const composeBrevoLifecycleEmail = (message: LifecycleNotificationMessagePayload) => {
+export const composeBrevoLifecycleEmail = (message: LifecycleNotificationMessagePayload, managementOrigin = 'https://jednadvacet.org') => {
   if (!/^[A-Za-z0-9_-]{43}$/.test(message.capability)) throw new Error('Notification management capability is invalid')
-  const url = `https://jednadvacet.org/notifications/manage/${message.capability}`
+  const url = `${managementOrigin}/notifications/manage/${message.capability}`
   const lead = message.kind === 'first-activation'
     ? 'Odběr e-mailových upozornění je aktivní. Tady můžeš změnit nastavení nebo odběr ukončit.'
     : message.kind === 'reactivation'
       ? 'Chceš obnovit e-mailová upozornění? Otevři nastavení a potvrď obnovení. Do té doby ti upozornění na akce nepošleme.'
       : 'Tady je tvůj nový odkaz na nastavení e-mailových upozornění. Předchozí odkaz už neplatí. Pokud čekáš na obnovení odběru, potvrď ho v nastavení.'
   return {
-    subject: message.kind === 'reactivation' ? 'Potvrď obnovení upozornění' : 'Nastavení e-mailových upozornění',
+    subject: message.kind === 'first-activation' ? 'Odběr kalendáře 21 je aktivní' : message.kind === 'reactivation' ? 'Potvrď obnovení upozornění' : 'Nastavení e-mailových upozornění',
     text: `${lead}\n\nNastavení odběru: ${url}`,
     html: `<p>${escapeHtml(lead)}</p><p><a href="${escapeHtml(url)}">Nastavení odběru</a></p>`,
   }
@@ -159,7 +161,7 @@ export const composeBrevoLifecycleEmail = (message: LifecycleNotificationMessage
 export const sendBrevoLifecycleEmail = async (config: BrevoEmailConfig, message: LifecycleNotificationMessagePayload & { attempt?: NotificationOutboxPointer }, fetcher: typeof fetch = fetch): Promise<BrevoAttemptResult> => {
   if (config.senderEmail !== 'noreply@jednadvacet.org' || !config.apiKey.trim() || !config.senderName.trim()) return { attempted: false, status: 'auth' }
   try {
-    const content = composeBrevoLifecycleEmail(message)
+    const content = composeBrevoLifecycleEmail(message, config.managementOrigin)
     const body = JSON.stringify({ sender: { name: config.senderName, email: config.senderEmail }, to: [{ email: message.destination }], subject: content.subject, textContent: content.text, htmlContent: content.html, ...(message.attempt ? { headers: { 'X-Mailin-custom': `lifecycle:v1:${message.attempt.outboxId}:${message.attempt.version}` } } : {}) })
     return requestEmail(config, body, fetcher)
   } catch { return { attempted: false, status: 'invalid-request' } }

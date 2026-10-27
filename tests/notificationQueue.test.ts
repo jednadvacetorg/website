@@ -65,7 +65,7 @@ const previousPlugin = pluginGlobals.defineNitroPlugin
 pluginGlobals.defineNitroPlugin = (plugin: unknown) => plugin
 const { dispatchNotificationQueueMessage, default: notificationQueuePlugin } = await import('../server/plugins/notificationMessagesQueue.ts')
 pluginGlobals.defineNitroPlugin = previousPlugin
-const syntheticRuntime = { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet' }
+const syntheticRuntime = { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet', brevoSmsSender: 'Meetupy' }
 
 test('lifecycle activation recovery and reactivation reserve authority through the registered Queue hook before authenticated early callback', async t => {
   for (const kind of ['first-activation', 'management-recovery', 'reactivation']) await t.test(kind, async () => {
@@ -674,7 +674,7 @@ test('registered default Queue hook bounds real lifecycle/event transports, pres
     channel, evidenceKind: 'production-observation', mode: 'readiness', manualSwitch: true,
     targetIdentity: runtime.notificationExpectedTargetIdentity, bundleHash: runtime.notificationExpectedBundleHash, migrationHash: runtime.notificationExpectedMigrationHash, configHash: runtime.notificationExpectedConfigHash, deploymentId: runtime.notificationExpectedDeploymentId,
     verifiedAt: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString(),
-    keyHash: createHash('sha256').update(JSON.stringify(channel === 'email' ? [root, runtime.brevoApiKey, runtime.brevoCallbackSecret, runtime.brevoSenderName, runtime.brevoSenderEmail] : [root, runtime.brevoApiKey, runtime.brevoSenderName])).digest('hex'),
+    keyHash: createHash('sha256').update(JSON.stringify(channel === 'email' ? [root, runtime.brevoApiKey, runtime.brevoCallbackSecret, runtime.brevoSenderName, runtime.brevoSenderEmail] : [root, runtime.brevoApiKey, runtime.brevoSmsSender])).digest('hex'),
     gates: Object.fromEntries(['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs', 'account', 'credits', 'country', 'compliance', 'sharedManagementStop', 'firstMessage', 'eventDelivery'].map(gate => [gate, 'passed'])),
   })
   globals.useRuntimeConfig = () => configured
@@ -807,6 +807,8 @@ for (const work of ['lifecycle', 'event']) for (const change of ['stop', 'recove
 
 test('actual single planner dispatches three transports, encrypted push is independently visible and SMS stop leaves siblings', async () => {
   const { database, query, dependencies, receiver, contact } = await jointFixture()
+  const managementOrigin = 'https://jednadvacet.org'
+  Object.assign(dependencies.config, { managementOrigin })
   assert.equal((await planEventNotifications([calendarEvent], dependencies)).planned, 3)
   const rows = query("SELECT id, version, kind, payload_ciphertext, payload_iv FROM notification_outbox WHERE kind LIKE 'event-%'")
   assert.equal(rows.length, 3)
@@ -835,7 +837,9 @@ test('actual single planner dispatches three transports, encrypted push is indep
         return new Response(null, { status: 201 })
       }
       const body = JSON.parse(request!.body as string)
-      if (row.kind === 'event-sms') { assert.equal(body.type, 'transactional'); assert.ok(body.content.length <= 160); return new Response(JSON.stringify({ messageId: 12345 }), { status: 201 }) }
+      if (row.kind === 'event-sms') { assert.equal(body.sender, syntheticRuntime.brevoSmsSender); assert.equal(body.type, 'transactional'); assert.ok(body.content.length <= 160); return new Response(JSON.stringify({ messageId: 12345 }), { status: 201 }) }
+      assert.equal(body.sender.name, syntheticRuntime.brevoSenderName)
+      assert.ok(body.textContent.includes(`${managementOrigin}/notifications/manage/`))
       assert.equal(body.attachment.length, 1)
       return new Response(JSON.stringify({ messageId: 'synthetic_message_123' }), { status: 201 })
     }
@@ -1086,11 +1090,13 @@ test('a crash after the final email attempt reservation is terminally retired in
 
 test('real Queue dispatch sends a usable channel-scoped first email after durable signup and publication', async () => {
   const { database, query } = disposableDatabase()
+  const managementOrigin = 'https://jednadvacetorg-web.learned-mantis.workers.dev'
+  const previewConfig = { ...config, managementOrigin }
   await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
   const pointers: unknown[] = []
   await publishPendingNotificationPointers({ send: async pointer => { pointers.push(pointer) } }, { database, config })
   const requests: RequestInit[] = []
-  const result = await dispatchNotificationQueueMessage({ id: 'synthetic-message', body: pointers[0] }, { database, config }, { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet' }, async (_url, request) => {
+  const result = await dispatchNotificationQueueMessage({ id: 'synthetic-message', body: pointers[0] }, { database, config: previewConfig }, { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet' }, async (_url, request) => {
     requests.push(request!)
     return new Response(JSON.stringify({ messageId: 'synthetic-provider-id' }), { status: 201 })
   })
@@ -1100,7 +1106,7 @@ test('real Queue dispatch sends a usable channel-scoped first email after durabl
   assert.deepEqual(body.to, [{ email: input.contact }])
   assert.deepEqual(body.sender, { name: 'Jednadvacet', email: 'noreply@jednadvacet.org' })
   assert.equal(body.attachment, undefined)
-  assert.ok(body.textContent.includes(`https://jednadvacet.org/notifications/manage/${initialToken}`))
+  assert.ok(body.textContent.includes(`${managementOrigin}/notifications/manage/${initialToken}`))
   assert.equal((await readNotificationManagement(initialToken, { database, config })).state, 'active')
   assert.equal(query('SELECT payload_ciphertext FROM notification_outbox')[0]!.payload_ciphertext, null)
 })
@@ -1322,7 +1328,8 @@ test('Web Push transient provider outcomes retain the ciphertext for Queue retry
 
 test('real SMS signup/recovery dispatch carries a usable SMS-only management link and stop revokes it', async () => {
   const { database, query } = disposableDatabase()
-  const ready = { ...config, emailSmsEnabled: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true }
+  const managementOrigin = 'https://jednadvacet.org'
+  const ready = { ...config, managementOrigin, emailSmsEnabled: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true }
   const contact = '+420777123456'
   await activateNotificationChannel({ ...input, channel: 'sms', contact }, { database, config: ready })
   let firstToken = ''
@@ -1336,8 +1343,10 @@ test('real SMS signup/recovery dispatch carries a usable SMS-only management lin
       assert.equal(url, 'https://api.brevo.com/v3/transactionalSMS/send')
       const body = JSON.parse(request!.body as string)
       assert.equal(body.recipient, contact)
+      assert.equal(body.sender, syntheticRuntime.brevoSmsSender)
       assert.equal(body.type, 'transactional')
-      token = body.content.match(/https:\/\/jednadvacet.org\/notifications\/manage\/([A-Za-z0-9_-]+)/)[1]
+      assert.ok(body.content.includes(`${managementOrigin}/notifications/manage/`))
+      token = body.content.match(/\/notifications\/manage\/([A-Za-z0-9_-]+)/)[1]
       return new Response(JSON.stringify({ messageId: 'synthetic-sms' }), { status: 201 })
     })
     assert.equal(calls, 1)

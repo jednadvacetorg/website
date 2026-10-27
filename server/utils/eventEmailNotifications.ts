@@ -137,7 +137,11 @@ export const planEventNotifications = async (events: PortalCalendarEvent[], depe
         writes.push(database.prepare(`UPDATE notification_event_deliveries SET channel = ?, community_slug = ?, eligibility_frequency = ?, expected_capability_generation = ?, status = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND submitted_at IS NULL AND (expected_capability_generation <> ? OR community_slug IS NULL OR eligibility_frequency IS NULL) AND ${authority}`).bind(recipient.channel, item.community.id, allowed[0], recipient.capability_generation, planningEnabled ? 'pending' : 'failed', timestamp, deliveryId, recipient.capability_generation, ...authorityValues))
         if (!planningEnabled) continue
         const capability = base64Url(cryptoApi.randomBytes(32))
-        const encrypted = await encrypt({ destination: recipient.destination, deliveryId, managementCapability: capability, event: { ...projection, uid, sequence: revision, cancelled: item.cancelled }, reason, kind }, dependencies.config, cryptoApi)
+        const smsDetails = recipient.channel === 'sms' ? {
+          location: [...new Set([item.event.osm_name, item.event.osm_address, item.event.location].map(value => value?.trim()).filter((value): value is string => Boolean(value)))].join(', '),
+          communityUrl: `https://jednadvacet.org/${encodeURIComponent(item.community.id)}`,
+        } : {}
+        const encrypted = await encrypt({ destination: recipient.destination, deliveryId, managementCapability: capability, event: { ...projection, ...smsDetails, uid, sequence: revision, cancelled: item.cancelled }, reason, kind }, dependencies.config, cryptoApi)
         const outboxId = `event-${deliveryId}-g${recipient.capability_generation}`
         const ledgerGuard = "EXISTS (SELECT 1 FROM notification_event_deliveries WHERE id = ? AND status = 'pending' AND submitted_at IS NULL AND expected_capability_generation = ?)"
         writes.push(database.prepare(`UPDATE notification_outbox SET version = version + 1, status = 'invalidated', payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE (id = ? OR substr(id, 1, length(?)) = ?) AND expected_capability_generation <> ? AND status IN ('pending', 'queued', 'claimed') AND ${authority}`).bind(timestamp, timestamp, `event-${deliveryId}`, `event-${deliveryId}-g`, `event-${deliveryId}-g`, recipient.capability_generation, ...authorityValues))

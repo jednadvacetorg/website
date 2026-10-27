@@ -112,6 +112,7 @@ export default defineNuxtConfig({
     brevoApiKey: '',
     brevoCallbackSecret: '',
     brevoSenderName: '',
+    brevoSmsSender: '',
     brevoSenderEmail: '',
     notificationEmailManualEnabled: false,
     notificationWebPushEnabled: false,

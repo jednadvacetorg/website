@@ -68,7 +68,7 @@ const recoveryContact = ref('')
 const activeMethod = ref<'sms' | 'email' | null>(null)
 const recoveryMethod = ref<'sms' | 'email' | null>(null)
 const recoveryOpen = ref(false)
-const activationState = ref<'active' | 'updated' | 'pending-reactivation' | 'error' | null>(null)
+const activationState = ref<Record<'sms' | 'email', 'active' | 'updated' | 'pending-reactivation' | 'error' | null>>({ sms: null, email: null })
 const recoveryState = ref<'success' | 'error' | null>(null)
 const isActivating = ref(false)
 const isRecovering = ref(false)
@@ -220,15 +220,18 @@ const setFrequency = (value: FrequencyValue, checked: boolean | 'indeterminate')
 
 const futureMethods = [
   {
+    channel: 'sms',
     title: 'SMS',
     description: 'Upozornění na vybrané události dostaneš jako SMS.',
   },
   {
+    channel: 'email',
     title: 'E-mail',
     description: 'Upozornění e-mailem může obsahovat událost, kterou si přidáš do vlastního kalendáře.',
   },
   {
-    title: 'Oznámení ve webu',
+    channel: 'web-push',
+    title: 'Webové notifikace',
     description: 'Upozornění dostaneš přímo v tomto prohlížeči.',
   },
 ] as const
@@ -351,7 +354,7 @@ const activate = async (method: 'sms' | 'email') => {
   if (!isMethodReady(method) || !hasSelectedScope.value || !validMethodContact(method) || isActivating.value || (challengeRequired.value && !turnstileToken.value)) return
   const revision = activationChallengeRevision.value
   isActivating.value = true
-  activationState.value = null
+  activationState.value[method] = null
   try {
     const result = await $fetch<{ state: 'active' | 'updated' | 'pending-reactivation' }>('/api/notifications/activate', {
       method: 'POST',
@@ -367,13 +370,13 @@ const activate = async (method: 'sms' | 'email') => {
       },
     })
     if (revision !== activationChallengeRevision.value) return
-    activationState.value = result.state
+    activationState.value[method] = result.state
     challengeRequired.value = false
   } catch (error) {
     if (revision !== activationChallengeRevision.value) return
     challengeRequired.value = challengeRequired.value || (error as { statusCode?: number }).statusCode === 403
     turnstileToken.value = ''
-    activationState.value = 'error'
+    activationState.value[method] = 'error'
   } finally {
     if (revision === activationChallengeRevision.value) {
       isActivating.value = false
@@ -511,6 +514,15 @@ onBeforeUnmount(() => {
         <section class="space-y-4">
           <h3 class="text-xl font-semibold leading-tight">{{ method.title }}</h3>
           <p>{{ method.description }}</p>
+          <p v-if="method.channel === 'web-push'" class="text-sm text-muted">
+            Tato možnost je pro Jednadvacet nejlevnější a pro tebe nejsoukromější.
+            <UPopover mode="hover" enable-touch :ui="{ content: 'max-w-xs p-4 text-sm' }">
+              <UButton icon="i-lucide-info" color="neutral" variant="link" aria-label="Proč jsou webové notifikace levnější a soukromější" />
+              <template #content>
+                <p>Odesílání SMS a e-mailů může Jednadvacet stát drobné poplatky a vyžaduje uložit tvůj kontakt do databáze. Za jednotlivé webové notifikace poskytovateli rozesílky neplatíme a místo e-mailu či telefonu ukládáme technické údaje odběru tohoto prohlížeče.</p>
+              </template>
+            </UPopover>
+          </p>
 
           <template v-if="method.title === 'SMS'">
             <template v-if="isMethodReady('sms')">
@@ -523,8 +535,10 @@ onBeforeUnmount(() => {
                   :disabled="isActivating"
                 />
               </UFormField>
-              <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isActivating && activeMethod === 'sms'" :disabled="!hasSelectedScope || !hasTelephone || isActivating || (challengeRequired && !turnstileToken)" @click="activeMethod = 'sms'; activate('sms')">Aktivovat odběr</UButton>
-              <UButton color="neutral" variant="link" aria-label="Spravovat SMS notifikace" @click="recoveryMethod = 'sms'; recoveryOpen = true">Spravovat notifikace</UButton>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isActivating && activeMethod === 'sms'" :disabled="!hasSelectedScope || !hasTelephone || isActivating || (challengeRequired && !turnstileToken)" @click="activeMethod = 'sms'; activate('sms')">Aktivovat odběr</UButton>
+                <UButton color="neutral" variant="link" class="ms-auto min-h-11" aria-label="Spravovat SMS notifikace" @click="recoveryMethod = 'sms'; recoveryOpen = true">Spravovat notifikace</UButton>
+              </div>
             </template>
             <template v-else>
               <UFormField label="Telefonní číslo" name="telephone">
@@ -546,8 +560,10 @@ onBeforeUnmount(() => {
                   :disabled="isActivating"
                 />
               </UFormField>
-              <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isActivating && activeMethod === 'email'" :disabled="!hasSelectedScope || !hasEmail || isActivating || (challengeRequired && !turnstileToken)" @click="activeMethod = 'email'; activate('email')">Aktivovat odběr</UButton>
-              <UButton color="neutral" variant="link" aria-label="Spravovat e-mailové notifikace" @click="recoveryMethod = 'email'; recoveryOpen = true">Spravovat notifikace</UButton>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isActivating && activeMethod === 'email'" :disabled="!hasSelectedScope || !hasEmail || isActivating || (challengeRequired && !turnstileToken)" @click="activeMethod = 'email'; activate('email')">Aktivovat odběr</UButton>
+                <UButton color="neutral" variant="link" class="ms-auto min-h-11" aria-label="Spravovat e-mailové notifikace" @click="recoveryMethod = 'email'; recoveryOpen = true">Spravovat notifikace</UButton>
+              </div>
             </template>
             <template v-else>
               <UFormField label="E-mail" name="email">
@@ -560,8 +576,10 @@ onBeforeUnmount(() => {
 
           <template v-else>
             <template v-if="isMethodReady('web-push') && vapidPublicKey">
-              <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isWebPushActivating" :disabled="!hasSelectedScope || isWebPushActivating || (pushChallengeRequired && !pushTurnstileToken)" @click="enableWebPush">Aktivovat oznámení v prohlížeči</UButton>
-              <UButton color="neutral" variant="link" :loading="isPushRecovering" :disabled="isPushRecovering || (pushRecoveryChallengeRequired && !pushRecoveryTurnstileToken)" @click="requestPushRecovery">Poslat odkaz pro správu tohoto prohlížeče</UButton>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isWebPushActivating" :disabled="!hasSelectedScope || isWebPushActivating || (pushChallengeRequired && !pushTurnstileToken)" @click="enableWebPush">Aktivovat webové notifikace</UButton>
+                <UButton color="neutral" variant="link" class="ms-auto min-h-11" :loading="isPushRecovering" :disabled="isPushRecovering || (pushRecoveryChallengeRequired && !pushRecoveryTurnstileToken)" @click="requestPushRecovery">Poslat odkaz pro správu tohoto prohlížeče</UButton>
+              </div>
               <UAlert v-if="webPushState === 'active'" color="success" title="Oznámení jsou pro tento prohlížeč aktivní. Odkaz pro správu ti pošleme v první zprávě." role="status" />
               <UAlert v-else-if="webPushState === 'updated'" color="success" title="Nastavení oznámení jsme aktualizovali." role="status" />
               <UAlert v-else-if="webPushState === 'pending-reactivation'" color="warning" title="Obnovení potvrď přes odkaz pro správu. Do té doby ti upozornění na akce neposíláme." role="status" />
@@ -578,39 +596,40 @@ onBeforeUnmount(() => {
               <NotificationChallenge v-if="pushRecoveryChallengeRequired" v-model="pushRecoveryTurnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="pushRecoveryChallengeRevision" label="Ověřit správu prohlížeče" />
             </template>
             <template v-else>
-              <UButton color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope" @click="expressWebInterest">Mám zájem o oznámení ve webu</UButton>
+              <UButton color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope" @click="expressWebInterest">Mám zájem o webové notifikace</UButton>
               <p role="status" class="text-sm text-muted">{{ falseReadinessMessage }}</p>
             </template>
+          </template>
+          <template v-if="method.channel !== 'web-push' && isMethodReady(method.channel)">
+            <UAlert
+              v-if="activationState[method.channel] === 'active'"
+              color="success"
+              title="Odběr je aktivní. Potvrzení a odkaz pro správu ti pošleme v první zprávě."
+              role="status"
+              aria-live="polite"
+            />
+            <UAlert
+              v-else-if="activationState[method.channel] === 'updated'"
+              color="success"
+              title="Nastavení odběru jsme aktualizovali."
+              role="status"
+              aria-live="polite"
+            />
+            <UAlert
+              v-else-if="activationState[method.channel] === 'pending-reactivation'"
+              color="warning"
+              title="Tento kontakt už dříve odhlásil upozornění. Obnovení potvrď přes odkaz pro správu; do té doby ti nic neposíláme."
+              role="status"
+              aria-live="polite"
+            />
+            <div v-else-if="activationState[method.channel] === 'error'" class="space-y-3" role="alert">
+              <UAlert color="error" :title="challengeRequired ? temporaryUnavailableMessage : 'Nastavení se teď nepodařilo uložit. Nic jsme nezměnili. Zkus to prosím znovu.'" />
+            </div>
+            <NotificationChallenge v-if="challengeRequired && activeMethod === method.channel" v-model="turnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="activationChallengeRevision" />
           </template>
         </section>
         <USeparator v-if="index < futureMethods.length - 1" label="nebo" />
       </template>
-
-      <UAlert
-        v-if="activationState === 'active'"
-        color="success"
-        title="Odběr je aktivní. Potvrzení a odkaz pro správu ti pošleme v první zprávě."
-        role="status"
-        aria-live="polite"
-      />
-      <UAlert
-        v-else-if="activationState === 'updated'"
-        color="success"
-        title="Nastavení odběru jsme aktualizovali."
-        role="status"
-        aria-live="polite"
-      />
-      <UAlert
-        v-else-if="activationState === 'pending-reactivation'"
-        color="warning"
-        title="Tento kontakt už dříve odhlásil upozornění. Obnovení potvrď přes odkaz pro správu; do té doby ti nic neposíláme."
-        role="status"
-        aria-live="polite"
-      />
-      <div v-else-if="activationState === 'error'" class="space-y-3" role="alert">
-        <UAlert color="error" :title="challengeRequired ? temporaryUnavailableMessage : 'Nastavení se teď nepodařilo uložit. Nic jsme nezměnili. Zkus to prosím znovu.'" />
-      </div>
-      <NotificationChallenge v-if="challengeRequired" v-model="turnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="activationChallengeRevision" />
 
       <USeparator label="nebo" />
       <section class="min-w-0 space-y-4">
@@ -694,7 +713,7 @@ onBeforeUnmount(() => {
         <UFormField :label="recoveryMethod === 'sms' ? 'Telefonní číslo' : 'E-mail'" name="recovery-contact">
           <UInput v-model="recoveryContact" :type="recoveryMethod === 'sms' ? 'tel' : 'email'" class="w-full" />
         </UFormField>
-        <UAlert v-if="recoveryState === 'success'" color="success" title="Pokud pro tento kontakt existuje správa notifikací, pošleme ti odkaz. Zkus to prosím později, pokud ti už odkaz přišel." role="status" aria-live="polite" />
+        <UAlert v-if="recoveryState === 'success'" color="success" title="Pokud máš na tomto kontaktu odběr, pošleme ti nový odkaz pro správu. Zkontroluj i spam a použij nejnovější odkaz. Pokud zpráva nepřijde, počkej alespoň minutu a zkus to znovu." role="status" aria-live="polite" />
           <UAlert v-else-if="recoveryState === 'error'" color="error" :title="recoveryChallengeRequired ? temporaryUnavailableMessage : 'Odkaz se teď nepodařilo odeslat. Zkus to prosím později.'" role="alert" />
           <NotificationChallenge v-if="recoveryOpen && recoveryChallengeRequired" v-model="recoveryTurnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="recoveryChallengeRevision" />
       </div>

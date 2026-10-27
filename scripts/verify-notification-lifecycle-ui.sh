@@ -706,7 +706,7 @@ if [[ "$mode" == "--all" || "$mode" == "--guide" ]]; then
   agent-browser --session "$browser_session" find role button click --name "Poslat odkaz pro správu" >/dev/null
   acquire_challenge 'Ověřit požadavek' 'notification-ui-verification-token'
   agent-browser --session "$browser_session" find role button click --name "Poslat odkaz pro správu" >/dev/null
-  agent-browser --session "$browser_session" wait --text "Pokud pro tento kontakt existuje" >/dev/null
+  agent-browser --session "$browser_session" wait --text "Pokud máš na tomto kontaktu odběr" >/dev/null
   agent-browser --session "$browser_session" find role button click --name "Zrušit" >/dev/null
   agent-browser --session "$browser_session" eval 'Array.from(document.querySelectorAll("button")).some(button => button.textContent?.trim() === "Mám zájem o oznámení ve webu" && !button.disabled)' | grep -q true
   capture_challenge_proof notification-guide-recovery
@@ -820,7 +820,7 @@ if [[ "$mode" == "--all" || "$mode" == "--management" ]]; then
   acquire_challenge 'Ověřit požadavek' 'notification-ui-verification-token'
   agent-browser --session "$browser_session" wait --fn '(() => { const input = document.querySelector("input[name=recovery-contact]"); const submit = Array.from(document.querySelectorAll("button")).find(button => button.textContent?.trim() === "Poslat odkaz pro správu"); if (!input?.value || !input.checkValidity() || !submit || submit.disabled || document.querySelector("[role=listbox]")) return false; const rect = submit.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight && submit.contains(document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2)); })()' >/dev/null
   agent-browser --session "$browser_session" find role button click --name 'Poslat odkaz pro správu' >/dev/null
-  agent-browser --session "$browser_session" wait --text 'Pokud pro tento kontakt existuje správa notifikací' >/dev/null
+  agent-browser --session "$browser_session" wait --text 'Pokud máš na tomto kontaktu odběr' >/dev/null
   capture_challenge_proof notification-management
 fi
 
