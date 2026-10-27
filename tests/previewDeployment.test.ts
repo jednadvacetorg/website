@@ -14,11 +14,9 @@ const preview = () => ({
 test('preview feed verification accepts actual event arrays and matching iCalendar, never a status-only success', () => {
   const events = [{ id: '123', title: 'Bitcoin Beer', start: '2026-10-26T17:00:00.000Z' }]
   const calendar = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:meetup-event-123@einundzwanzig.space\r\nDTSTART:20261026T170000Z\r\nEND:VEVENT\r\nEND:VCALENDAR'
-  const readiness = { email: false, sms: false, webPush: false }
-  assert.equal(previewFeedsReady(events, calendar, readiness), true)
-  for (const body of [[], { events }, [{ ...events[0], id: '456' }], [{ ...events[0], start: '2026-10-26T18:00:00Z' }]]) assert.equal(previewFeedsReady(body, calendar, readiness), false)
-  assert.equal(previewFeedsReady(events, 'Server error', readiness), false)
-  assert.equal(previewFeedsReady(events, calendar, { ...readiness, sms: true }), false)
+  assert.equal(previewFeedsReady(events, calendar), true)
+  for (const body of [[], { events }, [{ ...events[0], id: '456' }], [{ ...events[0], start: '2026-10-26T18:00:00Z' }]]) assert.equal(previewFeedsReady(body, calendar), false)
+  assert.equal(previewFeedsReady(events, 'Server error'), false)
 })
 
 test('preview deployment accepts only the two explicit invocation shapes', () => {
