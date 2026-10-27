@@ -6,7 +6,7 @@ export type EventEmailReason = 'created' | 'week-before' | 'day-before'
 
 const encoder = new TextEncoder()
 const parts = (date: Date) => Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
+  timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23',
 }).formatToParts(date).filter(part => part.type !== 'literal').map(part => [part.type, part.value])) as Record<string, string>
 const base64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 const buffer = (value: Uint8Array) => value as unknown as BufferSource
@@ -16,7 +16,7 @@ const defaultCrypto = (): NotificationCrypto => ({ randomBytes: length => crypto
 export const dueEventEmailReasons = (event: Pick<PortalCalendarEvent, 'event' | 'cancelled'>, now: Date): EventEmailReason[] => {
   if (event.cancelled || Date.parse(event.event.start) <= now.getTime()) return []
   const current = parts(now)
-  if (current.hour !== '09') return []
+  if (Number(current.hour) < 9) return []
   const start = parts(new Date(event.event.start))
   const day = 86_400_000
   const currentDay = Date.UTC(Number(current.year), Number(current.month) - 1, Number(current.day))

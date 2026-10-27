@@ -109,7 +109,7 @@ const event = (start: string) => ({ event: { start }, cancelled: false })
 test('Prague 09:00 reminder projection handles CET and CEST boundaries', () => {
   assert.deepEqual(dueEventEmailReasons(event('2026-01-08T12:00:00.000Z'), new Date('2026-01-01T08:00:00.000Z')), ['week-before'])
   assert.deepEqual(dueEventEmailReasons(event('2026-04-01T12:00:00.000Z'), new Date('2026-03-31T07:00:00.000Z')), ['day-before'])
-  assert.deepEqual(dueEventEmailReasons(event('2026-04-01T12:00:00.000Z'), new Date('2026-03-31T08:00:00.000Z')), [])
+  assert.deepEqual(dueEventEmailReasons(event('2026-04-01T12:00:00.000Z'), new Date('2026-03-31T08:00:00.000Z')), ['day-before'])
 })
 
 test('an already-known event recovers one selected reminder after a missed Prague 09:00 hour', async () => {

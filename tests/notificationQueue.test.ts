@@ -624,6 +624,25 @@ test('an edited event rejects its published stale pointer and authorizes its car
   assert.equal(calls, 1)
 })
 
+test('a missed same-day reminder publishes and authorizes one catch-up delivery', async () => {
+  const { database, query, dependencies } = await jointFixture()
+  await database.prepare("UPDATE notification_subscriptions SET frequency = 'day-before'").run()
+  await planEventNotifications([calendarEvent], dependencies)
+  const catchUp = { ...dependencies, now: () => new Date('2026-10-11T08:15:00.000Z') }
+  assert.equal((await planEventNotifications([calendarEvent], catchUp)).planned, 3)
+  const published: { outboxId: string, version: number }[] = []
+  await publishPendingNotificationPointers({ send: async pointer => { published.push(pointer) } }, catchUp)
+  const email = published.find(pointer => pointer.outboxId === query("SELECT id FROM notification_outbox WHERE kind = 'event-email' AND status = 'queued'")[0]!.id)!
+  let calls = 0
+  const deliver = async (_payload: Parameters<typeof consumeNotificationOutboxPointer>[2] extends (payload: infer Payload, ...args: never[]) => unknown ? Payload : never, _authorization: never, authorize: (signal?: AbortSignal) => Promise<boolean>) => {
+    if (await authorize()) calls++
+    return { attempted: true, status: 'submitted' as const, providerMessageId: 'catch-up' }
+  }
+  assert.deepEqual(await consumeNotificationOutboxPointer(email, catchUp, deliver), { delivered: true, stale: false })
+  assert.deepEqual(await consumeNotificationOutboxPointer(email, catchUp, deliver), { delivered: false, stale: true })
+  assert.equal(calls, 1)
+})
+
 for (const channel of ['email', 'sms'] as const) for (const work of ['lifecycle', 'event']) for (const phase of (channel === 'sms' && work === 'lifecycle' ? ['schema', 'read'] : ['schema', 'read', 'reservation'])) test(`deadline during ${work} ${channel} final ${phase} cannot resume provider or new SQL`, { timeout: 10000 }, async t => {
   const { database, query, dependencies } = await jointFixture()
   if (work === 'event') await planEventNotifications([calendarEvent], dependencies)
