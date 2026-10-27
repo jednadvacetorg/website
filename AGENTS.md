@@ -81,6 +81,8 @@
 
 ## Verification
 
+- For complex Cloudflare features, consider an isolated claim deployment with `wrangler deploy --temporary` before requesting production access. It can deploy uncommitted candidate code without a commit or push; PR preview CI is another option. The user accepted Cloudflare's Terms of Service and Privacy Policy on 2026-10-23 for this workflow; do not repeatedly request the same policy acceptance unless the policies or scope change.
+- Temporary deployments must use fresh isolated resources, never production bindings, secrets or user data. Check current supported products, permissions, asset limits and expiry; ordinary preview builds may omit KV, Queues or cron and cannot prove those integrations. After expiry, `--temporary` may silently provision a different account and hostname: check account identity and expiry before every redeploy or secret write, stop on identity changes, and never assume earlier secrets or resources survived. Keep sending disabled unless separately authorized. Treat temporary credentials and claim URLs as secrets. Report the preview URL and expiry; claiming an account, production operations, paid resources, real sends and Git integration require separate approval.
 - Always run `npm run typecheck` after code or configuration changes.
 - Run relevant focused tests with `node --experimental-strip-types --test tests/*.test.ts` when the affected behavior has test coverage.
 - Run `npm run build` after changes to content schemas or routing, Nuxt configuration, integrations, shared build modules, or server/runtime behavior. The build also validates public content-route collisions.

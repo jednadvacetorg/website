@@ -1,5 +1,6 @@
 ---
 title: BTC Liga
+ogImage: /images/liga/liga-og.jpg
 redirect_from:
   - /kviz/
   - /kviz-liga/
