@@ -112,6 +112,17 @@ test('Prague 09:00 reminder projection handles CET and CEST boundaries', () => {
   assert.deepEqual(dueEventEmailReasons(event('2026-04-01T12:00:00.000Z'), new Date('2026-03-31T08:00:00.000Z')), [])
 })
 
+test('an already-known event recovers one selected reminder after a missed Prague 09:00 hour', async () => {
+  const { sqlite, dependencies, setNow } = fixture()
+  await signup(dependencies, ['day-before'])
+  const source = item()
+  await planEventNotifications([source], dependencies)
+  setNow('2026-01-11T09:15:00.000Z')
+  assert.deepEqual(await planEventNotifications([source], dependencies), { planned: 1, plannedByChannel: { email: 1, sms: 0, 'web-push': 0 } })
+  assert.equal((await payloads(sqlite)).find(payload => payload.reason === 'day-before')?.reason, 'day-before')
+  assert.equal((await planEventNotifications([source], dependencies)).planned, 0)
+})
+
 test('cancelled and elapsed events never produce due reminders', () => {
   assert.deepEqual(dueEventEmailReasons({ ...event('2026-01-08T12:00:00.000Z'), cancelled: true }, new Date('2026-01-01T08:00:00.000Z')), [])
   assert.deepEqual(dueEventEmailReasons(event('2026-01-01T07:00:00.000Z'), new Date('2026-01-01T08:00:00.000Z')), [])
