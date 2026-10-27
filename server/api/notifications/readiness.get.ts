@@ -1,7 +1,6 @@
 import { defineEventHandler, setResponseHeader } from 'h3'
 import { notificationConfig } from '../../utils/notificationConfig.ts'
 import { isNotificationChannelReady, notificationSchemaReady, type NotificationDatabase } from '../../utils/notifications.ts'
-import { notificationUiVerificationFixtureEnabled } from '../../utils/notificationUiVerificationFixture.ts'
 
 export interface NotificationReadiness {
   email: boolean
@@ -14,7 +13,6 @@ const unavailable: NotificationReadiness = { email: false, sms: false, webPush: 
 /** Projects private delivery configuration into the only public readiness contract. */
 export const projectNotificationReadiness = async (runtimeConfig: Record<string, unknown>, database?: NotificationDatabase): Promise<NotificationReadiness> => {
   try {
-    if (notificationUiVerificationFixtureEnabled(runtimeConfig)) return { email: true, sms: true, webPush: false }
     const config = await notificationConfig(runtimeConfig)
     if (!database || !await notificationSchemaReady(database)) return unavailable
     return { email: isNotificationChannelReady('email', config), sms: isNotificationChannelReady('sms', config), webPush: isNotificationChannelReady('web-push', config) }

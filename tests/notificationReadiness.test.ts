@@ -3,6 +3,7 @@ import test from 'node:test'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 
 import readinessHandler, { projectNotificationReadiness } from '../server/api/notifications/readiness.get.ts'
 import { createApp, toWebHandler } from 'h3'
@@ -54,7 +55,8 @@ test('real applied migration probe rejects old or unavailable D1 before direct a
   const Database = createRequire(import.meta.url)('better-sqlite3') as new (filename: string) => { close(): void, exec(sql: string): void, prepare(sql: string): { all(): unknown[] } }
   const sqlite = new Database(':memory:')
   t.after(() => sqlite.close())
-  sqlite.exec(readFileSync(new URL('../server/db/migrations/sqlite/0000_majestic_lightspeed.sql', import.meta.url), 'utf8'))
+  const checkpointSql = (name: string) => execFileSync('git', ['show', `ec1001951d6df22f1e77f68ecd3ab678f0a49208:server/db/migrations/sqlite/${name}.sql`], { encoding: 'utf8' })
+  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk']) sqlite.exec(checkpointSql(name))
   let writes = 0
   const database: NotificationDatabase = {
     prepare: sql => ({ all: async () => ({ results: sqlite.prepare(sql).all() }) } as NotificationStatement),
@@ -64,7 +66,7 @@ test('real applied migration probe rejects old or unavailable D1 before direct a
   assert.equal(await notificationSchemaReady(database), false)
   await assert.rejects(activateNotificationChannel({ channel: 'email', contact: 'test@example.test', communitySlugs: ['brno'], frequencies: ['created'], consentAt: '2026-10-04', consentVersion: '2026-09' }, { database, config }), error => (error as { statusCode: number }).statusCode === 503)
   assert.equal(writes, 0)
-  for (const name of ['0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+  for (const name of ['0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(checkpointSql(name))
   assert.equal(await notificationSchemaReady(database), true)
   const observed = { ...runtime, notificationExpectedTargetIdentity: '1'.repeat(64), notificationExpectedBundleHash: '2'.repeat(64), notificationExpectedMigrationHash: '3'.repeat(64), notificationExpectedConfigHash: '4'.repeat(64), notificationExpectedDeploymentId: '11111111-1111-1111-1111-111111111111' }
   const now = Date.now()

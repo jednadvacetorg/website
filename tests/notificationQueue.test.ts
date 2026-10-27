@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { createECDH, createDecipheriv, createHash, hkdfSync } from 'node:crypto'
 import test from 'node:test'
 import { setImmediate } from 'node:timers/promises'
@@ -19,7 +20,7 @@ const Database = createRequire(import.meta.url)('better-sqlite3') as new (filena
   prepare(sql: string): { run(...values: unknown[]): unknown, get(...values: unknown[]): unknown, all(...values: unknown[]): unknown[] }
 }
 
-const schema = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
+const schema = ['0000_majestic_lightspeed'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
 
 const disposableDatabase = (): { database: NotificationDatabase, query(sql: string): Record<string, unknown>[] } => {
   const sqlite = new Database(':memory:')
@@ -210,7 +211,7 @@ test('reserved lifecycle callback evidence converges monotonically across result
 
 test('supplied pre-lifecycle schema cannot activate or reach transport', async () => {
   const sqlite = new Database(':memory:')
-  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk']) sqlite.exec(execFileSync('git', ['show', `ec1001951d6df22f1e77f68ecd3ab678f0a49208:server/db/migrations/sqlite/${name}.sql`], { encoding: 'utf8' }))
   const old: NotificationDatabase = { prepare: sql => ({ bind() { return this }, all: async <T>() => ({ results: sqlite.prepare(sql).all() as T[] }), first: async <T>() => sqlite.prepare(sql).get() as T, run: async () => sqlite.prepare(sql).run() }), batch: async () => { throw Error('no mutation allowed') } }
   assert.equal(await notificationSchemaReady(old), false)
   await assert.rejects(activateNotificationChannel(input, { database: old, config }), /activation is unavailable/)

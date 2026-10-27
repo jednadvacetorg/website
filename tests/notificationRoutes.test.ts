@@ -6,12 +6,12 @@ import type {} from 'nitropack'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
 import { activateNotificationChannel, requestNotificationManagementRecovery, stopNotificationChannel, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 import type { NotificationMessagesQueue } from '../server/utils/notificationMessagesQueue.ts'
 
-process.env.NODE_ENV = 'development'
-let runtimeConfig: Record<string, unknown> = { notificationUiVerificationFixture: true }
+let runtimeConfig: Record<string, unknown> = {}
 ;(globalThis as typeof globalThis & { useRuntimeConfig: () => Record<string, unknown> }).useRuntimeConfig = () => runtimeConfig
 
 const activate = (await import('../server/api/notifications/activate.post.ts')).default
@@ -19,7 +19,6 @@ const recover = (await import('../server/api/notifications/manage-request.post.t
 const manageGet = (await import('../server/api/notifications/manage/[token].get.ts')).default
 const managePost = (await import('../server/api/notifications/manage/[token].post.ts')).default
 
-const fixtureToken = 'notification-ui-verification-token'
 const activation = {
   channel: 'email',
   contact: 'guide@example.test',
@@ -37,7 +36,7 @@ const managementDatabase = () => {
     transaction<T>(operation: () => T): () => T,
   }
   const sqlite = new Database(':memory:')
-  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+  for (const name of ['0000_majestic_lightspeed']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
   sqlite.exec('PRAGMA foreign_keys = ON')
   const executions = new WeakMap<NotificationStatement, () => { changes: number }>()
   let rejectBatch = false
@@ -146,21 +145,12 @@ const withRoutes = async (run: (baseUrl: string) => Promise<void>, database?: No
   }
 }
 
-test('activation accepts the fixture challenge only through the JSON body token', async () => {
-  await withRoutes(async baseUrl => {
-    const challenge = await fetch(`${baseUrl}/activate`, { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Turnstile-Response': fixtureToken }, body: JSON.stringify(activation) })
-    assert.equal(challenge.status, 403)
-    const success = await fetch(`${baseUrl}/activate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...activation, turnstileToken: fixtureToken }) })
-    assert.equal(success.status, 200)
-    assert.deepEqual(await success.json(), { state: 'active' })
-  })
-})
-
 test('native push HTTP activation, challenge retry, pending reactivation and device-only recovery use applied D1', async t => {
   const Database = createRequire(import.meta.url)('better-sqlite3') as new (filename: string) => { close(): void, exec(sql: string): void, prepare(sql: string): { all(...values: unknown[]): Record<string, unknown>[], get(...values: unknown[]): unknown, run(...values: unknown[]): unknown }, transaction<T>(operation: () => T): () => T }
   const sqlite = new Database(':memory:')
   t.after(() => sqlite.close())
-  sqlite.exec(readFileSync(new URL('../server/db/migrations/sqlite/0000_majestic_lightspeed.sql', import.meta.url), 'utf8'))
+  const checkpointSql = (name: string) => execFileSync('git', ['show', `ec1001951d6df22f1e77f68ecd3ab678f0a49208:server/db/migrations/sqlite/${name}.sql`], { encoding: 'utf8' })
+  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk']) sqlite.exec(checkpointSql(name))
   sqlite.exec('PRAGMA foreign_keys = ON')
   const executions = new WeakMap<NotificationStatement, () => unknown>()
   const database: NotificationDatabase = { prepare(sql) {
@@ -207,7 +197,7 @@ test('native push HTTP activation, challenge retry, pending reactivation and dev
       assert.equal(oldSchema.status, 503)
       assert.deepEqual(sqlite.prepare('SELECT id FROM notification_contacts').all(), [])
       assert.deepEqual(sqlite.prepare('SELECT id FROM notification_outbox').all(), [])
-      for (const name of ['0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+      for (const name of ['0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(checkpointSql(name))
       sqlite.exec('PRAGMA foreign_keys = ON')
       assert.equal((await post('activate', body)).status, 403)
       assert.deepEqual(sqlite.prepare('SELECT id FROM notification_contacts').all(), [])
@@ -238,16 +228,6 @@ test('native push HTTP activation, challenge retry, pending reactivation and dev
       assert.deepEqual(sqlite.prepare('SELECT channel, reason FROM notification_suppressions').all(), [{ channel: 'web-push', reason: 'user-stop' }])
     }, database)
   } finally { runtimeConfig = previousRuntime; globalThis.fetch = originalFetch }
-})
-
-test('recovery keeps its JSON contact contract independent from activation fields', async () => {
-  await withRoutes(async baseUrl => {
-    const challenge = await fetch(`${baseUrl}/recover`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'email', contact: 'guide@example.test' }) })
-    assert.equal(challenge.status, 403)
-    const success = await fetch(`${baseUrl}/recover`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'email', contact: 'guide@example.test', turnstileToken: fixtureToken, email: 'not-an-email', telephone: 'invalid' }) })
-    assert.equal(success.status, 202)
-    assert.match((await success.json() as { message: string }).message, /Pokud máš na tomto kontaktu odběr/)
-  })
 })
 
 for (const channel of ['email', 'sms'] as const) {
@@ -362,107 +342,6 @@ for (const channel of ['email', 'sms'] as const) {
     }, storage.database)
   })
 }
-
-test('development fixture projects many collapsed-management communities and scopes row mutations', async () => {
-  await withRoutes(async baseUrl => {
-    const active = await fetch(`${baseUrl}/manage/notification-ui-management-active`)
-    const result = await active.json() as { state: string, channel: string, maskedContact: string, communities: Array<{ slug: string, title: string, frequencies: string[] }> }
-    assert.equal(result.state, 'active')
-    assert.equal(result.channel, 'email')
-    assert.equal(result.maskedContact, 'u•••@example.test')
-    assert.equal(result.communities.length, 6)
-    assert.match(result.communities[0]!.title, /mimořádně dlouhým/)
-    assert.deepEqual(result.communities[0]!.frequencies, ['created', 'week-before'])
-    assert.deepEqual(result.communities[5]!.frequencies, ['day-before'])
-
-    const saved = await fetch(`${baseUrl}/manage/notification-ui-management-active`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'update-frequencies', communitySlug: 'brno', frequencies: ['day-before'] }),
-    })
-    const savedResult = (await saved.json() as { outcome: string, management: typeof result }).management
-    assert.deepEqual(savedResult.communities.find(community => community.slug === 'brno')?.frequencies, ['day-before'])
-    assert.deepEqual(savedResult.communities.find(community => community.slug === 'praha')?.frequencies, ['created', 'day-before'])
-
-    const removed = await fetch(`${baseUrl}/manage/notification-ui-management-active`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'remove-community', communitySlug: 'praha' }),
-    })
-    const removedResult = (await removed.json() as { outcome: string, management: typeof result }).management
-    assert.equal(removedResult.communities.some(community => community.slug === 'praha'), false)
-    assert.deepEqual(removedResult.communities.find(community => community.slug === 'brno')?.frequencies, ['created', 'week-before'])
-
-    const stopped = await fetch(`${baseUrl}/manage/notification-ui-management-active`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'stop-channel' }),
-    })
-    assert.deepEqual(await stopped.json(), { outcome: 'stopped' })
-  })
-})
-
-test('development fixture keeps pending scope read-only and neutralizes terminal or unknown links', async () => {
-  await withRoutes(async baseUrl => {
-    const pending = await fetch(`${baseUrl}/manage/notification-ui-management-pending-reactivation`)
-    assert.deepEqual(await pending.json(), {
-      state: 'pending-reactivation',
-      channel: 'sms',
-      maskedContact: '+1555 ••• ••••',
-      communities: [{
-        slug: 'brno',
-        title: 'Brno s mimořádně dlouhým názvem pro ověření zalamování',
-        frequencies: ['created'],
-      }],
-    })
-    for (const token of ['notification-ui-management-stopped', 'notification-ui-management-old', 'notification-ui-management-unavailable', 'notification-ui-management-unknown-token']) {
-      const response = await fetch(`${baseUrl}/manage/${token}`)
-      assert.deepEqual(await response.json(), { state: 'unavailable' })
-    }
-  })
-})
-
-test('reserved management tokens are inert when the development fixture guard is absent', async () => {
-  process.env.NODE_ENV = 'production'
-  runtimeConfig = { notificationUiVerificationFixture: true }
-  try {
-    await withRoutes(async baseUrl => {
-      const response = await fetch(`${baseUrl}/manage/notification-ui-management-active`)
-      assert.deepEqual(await response.json(), { state: 'unavailable' })
-    })
-  } finally {
-    process.env.NODE_ENV = 'development'
-    runtimeConfig = { notificationUiVerificationFixture: true }
-  }
-})
-
-test('production fixture opt-in cannot activate SMS or native push and keeps recovery private', async () => {
-  const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
-  const contact = { endpoint: 'https://push.example.test/private-device', expirationTime: null, keys: { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } }
-  const previous = runtimeConfig
-  process.env.NODE_ENV = 'production'
-  runtimeConfig = { notificationUiVerificationFixture: true }
-  try {
-    await withRoutes(async base => {
-      for (const [channel, destination] of [['sms', '+420777123456'], ['web-push', contact]]) {
-        const post = (path: string, body: unknown) => fetch(`${base}/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-        assert.equal((await post('activate', { ...activation, channel, contact: destination, turnstileToken: fixtureToken })).status, 503)
-        const bodies: string[] = []
-        for (const token of [undefined, fixtureToken]) {
-          const response = await post('recover', { channel, contact: destination, turnstileToken: token })
-          assert.equal(response.status, 202)
-          const text = await response.text()
-          assert.ok(!text.includes('+420777123456') && !text.includes(contact.endpoint) && !text.includes(contact.keys.auth))
-          bodies.push(text)
-        }
-        assert.equal(bodies[0], bodies[1])
-      }
-      for (const token of ['malformed', 'A'.repeat(43)]) {
-        assert.deepEqual(await (await fetch(`${base}/manage/${token}`)).json(), { state: 'unavailable' })
-      }
-    })
-  } finally { runtimeConfig = previous; process.env.NODE_ENV = 'development' }
-})
 
 test('management POST reports missing D1 as a sanitized infrastructure failure', async () => {
   const token = 'A'.repeat(32)

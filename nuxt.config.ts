@@ -123,7 +123,6 @@ export default defineNuxtConfig({
     notificationVapidPrivateKey: '',
     notificationVapidSubject: '',
     // Private and inert outside an explicitly-owned development verification process.
-    notificationUiVerificationFixture: false,
     public: {
       // This is the only notification-abuse value intentionally exposed to browsers.
       notificationTurnstileSiteKey: '',

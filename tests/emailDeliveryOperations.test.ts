@@ -83,9 +83,9 @@ const fixture = async (t: TestContext, contract: {
     triggers: { crons: ['13 * * * *'] }, observability: { logs: { enabled: true, persist: true, invocation_logs: true } },
   }
   const configBytes = JSON.stringify(config)
-  const migrationNames = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']
+  const migrationNames = ['0000_majestic_lightspeed']
   const migrationBytes = await Promise.all(migrationNames.map(name => readFile(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')))
-  const migrationPaths = ['migration.sql', 'columns.sql', 'detach.sql', 'constraints.sql', 'restore.sql', 'lifecycle-columns.sql', 'lifecycle-constraints.sql']
+  const migrationPaths = ['migration.sql']
   const moduleBytes = 'import "./chunk.mjs"; export default {}'
   const chunkBytes = 'export const message = "candidate"'
   const manifestBytes = '{"/asset.css":{"hash":"asset-byte-hash","size":12}}'

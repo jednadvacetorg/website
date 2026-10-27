@@ -1,7 +1,6 @@
 import { createError, defineEventHandler, getRouterParam, readBody } from 'h3'
 import { confirmNotificationReactivation, NotificationLifecycleError, removeNotificationCommunity, stopNotificationChannel, updateNotificationFrequencies, type NotificationDatabase } from '../../../utils/notifications.ts'
 import { notificationConfig } from '../../../utils/notificationConfig.ts'
-import { mutateNotificationUiVerificationManagement } from '../../../utils/notificationUiVerificationFixture.ts'
 import { publishPendingNotificationPointers, type NotificationMessagesQueue } from '../../../utils/notificationMessagesQueue.ts'
 
 const unavailable = { outcome: 'unavailable' as const }
@@ -14,8 +13,6 @@ export default defineEventHandler(async (event) => {
   if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{20,}$/.test(token)) return unavailable
   const body: unknown = await readBody(event)
   if (!isRecord(body) || typeof body.action !== 'string') throw createError({ statusCode: 400, statusMessage: 'Invalid notification management action' })
-  const fixture = mutateNotificationUiVerificationManagement(useRuntimeConfig(event), token, body.action, body)
-  if (fixture) return fixture
   const database = (event.context._platform as { cloudflare?: { env?: { DB?: NotificationDatabase } } } | undefined)?.cloudflare?.env?.DB
   if (!database) throw createError({ statusCode: 503, statusMessage: 'Notification management is unavailable' })
   try {

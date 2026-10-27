@@ -5,7 +5,6 @@ import test from 'node:test'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
 import { evaluateNotificationAbuse } from '../server/utils/notificationAbuse.ts'
 import { activateNotificationChannel, confirmNotificationReactivation, readNotificationManagement, removeNotificationCommunity, requestNotificationManagementRecovery, stopNotificationChannel, updateNotificationFrequencies, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
-import { notificationUiVerificationDecision, notificationUiVerificationFixtureEnabled, notificationUiVerificationToken } from '../server/utils/notificationUiVerificationFixture.ts'
 import { projectNotificationReadiness } from '../server/api/notifications/readiness.get.ts'
 
 const Database = createRequire(import.meta.url)('better-sqlite3') as new (filename: string) => {
@@ -13,7 +12,7 @@ const Database = createRequire(import.meta.url)('better-sqlite3') as new (filena
   prepare(sql: string): { run(...values: unknown[]): unknown, get(...values: unknown[]): unknown, all(...values: unknown[]): unknown[] }
 }
 
-const schema = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
+const schema = readFileSync(new URL('../server/db/migrations/sqlite/0000_majestic_lightspeed.sql', import.meta.url), 'utf8')
 
 const disposableDatabase = (failsStatement?: (sql: string) => boolean): { database: NotificationDatabase, query(sql: string): unknown[] } => {
   const sqlite = new Database(':memory:')
@@ -285,14 +284,6 @@ test('public readiness stays false without D1 or operational delivery evidence',
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: false, webPush: false })
 })
 
-test('the deterministic UI fixture is only enabled in opted-in development and accepts only reserved contacts', () => {
-  const runtimeConfig = { notificationUiVerificationFixture: true }
-  assert.equal(notificationUiVerificationFixtureEnabled(runtimeConfig, false), false)
-  assert.equal(notificationUiVerificationDecision(runtimeConfig, 'email', 'guide@example.test', notificationUiVerificationToken, false), null)
-  assert.equal(notificationUiVerificationDecision(runtimeConfig, 'email', 'guide@example.test', undefined, true), 'challenge')
-  assert.equal(notificationUiVerificationDecision(runtimeConfig, 'email', 'guide@example.test', notificationUiVerificationToken, true), 'success')
-  assert.equal(notificationUiVerificationDecision(runtimeConfig, 'email', 'visitor@example.com', notificationUiVerificationToken, true), null)
-})
 
 test('private abuse and Turnstile configuration imports a dedicated HMAC key without exposing private values', async () => {
   const runtimeConfig = await notificationConfig({

@@ -19,7 +19,7 @@ const smsCallbackRoute = (await import('../server/api/notifications/brevo-events
 
 const createDatabase = () => {
   const sqlite = new Database(':memory:')
-  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+  for (const name of ['0000_majestic_lightspeed']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
   sqlite.exec('PRAGMA foreign_keys = ON')
   const executions = new WeakMap<NotificationStatement, () => unknown>()
   const database: NotificationDatabase = {
