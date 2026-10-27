@@ -72,8 +72,7 @@ const vars = {
   NUXT_NOTIFICATION_TURNSTILE_SECRET: 'synthetic-turnstile-' + randomBytes(24).toString('hex'),
   NUXT_NOTIFICATION_TURNSTILE_EXPECTED_HOSTNAME: 'example.test',
   NUXT_NOTIFICATION_COMMUNITY_SLUGS: 'brno', NUXT_NOTIFICATION_CONSENT_VERSION: '2026-09',
-  NUXT_NOTIFICATION_UI_VERIFICATION_FIXTURE: 'true',
-  NUXT_PUBLIC_NOTIFICATION_TURNSTILE_SITE_KEY: 'notification-ui-verification-site-key',
+  NUXT_PUBLIC_NOTIFICATION_TURNSTILE_SITE_KEY: 'synthetic-notification-site-key',
   NUXT_NOTIFICATION_EMAIL_SMS_ENABLED: 'true', NUXT_NOTIFICATION_EMAIL_SMS_FIRST_MESSAGE_READY: 'true', NUXT_NOTIFICATION_EMAIL_SMS_EVENT_DELIVERY_READY: 'true', NUXT_NOTIFICATION_EMAIL_MANUAL_ENABLED: 'true',
   NUXT_NOTIFICATION_SMS_ENABLED: 'true', NUXT_NOTIFICATION_SMS_FIRST_MESSAGE_READY: 'true', NUXT_NOTIFICATION_SMS_EVENT_DELIVERY_READY: 'true',
   NUXT_NOTIFICATION_WEB_PUSH_ENABLED: 'true', NUXT_NOTIFICATION_WEB_PUSH_FIRST_MESSAGE_READY: 'true', NUXT_NOTIFICATION_WEB_PUSH_EVENT_DELIVERY_READY: 'true',
@@ -112,6 +111,7 @@ JS
     then echo "$profile build contains errors; retaining the actual artifact for diagnosis, not a passing build." >&2; fi
     if [[ ${#layer_args[@]} -eq 0 ]]; then cp -a .output "$evidence_dir/$profile/output"; fi
     [[ -f "$evidence_dir/$profile/output/server/wrangler.json" ]] || { echo 'Actual generated Wrangler JSON missing.' >&2; exit 1; }
+    "${clean_env[@]}" TMPDIR="$evidence_dir" node --experimental-strip-types scripts/verify-notification-migration.ts --bundle-contract "$evidence_dir/$profile/output/server/wrangler.json" >"$evidence_dir/$profile/migration-bundle-contract.log" 2>&1
   done
   "${clean_env[@]}" NOTIFICATION_CONFIG_ISOLATION=true "NOTIFICATION_PRODUCTION_CONFIG=$evidence_dir/production/output/server/wrangler.json" "NOTIFICATION_PREVIEW_CONFIG=$evidence_dir/preview/output/server/wrangler.json" node --experimental-strip-types --test --test-name-pattern='generated notification configuration' tests/emailDeliveryOperations.test.ts >"$evidence_dir/generated-config-tests.log" 2>&1
   for profile in production preview; do
@@ -188,9 +188,9 @@ for (const channel of ['email', 'sms', 'web-push']) {
   const activation = await fetch(`${base}/api/notifications/activate`, { method: 'POST', headers: headers(), body: JSON.stringify(body) })
   assert.equal(activation.status, 503, 'valid native/contact requests must fail the readiness gate')
   safe(await activation.text())
-  for (const token of [undefined, 'notification-ui-verification-token']) {
+  for (const token of [undefined, 'synthetic-invalid-token']) {
     const recovery = await fetch(`${base}/api/notifications/manage-request`, { method: 'POST', headers: headers(), body: JSON.stringify({ channel, contact: body.contact, turnstileToken: token }) })
-    assert.equal(recovery.status, token ? 403 : 202, 'a development fixture token must not bypass real verification')
+    assert.equal(recovery.status, token ? 403 : 202, 'an arbitrary invalid token must not bypass real verification')
     safe(await recovery.text())
   }
 }
