@@ -258,7 +258,7 @@ test('minor refresh updates source watermark without sequence bump and later rem
   assert.equal(reminder.event.description, 'Minor text')
 })
 
-test('time/end/venue/cancellation revisions target only still-eligible prior submitted or delivered recipients', async () => {
+test('time/end/venue revisions carry pending announcements while notifying only prior recipients of changes', async () => {
   for (const change of [
     { start: '2026-01-13T12:00:00Z' }, { end: '2026-01-12T14:00:00Z' }, { location: 'Other venue' }, { cancelled: true },
   ]) {
@@ -272,8 +272,11 @@ test('time/end/venue/cancellation revisions target only still-eligible prior sub
     sqlite.exec("INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT channel, destination_hash, 'provider-bounce', '2026-01-01' FROM notification_contacts WHERE id = 3; DELETE FROM notification_subscriptions WHERE contact_id = 4")
     const updated = item({ changedAt: '2026-01-02T00:00:00Z', sequence: 1, cancelled: change.cancelled ?? false, event: { ...item().event, ...('cancelled' in change ? {} : change) } })
     const results = await Promise.all([planEventNotifications([updated], dependencies), planEventNotifications([updated], dependencies)])
-    assert.equal(results.reduce((total, result) => total + result.planned, 0), 1)
-    assert.deepEqual(sqlite.prepare('SELECT contact_id, reason, event_revision FROM notification_event_deliveries WHERE event_revision = 1').all(), [{ contact_id: 1, reason: change.cancelled ? 'cancelled' : 'updated', event_revision: 1 }])
+    assert.equal(results.reduce((total, result) => total + result.planned, 0), change.cancelled ? 1 : 2)
+    assert.deepEqual(sqlite.prepare('SELECT contact_id, reason, event_revision FROM notification_event_deliveries WHERE event_revision = 1 ORDER BY contact_id, reason').all(), [
+      { contact_id: 1, reason: change.cancelled ? 'cancelled' : 'updated', event_revision: 1 },
+      ...(change.cancelled ? [] : [{ contact_id: 2, reason: 'created', event_revision: 1 }]),
+    ])
     const revision = (await payloads(sqlite)).find(payload => payload.event.sequence === 1)
     assert.equal(revision.event.uid, 'brno-12@jednadvacet.org')
     assert.equal(revision.event.cancelled, Boolean(change.cancelled))

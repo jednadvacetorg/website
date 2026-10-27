@@ -602,6 +602,28 @@ const jointFixture = async () => {
   return { ...fixture, dependencies, receiver, contact }
 }
 
+test('an edited event rejects its published stale pointer and authorizes its carried replacement once', async () => {
+  const { database, query, dependencies } = await jointFixture()
+  await planEventNotifications([calendarEvent], dependencies)
+  const published: { outboxId: string, version: number }[] = []
+  await publishPendingNotificationPointers({ send: async pointer => { published.push(pointer) } }, dependencies)
+  const original = published.find(pointer => pointer.outboxId === query("SELECT id FROM notification_outbox WHERE kind = 'event-email'")[0]!.id)!
+  const changed = { ...calendarEvent, changedAt: '2026-10-05T00:00:00.000Z', event: { ...calendarEvent.event, location: 'Replacement venue' } }
+  assert.equal((await planEventNotifications([changed], dependencies)).planned, 3)
+  await publishPendingNotificationPointers({ send: async pointer => { published.push(pointer) } }, dependencies)
+  const replacementId = query("SELECT id FROM notification_outbox WHERE kind = 'event-email' AND status = 'queued'")[0]!.id as string
+  const replacement = published.find(pointer => pointer.outboxId === replacementId)!
+  let calls = 0
+  const deliver = async (_payload: Parameters<typeof consumeNotificationOutboxPointer>[2] extends (payload: infer Payload, ...args: never[]) => unknown ? Payload : never, _authorization: never, authorize: (signal?: AbortSignal) => Promise<boolean>) => {
+    if (await authorize()) calls++
+    return { attempted: true, status: 'submitted' as const, providerMessageId: 'replacement' }
+  }
+  assert.deepEqual(await consumeNotificationOutboxPointer(original, dependencies, deliver), { delivered: false, stale: true })
+  assert.deepEqual(await consumeNotificationOutboxPointer(replacement, dependencies, deliver), { delivered: true, stale: false })
+  assert.deepEqual(await consumeNotificationOutboxPointer(replacement, dependencies, deliver), { delivered: false, stale: true })
+  assert.equal(calls, 1)
+})
+
 for (const channel of ['email', 'sms'] as const) for (const work of ['lifecycle', 'event']) for (const phase of (channel === 'sms' && work === 'lifecycle' ? ['schema', 'read'] : ['schema', 'read', 'reservation'])) test(`deadline during ${work} ${channel} final ${phase} cannot resume provider or new SQL`, { timeout: 10000 }, async t => {
   const { database, query, dependencies } = await jointFixture()
   if (work === 'event') await planEventNotifications([calendarEvent], dependencies)
