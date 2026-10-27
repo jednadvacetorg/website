@@ -6,8 +6,12 @@ const communityMapsCron = '17 3 * * *'
 const communityMapsQueue = 'community-maps'
 const portalEventsCron = '47 3 * * *'
 const portalEventsQueue = 'portal-events'
+const notificationMessagesCron = '13 * * * *'
+const notificationPublicationCron = '* * * * *'
+const notificationMessagesQueue = 'notification-messages'
+const notificationMessagesDeadLetterQueue = 'notification-messages-dlq'
 
-const studioIconLibraries = ['bitcoin-icons', 'lucide', 'pinhead', 'simple-icons', 'streamline']
+const iconLibraries = ['bitcoin-icons', 'lucide', 'pinhead', 'simple-icons', 'streamline']
 
 // Nitro 2's bundled Wrangler type predates traces, but it emits this object unchanged.
 const cloudflareObservability = {
@@ -36,7 +40,7 @@ export default defineNuxtConfig({
       type: 'sqlite',
       // SQLite writes are unreliable on the devcontainer's virtiofs workspace
       // mount, so local Content caches stay on the container filesystem.
-      filename: '/tmp/jednadvacet-content.sqlite',
+      filename: process.env.CONTENT_LOCAL_DATABASE_PATH || '/tmp/jednadvacet-content.sqlite',
     },
     build: {
       transformers: [
@@ -62,7 +66,6 @@ export default defineNuxtConfig({
     '@nuxtjs/sitemap',
     '@vueuse/nuxt',
     './shared/contentRedirectsModule',
-    'nuxt-studio'
   ],
 
   site: {
@@ -79,11 +82,57 @@ export default defineNuxtConfig({
     eventsAdminToken: '',
     mapboxAccessToken: '',
     mapboxStyle: 'mapbox/dark-v10',
+    // Keep notification activation private and fail closed until Phases 6–7 provide both message types.
+    notificationCommunitySlugs: '',
+    // One root derives separated outbox, suppression, and abuse subkeys internally.
+    notificationRootKey: '',
+    notificationTurnstileSecret: '',
+    notificationTurnstileExpectedHostname: '',
+    notificationConsentVersion: '',
+    // Operator-owned production observations, bound to the reviewed deployment and
+    // artifacts. Local-candidate records never authorize runtime delivery.
+    notificationExpectedTargetIdentity: '',
+    notificationExpectedDeploymentId: '',
+    notificationExpectedBundleHash: '',
+    notificationExpectedMigrationHash: '',
+    notificationExpectedConfigHash: '',
+    notificationEmailEvidence: '',
+    notificationSmsEvidence: '',
+    notificationWebPushEvidence: '',
+    notificationSmsDeliveryCallbacksConfigured: false,
+    notificationEmailSmsEnabled: false,
+    notificationEmailSmsFirstMessageReady: false,
+    notificationEmailSmsEventDeliveryReady: false,
+    // SMS has independent provider/readiness evidence; event work remains
+    // fail-closed until a separately reviewed D1 schema migration exists.
+    notificationSmsEnabled: false,
+    notificationSmsFirstMessageReady: false,
+    notificationSmsEventDeliveryReady: false,
+    // Bounded observations are required alongside private provider configuration.
+    brevoApiKey: '',
+    brevoCallbackSecret: '',
+    brevoSenderName: '',
+    brevoSenderEmail: '',
+    notificationEmailManualEnabled: false,
+    notificationWebPushEnabled: false,
+    notificationWebPushFirstMessageReady: false,
+    notificationWebPushEventDeliveryReady: false,
+    // VAPID private material stays server-only; its matching public key is the
+    // sole Web Push value serialized to browsers.
+    notificationVapidPrivateKey: '',
+    notificationVapidSubject: '',
+    // Private and inert outside an explicitly-owned development verification process.
+    notificationUiVerificationFixture: false,
+    public: {
+      // This is the only notification-abuse value intentionally exposed to browsers.
+      notificationTurnstileSiteKey: '',
+      notificationVapidPublicKey: '',
+    },
   },
 
   sitemap: {
     // People have no standalone routes; everything else is content-backed.
-    exclude: ['/_studio/**', '/debug/**', '/cntrsclc'],
+    exclude: ['/debug/**', '/cntrsclc'],
   },
 
   hub: {
@@ -107,10 +156,10 @@ export default defineNuxtConfig({
   },
 
   icon: {
-    collections: studioIconLibraries,
+    collections: iconLibraries,
     provider: isDevelopment ? 'server' : 'none',
     fallbackToApi: false,
-    serverBundle: { collections: studioIconLibraries },
+    serverBundle: { collections: iconLibraries },
     clientBundle: {
       icons: navigationItems.flatMap(item =>
         item.children?.flatMap(child => child.icon ? [child.icon] : []) ?? [],
@@ -118,7 +167,7 @@ export default defineNuxtConfig({
       scan: {
         globInclude: ['app/**/*.{vue,ts}', 'content/**/*.{md,yml,yaml}'],
         globExclude: ['node_modules'],
-        additionalCollections: studioIconLibraries,
+        additionalCollections: iconLibraries,
       },
       sizeLimitKb: 256,
     },
@@ -134,6 +183,11 @@ export default defineNuxtConfig({
       : {
           [communityMapsCron]: 'community-maps',
           [portalEventsCron]: 'portal-events',
+          // Automatic notification jobs require the Worker binding context.
+          ...(isDevelopment ? {} : {
+            [notificationMessagesCron]: 'notification-messages',
+            [notificationPublicationCron]: 'notification-publication',
+          }),
         },
     devStorage: {
       miners: {
@@ -163,7 +217,7 @@ export default defineNuxtConfig({
           },
         },
     alias: {
-      'sharp': 'unenv/mock/proxy-cjs', // sharp can't run in Cloudflare Workers; pulled in transitively by nuxt-studio's IPX media handler
+      'sharp': 'unenv/mock/proxy-cjs', // sharp can't run in Cloudflare Workers; retain the alias for Nuxt Image's IPX dependency.
     },
     cloudflare: {
       deployConfig: true,
@@ -180,7 +234,6 @@ export default defineNuxtConfig({
             '/ical/*',
             '/feed/*',
             '/cntrsclc',
-            '/_studio/*',
             '!/_nuxt/*',
             '!/images/*',
             '!/icons/*',
@@ -230,6 +283,10 @@ export default defineNuxtConfig({
                   binding: 'PORTAL_EVENTS_QUEUE',
                   queue: portalEventsQueue,
                 },
+                {
+                  binding: 'NOTIFICATION_MESSAGES_QUEUE',
+                  queue: notificationMessagesQueue,
+                },
               ],
               consumers: [
                 {
@@ -250,45 +307,43 @@ export default defineNuxtConfig({
                   // No DLQ is provisioned yet; persistent valid failures are visible in logs
                   // but Cloudflare discards them after retries are exhausted.
                 },
+                {
+                  queue: notificationMessagesQueue,
+                  max_batch_size: 10,
+                  max_batch_timeout: 5,
+                  max_retries: 5,
+                  retry_delay: 60,
+                  max_concurrency: 1,
+                  dead_letter_queue: notificationMessagesDeadLetterQueue,
+                },
               ],
             },
         triggers: isPreviewDeploy
           ? undefined
           : {
-              crons: [communityMapsCron, portalEventsCron],
+              crons: [communityMapsCron, portalEventsCron, ...(isDevelopment ? [] : [notificationMessagesCron, notificationPublicationCron])],
             },
         observability: cloudflareObservability,
       }
     },
     prerender: {
       routes: ['/'],
-      ignore: ['/_studio'],
       crawlLinks: true,
     },
     preset: 'cloudflare_module',
   },
 
   routeRules: {
+    // A queued public analytics request must not disclose a later management URL.
+    '/**': { headers: { 'referrer-policy': 'strict-origin' } },
+    '/notifications/manage/**': { headers: { 'cache-control': 'no-store' } },
+    '/api/notifications/**': { headers: { 'cache-control': 'no-store' } },
     '/sitemap.xml': { prerender: true },
     '/cntrsclc': { proxy: { to: 'https://analytics.jednadvacet.org/collect' } }, // Mask tracker collect URL to avoid blockers.
     '/author/**': { redirect: { to: '/lide', statusCode: 302 } },
     '/blog/page/**': { redirect: { to: '/blog', statusCode: 302 } },
     '/category/**': { redirect: { to: '/blog', statusCode: 302 } },
     '/tag/**': { redirect: { to: '/blog', statusCode: 302 } },
-  },
-
-  studio: {
-    dev: true,
-    editor: {
-      iconLibraries: studioIconLibraries,
-    },
-    repository: {
-      provider: 'github',
-      owner: 'Jednadvacetorg',
-      repo: 'web',
-      branch: process.env.STUDIO_BRANCH_NAME || 'master',
-      private: false,
-    },
   },
 
   vite: {

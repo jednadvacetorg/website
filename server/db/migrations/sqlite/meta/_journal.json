@@ -1,0 +1,55 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1790019004887,
+      "tag": "0000_majestic_lightspeed",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1791128355009,
+      "tag": "0001_phase_7_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792064604426,
+      "tag": "0002_detach_event_callback_fk",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792064604706,
+      "tag": "0003_restore_event_ledger_checks",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792064604956,
+      "tag": "0004_restore_event_callback_fk",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792071392295,
+      "tag": "0005_lifecycle_email_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792071392654,
+      "tag": "0006_lifecycle_email_constraints",
+      "breakpoints": true
+    }
+  ]
+}

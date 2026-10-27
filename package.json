@@ -8,6 +8,7 @@
     "build:cloudflare": "CLOUDFLARE_DEPLOY=1 npm run build",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "nuxt typecheck",
+    "verify:email-delivery": "node --experimental-strip-types scripts/verify-email-delivery.ts",
     "dev": "CHOKIDAR_USEPOLLING=1 CHOKIDAR_INTERVAL=500 nuxt dev --port 2103",
     "dev:tunnel": "UNTUN_ACCEPT_CLOUDFLARE_NOTICE=true npm run dev -- --tunnel"
   },
@@ -23,7 +24,6 @@
     "drizzle-orm": "^0.45.1",
     "ical.js": "^2.2.1",
     "nuxt": "^4.3.0",
-    "nuxt-studio": "^1.5.1",
     "qrcode": "^1.5.4",
     "tailwindcss": "^4.1.18"
   },
