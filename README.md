@@ -136,7 +136,7 @@ Pro již ověřený účet Learned Mantis použij cílovou konfiguraci a vlastn�
 node --experimental-strip-types scripts/deploy-preview.ts --target claimed --config /cesta/k/claimed-test.wrangler.json
 ```
 
-Příkaz používá existující testovací D1, doplní izolované KV/fronty, spustí nativní migrace a po refreshi čeká na skutečná data a iCalendar. Přihlášení použije přes podporovaný `wrangler auth token --json`; token nevypisuje. Náhled nepotřebuje Google přihlašovací údaje; R2 a mapové zdroje se do něj nenasazují. Upozornění zůstávají vypnutá a test skutečného odeslání vyžaduje vlastní nastavení poskytovatele a vybrané příjemce.
+Příkaz používá existující testovací D1, doplní izolované KV/fronty, spustí nativní migrace a po refreshi čeká na skutečná data a iCalendar. Přihlášení použije přes podporovaný `wrangler auth token --json`; token nevypisuje. Náhled nepotřebuje Google přihlašovací údaje; R2 a mapové zdroje se do něj nenasazují. Nový náhled má výchozí odesílání upozornění vypnuté, ale redeploy již ověřeného cíle zachová záměrně zapnuté kanály i existující nastavení poskytovatele. Kontrola nasazení ověřuje shodu JSONu událostí a iCalendaru, nikoli vypnuté odesílání; kontrola bezpečnosti vydání zůstává samostatná. Skutečné odeslání stále vyžaduje výslovné nastavení poskytovatele a autorizované příjemce.
 
 - Náhled **nemá přístup k produkční databázi**.
 - **Vyprší za ~60 min**; po každém commitu se nasadí čerstvý.
