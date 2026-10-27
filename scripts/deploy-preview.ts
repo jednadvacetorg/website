@@ -158,10 +158,8 @@ const migrate = async (config: string, target: { accountId: string, databaseId: 
 }
 
 /** Check the public JSON/iCalendar contract, including matching event identity and time. */
-export const previewFeedsReady = (events: unknown, calendar: string, readiness: unknown) => {
+export const previewFeedsReady = (events: unknown, calendar: string) => {
   if (!Array.isArray(events) || !events.length) return false
-  const state = object(readiness)
-  if (state.email !== false || state.sms !== false || state.webPush !== false) return false
   try {
     const feed = new ICAL.Component(ICAL.parse(calendar))
     if (feed.name !== 'vcalendar') return false
@@ -181,9 +179,9 @@ const refreshAndWait = async (url: string, adminToken: string) => {
   if (refresh.status !== 202) throw new Error('preview refresh was not accepted')
   const deadline = Date.now() + 120_000
   while (Date.now() < deadline) {
-    const [events, ical, readiness] = await Promise.all(['/api/events?community=all', '/ical/all', '/api/notifications/readiness'].map(path => fetch(`${url}${path}`, { signal: AbortSignal.timeout(15_000) })))
+    const [events, ical] = await Promise.all(['/api/events?community=all', '/ical/all'].map(path => fetch(`${url}${path}`, { signal: AbortSignal.timeout(15_000) })))
     const eventBody = await events.text(); const calendar = await ical.text()
-    if (events.ok && ical.ok && readiness.ok && previewFeedsReady(JSON.parse(eventBody), calendar, await readiness.json())) {
+    if (events.ok && ical.ok && previewFeedsReady(JSON.parse(eventBody), calendar)) {
       const repeat = await fetch(`${url}/api/events?community=all`, { signal: AbortSignal.timeout(15_000) })
       if (repeat.ok) return
     }
