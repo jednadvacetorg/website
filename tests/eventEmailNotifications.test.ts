@@ -286,6 +286,56 @@ test('time/end/venue revisions carry pending announcements while notifying only 
   }
 })
 
+test('a replacement revalidates queued work for every enabled channel and preserves the current event payload', async () => {
+  const { sqlite, dependencies } = fixture()
+  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
+  await signup(ready)
+  for (const channel of ['sms', 'web-push']) {
+    sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)
+    sqlite.prepare("INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) SELECT id, 'brno', 'created', 'created', 'updated' FROM notification_contacts WHERE channel = ?").run(channel)
+  }
+  await planEventNotifications([item({ event: { ...item().event, osm_name: 'Old bar', osm_address: 'Old address' } })], ready)
+  sqlite.prepare("UPDATE notification_outbox SET status = 'queued' WHERE kind LIKE 'event-%'").run()
+  const edited = item({ changedAt: '2026-01-02T00:00:00Z', event: { ...item().event, location: 'New venue', osm_name: 'New bar', osm_address: 'New address' } })
+  assert.equal((await planEventNotifications([edited], ready)).planned, 3)
+  const rows = sqlite.prepare("SELECT kind, payload_ciphertext, payload_iv FROM notification_outbox WHERE kind LIKE 'event-%' AND status = 'pending' ORDER BY kind").all() as { kind: string, payload_ciphertext: string, payload_iv: string }[]
+  assert.equal(rows.length, 3)
+  const replacements = await Promise.all(rows.map(async row => ({ kind: row.kind, payload: JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(row.payload_iv) }, config.outboxTransportKey, decode(row.payload_ciphertext)))) })))
+  assert.deepEqual(replacements.map(({ kind, payload }) => [kind, payload.event.location, payload.event.sequence]), [
+    ['event-email', 'New bar, New address', 1], ['event-sms', 'New bar, New address, New venue', 1], ['event-web-push', 'New bar, New address', 1],
+  ])
+  assert.ok(replacements.every(({ payload }) => payload.event.uid === 'brno-12@jednadvacet.org'))
+})
+
+test('a reservation prevents carry-forward while a late batch failure preserves the predecessor for retry', async () => {
+  const { sqlite, dependencies, database } = fixture()
+  await signup(dependencies)
+  await planEventNotifications([item()], dependencies)
+  const edited = item({ changedAt: '2026-01-02T00:00:00Z', event: { ...item().event, location: 'New venue' } })
+  let entered!: () => void
+  let release!: () => void
+  const ready = new Promise<void>(resolve => { entered = resolve })
+  const paused = new Promise<void>(resolve => { release = resolve })
+  const delayed = planEventNotifications([edited], { ...dependencies, database: { ...database, batch: async statements => { entered(); await paused; return database.batch(statements) } } })
+  await ready
+  sqlite.prepare("UPDATE notification_event_deliveries SET submitted_at = '2026-01-01T10:00:00.000Z'").run()
+  release()
+  assert.equal((await delayed).planned, 0)
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_event_deliveries WHERE event_revision = 1').get().n, 0)
+  let failState = false
+  const retry = fixture(sql => failState && sql.startsWith('UPDATE notification_event_state'))
+  await signup(retry.dependencies)
+  await planEventNotifications([item()], retry.dependencies)
+  const original = retry.sqlite.prepare("SELECT payload_ciphertext, status FROM notification_outbox WHERE kind = 'event-email'").get() as { payload_ciphertext: string, status: string }
+  failState = true
+  await assert.rejects(planEventNotifications([edited], retry.dependencies), /Injected D1 failure/)
+  const previous = retry.sqlite.prepare("SELECT payload_ciphertext, status FROM notification_outbox WHERE kind = 'event-email'").get() as { payload_ciphertext: string, status: string }
+  assert.equal(previous.payload_ciphertext, original.payload_ciphertext)
+  assert.equal(previous.status, 'pending')
+  failState = false
+  assert.equal((await planEventNotifications([edited], retry.dependencies)).planned, 1)
+})
+
 test('moving earlier gives no catchup to never-notified contacts, but preserves future selected reminders', async () => {
   const { sqlite, dependencies, setNow } = fixture()
   await signup(dependencies, ['week-before', 'day-before'])
