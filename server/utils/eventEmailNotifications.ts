@@ -148,9 +148,8 @@ export const planEventNotifications = async (events: PortalCalendarEvent[], depe
         const capability = base64Url(cryptoApi.randomBytes(32))
         const smsDetails = recipient.channel === 'sms' ? {
           location: [...new Set([item.event.osm_name, item.event.osm_address, item.event.location].map(value => value?.trim()).filter((value): value is string => Boolean(value)))].join(', '),
-          communityUrl: `https://jednadvacet.org/${encodeURIComponent(item.community.id)}`,
         } : {}
-        const encrypted = await encrypt({ destination: recipient.destination, deliveryId, managementCapability: capability, event: { ...projection, ...smsDetails, uid, sequence: revision, cancelled: item.cancelled }, reason, kind }, dependencies.config, cryptoApi)
+        const encrypted = await encrypt({ destination: recipient.destination, deliveryId, managementCapability: capability, event: { ...projection, ...smsDetails, communityUrl: `https://jednadvacet.org/${encodeURIComponent(item.community.id)}`, uid, sequence: revision, cancelled: item.cancelled }, reason, kind }, dependencies.config, cryptoApi)
         const outboxId = `event-${deliveryId}-g${recipient.capability_generation}`
         const ledgerGuard = "EXISTS (SELECT 1 FROM notification_event_deliveries WHERE id = ? AND status = 'pending' AND submitted_at IS NULL AND expected_capability_generation = ?)"
         writes.push(database.prepare(`UPDATE notification_outbox SET version = version + 1, status = 'invalidated', payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE (id = ? OR substr(id, 1, length(?)) = ?) AND expected_capability_generation <> ? AND status IN ('pending', 'queued', 'claimed') AND ${authority}`).bind(timestamp, timestamp, `event-${deliveryId}`, `event-${deliveryId}-g`, `event-${deliveryId}-g`, recipient.capability_generation, ...authorityValues))

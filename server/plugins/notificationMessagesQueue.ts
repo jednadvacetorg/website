@@ -37,12 +37,18 @@ export const dispatchNotificationQueueMessage = (message: NotificationQueueEnvel
       if (payload.kind === 'event-web-push') {
         let url = '/kalendar'
         try {
-          const candidate = new URL(payload.event.url ?? url, 'https://jednadvacet.org')
+          const candidate = new URL(payload.event.communityUrl ?? url, 'https://jednadvacet.org')
           if (candidate.origin === 'https://jednadvacet.org' && !candidate.username && !candidate.password) url = `${candidate.pathname}${candidate.search}`
         } catch { /* Fall back to the application calendar. */ }
+        const plainText = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim()
+        const startsAt = new Intl.DateTimeFormat('cs-CZ', {
+          timeZone: 'Europe/Prague', day: 'numeric', month: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit',
+        }).format(new Date(payload.event.start))
+        const title = `${payload.reason === 'cancelled' ? 'Zrušeno: ' : ''}${plainText(payload.event.title)}`
+        const body = [startsAt, plainText(payload.event.description ?? '')].filter(Boolean).join('\n')
         return sendWebPush(parseWebPushSubscription(JSON.parse(payload.destination)), {
-          title: payload.reason === 'cancelled' ? 'Akce je zrušená' : payload.reason === 'updated' ? 'Změna akce' : 'Jednadvacet.org',
-          body: Array.from(payload.event.title.replace(/[\u0000-\u001f\u007f]/g, ' ')).slice(0, 200).join(''),
+          title: title.slice(0, 120).replace(/[\uD800-\uDBFF]$/, ''),
+          body: body.slice(0, 240).replace(/[\uD800-\uDBFF]$/, ''),
           url,
         }, dependencies.config.webPushDelivery, authorizedFetch)
       }

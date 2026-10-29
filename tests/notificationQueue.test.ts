@@ -868,7 +868,8 @@ test('actual single planner dispatches three transports, encrypted push is indep
   const { database, query, dependencies, receiver, contact } = await jointFixture()
   const managementOrigin = 'https://jednadvacet.org'
   Object.assign(dependencies.config, { managementOrigin })
-  assert.equal((await planEventNotifications([calendarEvent], dependencies)).planned, 3)
+  const describedEvent = { ...calendarEvent, event: { ...calendarEvent.event, description: 'Přijď si popovídat o Bitcoinu.' } }
+  assert.equal((await planEventNotifications([describedEvent], dependencies)).planned, 3)
   const rows = query("SELECT id, version, kind, payload_ciphertext, payload_iv FROM notification_outbox WHERE kind LIKE 'event-%'")
   assert.equal(rows.length, 3)
   const called: string[] = []
@@ -892,7 +893,7 @@ test('actual single planner dispatches three transports, encrypted push is indep
         decipher.setAuthTag(body.subarray(-16))
         const plaintext = Buffer.concat([decipher.update(body.subarray(86, -16)), decipher.final()])
         assert.equal(plaintext.at(-1), 2)
-        assert.deepEqual(JSON.parse(plaintext.subarray(0, -1).toString()), { title: 'Jednadvacet.org', body: calendarEvent.event.title, url: '/kalendar' })
+        assert.deepEqual(JSON.parse(plaintext.subarray(0, -1).toString()), { title: calendarEvent.event.title, body: '12. 10. 2026 14:00\nPřijď si popovídat o Bitcoinu.', url: `/${calendarEvent.community.id}` })
         return new Response(null, { status: 201 })
       }
       const body = JSON.parse(request!.body as string)

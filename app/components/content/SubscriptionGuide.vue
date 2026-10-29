@@ -133,6 +133,16 @@ const calendarUrl = computed(() => {
   return `${currentOrigin.value}/ical/${scope}`
 })
 const hasTelephone = computed(() => /^\+[1-9]\d{7,14}$/.test(telephone.value.trim()))
+const isCzechNationalNumber = (value: string) => /^[1-9]\d{8}$/.test(value.replace(/[\s()-]/g, ''))
+const skipSmsSubmit = reactive({ activation: false, recovery: false })
+const completeTelephonePrefix = (event?: FocusEvent, recovery = false) => {
+  const field = recovery ? recoveryContact : telephone
+  if (!isCzechNationalNumber(field.value)) return false
+  field.value = `+420${field.value.replace(/[\s()-]/g, '')}`
+  // A button click blurs the input before submitting: do not send in that same gesture.
+  skipSmsSubmit[recovery ? 'recovery' : 'activation'] = event?.relatedTarget instanceof HTMLButtonElement
+  return true
+}
 const hasEmail = computed(() => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value.trim()))
 const hasRecoveryTelephone = computed(() => /^\+[1-9]\d{7,14}$/.test(recoveryContact.value.trim()))
 const hasRecoveryEmail = computed(() => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recoveryContact.value.trim()))
@@ -321,12 +331,19 @@ const requestPushRecovery = async () => {
 }
 const methodContact = (method: 'sms' | 'email') => method === 'sms' ? telephone.value : email.value
 const validMethodContact = (method: 'sms' | 'email') => method === 'sms' ? hasTelephone.value : hasEmail.value
-const validRecoveryContact = (method: 'sms' | 'email') => method === 'sms' ? hasRecoveryTelephone.value : hasRecoveryEmail.value
+const validRecoveryContact = (method: 'sms' | 'email') => method === 'sms' ? hasRecoveryTelephone.value || isCzechNationalNumber(recoveryContact.value) : hasRecoveryEmail.value
 const notificationScope = computed(() => selectedCommunitySlugs.value.includes(wholeCountryValue)
   ? selectedCommunities.value.map(community => community.path.replace(/^\//, ''))
   : selectedCommunitySlugs.value)
 
 const activate = async (method: 'sms' | 'email') => {
+  if (method === 'sms') {
+    const completed = completeTelephonePrefix()
+    if (completed || skipSmsSubmit.activation) {
+      skipSmsSubmit.activation = false
+      return
+    }
+  }
   if (!isMethodReady(method) || !hasSelectedScope.value || !validMethodContact(method) || isActivating.value || (challengeRequired.value && !turnstileToken.value)) return
   const revision = activationChallengeRevision.value
   isActivating.value = true
@@ -362,6 +379,13 @@ const activate = async (method: 'sms' | 'email') => {
 }
 
 const requestRecovery = async (method: 'sms' | 'email') => {
+  if (method === 'sms') {
+    const completed = completeTelephonePrefix(undefined, true)
+    if (completed || skipSmsSubmit.recovery) {
+      skipSmsSubmit.recovery = false
+      return
+    }
+  }
   if (!isMethodReady(method) || !validRecoveryContact(method) || isRecovering.value || (recoveryChallengeRequired.value && !recoveryTurnstileToken.value)) return
   const revision = recoveryChallengeRevision.value
   isRecovering.value = true
@@ -486,19 +510,20 @@ onBeforeUnmount(() => {
 
       <UAlert v-if="isReadinessLoading" color="neutral" title="Ověřujeme dostupné možnosti upozornění…" role="status" />
 
-      <section class="space-y-4">
+      <form class="space-y-4" autocomplete="on" aria-label="SMS" @submit.prevent="activeMethod = 'sms'; activate('sms')">
         <h3 class="text-xl font-semibold leading-tight">SMS</h3>
         <p>Upozornění na vybrané události dostaneš jako SMS.</p>
-        <UFormField label="Telefonní číslo" name="telephone" :error="telephone && !hasTelephone ? 'Zadej telefonní číslo v mezinárodním formátu, například +420123456789.' : undefined">
-          <UInput v-model="telephone" type="tel" autocomplete="tel" class="w-full" :disabled="isActivating || !isMethodReady('sms')" />
+        <UFormField label="Telefonní číslo" name="telephone" :error="telephone && !hasTelephone && !isCzechNationalNumber(telephone) ? 'Zadej telefonní číslo v mezinárodním formátu, například +420123456789.' : undefined">
+          <UInput v-model="telephone" name="telephone" type="tel" inputmode="tel" autocomplete="tel" placeholder="+420…" class="w-full" :disabled="isActivating || !isMethodReady('sms')" @blur="completeTelephonePrefix" />
         </UFormField>
         <div class="flex flex-wrap items-center justify-between gap-2">
           <UButton
+            type="submit"
             color="primary"
             class="min-h-11 w-full sm:w-auto"
             :loading="isActivating && activeMethod === 'sms'"
-            :disabled="!isMethodReady('sms') || !hasSelectedScope || !hasTelephone || isActivating || (challengeRequired && !turnstileToken)"
-            @click="activeMethod = 'sms'; activate('sms')"
+            :disabled="!isMethodReady('sms') || !hasSelectedScope || (!hasTelephone && !isCzechNationalNumber(telephone)) || isActivating || (challengeRequired && !turnstileToken)"
+            @pointerdown="completeTelephonePrefix() && (skipSmsSubmit.activation = true)"
           >Aktivovat odběr</UButton>
           <UButton color="neutral" variant="link" class="ms-auto min-h-11" aria-label="Spravovat SMS notifikace" :disabled="!isMethodReady('sms')" @click="recoveryMethod = 'sms'; recoveryOpen = true">Správa notifikací</UButton>
         </div>
@@ -508,7 +533,7 @@ onBeforeUnmount(() => {
         <UAlert v-else-if="activationState.sms === 'pending-reactivation'" color="warning" title="Tento kontakt už dříve odhlásil upozornění. Obnovení potvrď přes odkaz pro správu; do té doby ti nic neposíláme." role="status" aria-live="polite" />
         <UAlert v-else-if="activationState.sms === 'error'" color="error" :title="challengeRequired ? temporaryUnavailableMessage : 'Nastavení se teď nepodařilo uložit. Nic jsme nezměnili. Zkus to prosím znovu.'" role="alert" />
         <NotificationChallenge v-if="challengeRequired && activeMethod === 'sms'" v-model="turnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="activationChallengeRevision" />
-      </section>
+      </form>
 
       <USeparator label="nebo" />
 
@@ -705,7 +730,7 @@ onBeforeUnmount(() => {
       <div class="space-y-4">
         <p class="text-sm text-muted">Zadej kontakt pro {{ recoveryMethod === 'sms' ? 'SMS' : 'e-mail' }}.</p>
         <UFormField :label="recoveryMethod === 'sms' ? 'Telefonní číslo' : 'E-mail'" name="recovery-contact">
-          <UInput v-model="recoveryContact" :type="recoveryMethod === 'sms' ? 'tel' : 'email'" class="w-full" />
+          <UInput v-model="recoveryContact" :name="recoveryMethod === 'sms' ? 'telephone' : 'email'" :type="recoveryMethod === 'sms' ? 'tel' : 'email'" :inputmode="recoveryMethod === 'sms' ? 'tel' : 'email'" :autocomplete="recoveryMethod === 'sms' ? 'tel' : 'email'" :placeholder="recoveryMethod === 'sms' ? '+420…' : undefined" class="w-full" @blur="recoveryMethod === 'sms' && completeTelephonePrefix($event, true)" />
         </UFormField>
         <UAlert v-if="recoveryState === 'success'" color="success" title="Pokud máš na tomto kontaktu odběr, pošleme ti nový odkaz pro správu. Zkontroluj i spam a použij nejnovější odkaz. Pokud zpráva nepřijde, počkej alespoň minutu a zkus to znovu." role="status" aria-live="polite" />
         <UAlert v-else-if="recoveryState === 'error'" color="error" :title="recoveryChallengeRequired ? temporaryUnavailableMessage : 'Odkaz se teď nepodařilo odeslat. Zkus to prosím později.'" role="alert" />
@@ -714,7 +739,7 @@ onBeforeUnmount(() => {
     </template>
     <template #footer>
       <UButton color="neutral" variant="outline" @click="recoveryOpen = false">Zrušit</UButton>
-      <UButton color="neutral" :loading="isRecovering" :disabled="!recoveryMethod || !validRecoveryContact(recoveryMethod) || isRecovering || (recoveryChallengeRequired && !recoveryTurnstileToken)" @click="requestRecovery(recoveryMethod!)">Poslat odkaz pro správu</UButton>
+      <UButton color="neutral" :loading="isRecovering" :disabled="!recoveryMethod || !validRecoveryContact(recoveryMethod) || isRecovering || (recoveryChallengeRequired && !recoveryTurnstileToken)" @pointerdown="recoveryMethod === 'sms' && completeTelephonePrefix(undefined, true) && (skipSmsSubmit.recovery = true)" @click="requestRecovery(recoveryMethod!)">Poslat odkaz pro správu</UButton>
     </template>
   </UModal>
 </template>
