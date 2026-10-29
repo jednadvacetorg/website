@@ -50,8 +50,7 @@ export const planEventNotifications = async (events: PortalCalendarEvent[], depe
   const enabled = {
     email: emailPlanningEnabled,
     sms: smsPlanningEnabled && dependencies.config.eventSmsOutboxSupported,
-    'web-push': dependencies.config.webPushEnabled && dependencies.config.webPushEventDeliveryReady
-      && dependencies.config.webPushDeliveryReady && dependencies.config.eventWebPushOutboxSupported === true,
+    'web-push': dependencies.config.webPushDeliveryReady && dependencies.config.eventWebPushOutboxSupported === true,
   }
   const database = dependencies.database
   const cryptoApi = dependencies.crypto ?? defaultCrypto()

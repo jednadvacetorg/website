@@ -121,6 +121,8 @@ Image dále obsahuje:
 
 ## Náhledové verze (review apps)
 
+Produkční nasazení z `master` používá build `npm run build:cloudflare` a deploy `npm run deploy:cloudflare`. Deploy nejdřív aplikuje D1 migrace a teprve po jejich úspěchu nahraje Worker se zachováním nastavených proměnných. Samotný `wrangler deploy` migrace nespouští. Jednorázový reset starého experimentu, požadavky na build token, veřejné klíče a kontrolní seznam jsou v [provozním postupu](docs/email-delivery-operations.md). Reset není součástí žádného automatického příkazu.
+
 Ke každému pull requestu se přes [dočasný Cloudflare účet](https://developers.cloudflare.com/workers/platform/claim-deployments/) nasadí izolovaný náhled bez produkčních přístupů:
 
 ```bash

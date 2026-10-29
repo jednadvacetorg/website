@@ -6,12 +6,14 @@ import Database from 'better-sqlite3'
 import { dueEventEmailReasons, planEventNotifications } from '../server/utils/eventEmailNotifications.ts'
 import { composeBrevoEventSms } from '../server/utils/brevoSms.ts'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
+
+Object.assign(globalThis, { __NOTIFICATION_COMMUNITIES__: [{ slug: 'brno', title: 'Brno' }, { slug: 'praha', title: 'Praha' }] })
 import { activateNotificationChannel, readNotificationManagement, requestNotificationManagementRecovery, stopNotificationChannel, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 import type { PortalCalendarEvent } from '../server/utils/portalEvents.ts'
 
 const config = { ...await notificationConfig({
-  notificationCommunitySlugs: 'brno,praha', notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''),
-  notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
+  notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''),
+  notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org',
   notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
 }), emailDeliveryReady: true }
 const schema = ['0000_majestic_lightspeed'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
@@ -42,7 +44,7 @@ const fixture = (fail?: (sql: string) => boolean) => {
   const dependencies = { database, config, now: () => now }
   return { sqlite, database, dependencies, setNow: (value: string) => { now = new Date(value) } }
 }
-const signup = (dependencies: Parameters<typeof activateNotificationChannel>[1], frequencies = ['created'], contact = 'alice@example.test', community = 'brno') => activateNotificationChannel({ channel: 'email', contact, communitySlugs: [community], frequencies, consentAt: '2026-01-01T00:00:00.000Z', consentVersion: '2026-09' }, dependencies)
+const signup = (dependencies: Parameters<typeof activateNotificationChannel>[1], frequencies = ['created'], contact = 'alice@example.test', community = 'brno') => activateNotificationChannel({ channel: 'email', contact, communitySlugs: [community], frequencies, consentAt: '2026-01-01T00:00:00.000Z' }, dependencies)
 const item = (overrides: Partial<PortalCalendarEvent> = {}): PortalCalendarEvent => ({
   event: { id: '12', title: 'Meetup', start: '2026-01-12T12:00:00.000Z', end: null, location: 'Venue', tags: [] },
   community: { id: 'brno', title: 'Brno', path: '/brno' }, sequence: 72, changedAt: '2026-01-01T00:00:00.000Z', cancelled: false, ...overrides,
@@ -52,7 +54,7 @@ const payloads = async (sqlite: Database.Database) => Promise.all((sqlite.prepar
 
 test('one shared traversal plans three independently deduped channels with exact selected scope', async () => {
   const { sqlite, dependencies } = fixture()
-  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
+  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
   await signup(ready)
   for (const channel of ['sms', 'web-push']) {
     sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)
@@ -81,7 +83,7 @@ test('a disabled channel consumes discovery without sendable backlog and leaves 
     sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)
     sqlite.prepare("INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) SELECT id, 'brno', 'created', 'created', 'updated' FROM notification_contacts WHERE channel = ?").run(channel)
   }
-  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: false, eventSmsOutboxSupported: true, webPushEnabled: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
+  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: false, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
   assert.deepEqual((await planEventNotifications([item()], ready)).plannedByChannel, { email: 1, sms: 0, 'web-push': 1 })
   assert.deepEqual(sqlite.prepare('SELECT channel, status FROM notification_event_deliveries ORDER BY channel').all(), [{ channel: 'email', status: 'pending' }, { channel: 'sms', status: 'failed' }, { channel: 'web-push', status: 'pending' }])
   assert.equal((await planEventNotifications([item()], { ...ready, config: { ...ready.config, smsDeliveryReady: true } })).planned, 0)
@@ -328,7 +330,7 @@ test('time/end/venue revisions carry pending announcements while notifying only 
 
 test('a replacement revalidates queued work for every enabled channel and preserves the current event payload', async () => {
   const { sqlite, dependencies } = fixture()
-  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
+  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
   await signup(ready)
   for (const channel of ['sms', 'web-push']) {
     sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)

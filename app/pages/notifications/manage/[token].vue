@@ -35,9 +35,12 @@ const frequencyChoices: { value: Frequency, label: string }[] = [
   { value: 'day-before', label: 'den předem' },
 ]
 
-const { data: result } = await useAsyncData(`notification-management-${route.path}`, () =>
+const { data: result, status: managementStatus } = await useAsyncData(`notification-management-${route.path}`, () =>
   requestFetch<ManagementResult>(`/api/notifications/manage/${encodeURIComponent(String(route.params.token ?? ''))}`)
     .catch(() => ({ state: 'unavailable' as const })),
+  // The HttpOnly cookie belongs only to /api/notifications, not page requests.
+  // Explicit bearer links retain SSR; the browser session is read client-side.
+  { server: route.params.token !== 'browser' },
 )
 
 const isAvailable = computed(() => result.value?.state === 'active' || result.value?.state === 'pending-reactivation')
@@ -220,7 +223,19 @@ const reactivate = async () => {
 
 const focusStopTrigger = () => stopTrigger.value?.$el.focus()
 
-onMounted(() => heading.value?.focus())
+onMounted(async () => {
+  heading.value?.focus()
+  if (route.params.token !== 'browser' && result.value?.state !== 'unavailable' && result.value?.channel === 'web-push') {
+    try {
+      // SSR's internal read cannot set a browser cookie. Redeem the valid link
+      // in this browser, then remove its bearer from the visible URL.
+      const management = await $fetch<ManagementResult>(`/api/notifications/manage/${encodeURIComponent(String(route.params.token))}`, { cache: 'no-store', retry: 0 })
+      if (management.state !== 'unavailable' && management.channel === 'web-push') await navigateTo('/notifications/manage/browser', { replace: true })
+    } catch {
+      errorMessage.value = 'Přístup se nepodařilo zapamatovat pro tento prohlížeč. Tento odkaz můžeš dál používat ke správě.'
+    }
+  }
+})
 </script>
 
 <template>
@@ -230,10 +245,17 @@ onMounted(() => heading.value?.focus())
       <UAlert color="success" title="Odběr v tomto kanálu je ukončený. Další upozornění ti už nepošleme." role="status" />
     </template>
 
+    <template v-else-if="managementStatus === 'pending' || managementStatus === 'idle'">
+      <h1 ref="heading" tabindex="-1" class="text-xl font-semibold leading-tight">Správa notifikací</h1>
+      <p role="status">Načítáme nastavení tohoto prohlížeče…</p>
+    </template>
+
     <template v-else-if="!isAvailable">
       <h1 ref="heading" tabindex="-1" class="text-xl font-semibold leading-tight">Odkaz pro správu není dostupný</h1>
-      <p class="text-muted">Zkontroluj celý odkaz nebo si nech poslat nový odkaz pro správu.</p>
-      <section class="space-y-4" aria-labelledby="recovery-heading">
+      <p v-if="route.params.token === 'browser'" class="text-muted">V tomto prohlížeči chybí platný přístup ke správě. Povolená oznámení ho nenahrazují. Otevři webové notifikace a nech si poslat nový odkaz; jeho otevření obnoví přístup.</p>
+      <p v-else class="text-muted">Zkontroluj celý odkaz nebo si nech poslat nový odkaz pro správu.</p>
+      <UButton v-if="route.params.token === 'browser'" to="/kalendar" color="neutral" variant="outline">Otevřít webové notifikace a obnovit přístup</UButton>
+      <section v-if="route.params.token !== 'browser'" class="space-y-4" aria-labelledby="recovery-heading">
         <h2 id="recovery-heading" class="text-lg font-semibold">Nechat si poslat nový odkaz</h2>
         <UForm class="space-y-4" @submit="requestRecovery">
           <UFormField name="channel" label="Kanál">
@@ -254,7 +276,7 @@ onMounted(() => heading.value?.focus())
 
     <template v-else>
       <header class="space-y-2">
-        <h1 ref="heading" tabindex="-1" class="text-xl font-semibold leading-tight">Správa upozornění</h1>
+        <h1 ref="heading" tabindex="-1" class="text-xl font-semibold leading-tight">Správa notifikací</h1>
         <div class="flex flex-wrap items-center gap-2">
           <p class="min-w-0 break-words text-muted">{{ result && 'maskedContact' in result ? result.maskedContact : '' }}</p>
           <UBadge color="neutral" variant="subtle">{{ channelLabel }}</UBadge>

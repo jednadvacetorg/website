@@ -3,6 +3,8 @@ import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
+
+Object.assign(globalThis, { __NOTIFICATION_COMMUNITIES__: [{ slug: 'brno', title: 'Brno' }, { slug: 'praha', title: 'Praha' }] })
 import { evaluateNotificationAbuse } from '../server/utils/notificationAbuse.ts'
 import { activateNotificationChannel, confirmNotificationReactivation, readNotificationManagement, removeNotificationCommunity, requestNotificationManagementRecovery, stopNotificationChannel, updateNotificationFrequencies, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 import { projectNotificationReadiness } from '../server/api/notifications/readiness.get.ts'
@@ -78,16 +80,15 @@ const pauseFirstBatch = (database: NotificationDatabase) => {
 
 const key = btoa('01234567890123456789012345678901').replace(/=+$/g, '')
 const config = { ...await notificationConfig({
-  notificationCommunitySlugs: 'brno,praha', notificationRootKey: key,
-  notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
+  notificationRootKey: key,
+  notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org',
   notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
-  notificationWebPushEnabled: false, notificationWebPushFirstMessageReady: false, notificationWebPushEventDeliveryReady: false,
 }), emailDeliveryReady: true }
 
 const predictableCrypto = { randomBytes: (length: number) => new Uint8Array(length), subtle: crypto.subtle }
 const tokenForByte = (byte: number) => btoa(String.fromCharCode(...new Uint8Array(32).fill(byte))).replace(/=+$/g, '').replace(/\+/g, '-').replace(/\//g, '_')
 const fromBase64Url = (value: string) => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - value.length % 4) % 4)), character => character.charCodeAt(0))
-const input = { channel: 'email' as const, contact: 'Alice@Example.COM', communitySlugs: ['brno'], frequencies: ['created', 'day-before'] as ('created' | 'day-before')[], consentAt: '2026-09-15T12:00:00.000Z', consentVersion: '2026-09' }
+const input = { channel: 'email' as const, contact: 'Alice@Example.COM', communitySlugs: ['brno'], frequencies: ['created', 'day-before'] as ('created' | 'day-before')[], consentAt: '2026-09-15T12:00:00.000Z' }
 
 const assertCommittedPayload = async (query: (sql: string) => unknown[], expectedKind: string) => {
   const contacts = query('SELECT id, destination, management_token_digest, capability_generation FROM notification_contacts') as { id: number, destination: string, management_token_digest: string, capability_generation: number }[]
@@ -109,7 +110,7 @@ const assertCommittedPayload = async (query: (sql: string) => unknown[], expecte
 
 test('native push activation and recovery canonicalize device identity and reject direct-service bypasses', async () => {
   const { database, query } = disposableDatabase()
-  const ready = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
+  const ready = { ...config, webPushDeliveryReady: true }
   const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
   const keys = { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.from(new Uint8Array(16).fill(2)).toString('base64url') }
   const contact = { endpoint: 'https://push.example.test/device-one', expirationTime: null, keys }
@@ -145,9 +146,9 @@ test('activation stores one plaintext contact, one row per frequency, and an enc
 })
 
 test('unavailable recovery preserves the existing capability, subscriptions and pending work', async t => {
-  for (const scenario of ['email-disabled', 'email-evidence-expired', 'sms-disabled', 'push-disabled', 'schema-unavailable'] as const) await t.test(scenario, async () => {
+  for (const scenario of ['email-disabled', 'email-evidence-mismatch', 'sms-disabled', 'push-disabled', 'schema-unavailable'] as const) await t.test(scenario, async () => {
     const { database, query } = disposableDatabase()
-    const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
+    const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true }
     const channel = scenario === 'sms-disabled' ? 'sms' : scenario === 'push-disabled' ? 'web-push' : 'email'
     const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
     const contact = channel === 'email' ? input.contact : channel === 'sms' ? '+420777123456' : {
@@ -162,14 +163,20 @@ test('unavailable recovery preserves the existing capability, subscriptions and 
     const before = snapshot()
     const unavailable = { ...ready,
       emailSmsEnabled: scenario !== 'email-disabled',
-      emailDeliveryReady: scenario !== 'email-evidence-expired',
+      emailDeliveryReady: scenario !== 'email-evidence-mismatch',
       smsEnabled: scenario !== 'sms-disabled',
-      webPushEnabled: scenario !== 'push-disabled',
+      webPushDeliveryReady: scenario !== 'push-disabled',
     }
     assert.equal(await requestNotificationManagementRecovery({ channel, contact }, { database, config: unavailable }), undefined)
     assert.deepEqual(snapshot(), before)
     assert.equal((await readNotificationManagement(token, { database, config: unavailable })).state, 'active')
   })
+})
+
+test('consent wording revision is owned by the server, not form input', async () => {
+  const { database, query } = disposableDatabase()
+  await activateNotificationChannel({ ...input, consentVersion: 'untrusted-form-value' }, { database, config })
+  assert.deepEqual(query('SELECT consent_version FROM notification_contacts'), [{ consent_version: '2026-09' }])
 })
 
 test('fresh activation atomically rolls back every lifecycle row after a late outbox failure', async () => {
@@ -203,17 +210,12 @@ test('fresh activation leaves no lifecycle rows when payload encryption fails', 
 test('one private root derives a Worker AES-GCM key for an activation outbox write', async () => {
   const { database, query } = disposableDatabase()
   const runtimeConfig = await notificationConfig({
-    notificationCommunitySlugs: 'brno,praha',
     notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true,
     notificationEmailSmsFirstMessageReady: true,
     notificationEmailSmsEventDeliveryReady: true,
-    notificationWebPushEnabled: false,
-    notificationWebPushFirstMessageReady: false,
-    notificationWebPushEventDeliveryReady: false,
   })
 
   assert.ok('outboxTransportKey' in runtimeConfig)
@@ -230,17 +232,12 @@ test('one private root derives a Worker AES-GCM key for an activation outbox wri
 
 test('missing, malformed, short, and undefined private root material fails configuration loading', async () => {
   const validRuntimeConfig = {
-    notificationCommunitySlugs: 'brno,praha',
     notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true,
     notificationEmailSmsFirstMessageReady: true,
     notificationEmailSmsEventDeliveryReady: true,
-    notificationWebPushEnabled: false,
-    notificationWebPushFirstMessageReady: false,
-    notificationWebPushEventDeliveryReady: false,
   }
   const invalidConfigurations = [
     { ...validRuntimeConfig, notificationRootKey: '' },
@@ -254,17 +251,12 @@ test('missing, malformed, short, and undefined private root material fails confi
 
 test('public readiness keeps email false until separate delivery evidence is complete', async () => {
   const runtimeConfig = {
-    notificationCommunitySlugs: 'brno',
     notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true,
     notificationEmailSmsFirstMessageReady: true,
     notificationEmailSmsEventDeliveryReady: true,
-    notificationWebPushEnabled: false,
-    notificationWebPushFirstMessageReady: false,
-    notificationWebPushEventDeliveryReady: false,
   }
 
   const { database } = disposableDatabase()
@@ -275,10 +267,9 @@ test('public readiness keeps email false until separate delivery evidence is com
 test('public readiness stays false without D1 or operational delivery evidence', async () => {
   const { database } = disposableDatabase()
   const runtimeConfig = {
-    notificationCommunitySlugs: 'brno', notificationRootKey: key,
-    notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
+    notificationRootKey: key,
+    notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org',
     notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
-    notificationWebPushEnabled: false, notificationWebPushFirstMessageReady: false, notificationWebPushEventDeliveryReady: false,
   }
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig), { email: false, sms: false, webPush: false })
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: false, webPush: false })
@@ -287,27 +278,20 @@ test('public readiness stays false without D1 or operational delivery evidence',
 
 test('private abuse and Turnstile configuration imports a dedicated HMAC key without exposing private values', async () => {
   const runtimeConfig = await notificationConfig({
-    notificationCommunitySlugs: 'brno,praha',
     notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
     notificationTurnstileSiteKey: 'public-turnstile-site-key',
-    notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true,
     notificationEmailSmsFirstMessageReady: true,
     notificationEmailSmsEventDeliveryReady: true,
-    notificationWebPushEnabled: false,
-    notificationWebPushFirstMessageReady: false,
-    notificationWebPushEventDeliveryReady: false,
   })
 
   assert.ok('abuseHashKey' in runtimeConfig)
   assert.equal(runtimeConfig.turnstile.secret, 'private-turnstile-secret')
   assert.equal(runtimeConfig.turnstile.expectedHostname, 'jednadvacet.org')
   await assert.rejects(notificationConfig({
-    notificationCommunitySlugs: 'brno',
     notificationRootKey: '{',
-    notificationConsentVersion: '2026-09',
   }))
 })
 
@@ -345,7 +329,7 @@ test('suppressed activation rotates its bearer and stays pending until only the 
   assert.deepEqual(pending, { state: 'pending-reactivation', capability_generation: 1 })
   assert.deepEqual(await readNotificationManagement(tokenForByte(0), { database, config, crypto: sequencedCrypto }), { state: 'unavailable' })
   assert.deepEqual(await confirmNotificationReactivation(tokenForByte(4), { database, config, crypto: sequencedCrypto }), {
-    outcome: 'reactivated', management: { state: 'active', channel: 'email', maskedContact: 'A•••@example.com', communities: [{ slug: 'brno', title: 'brno', frequencies: ['week-before'] }] },
+    outcome: 'reactivated', management: { state: 'active', channel: 'email', maskedContact: 'A•••@example.com', communities: [{ slug: 'brno', title: 'Brno', frequencies: ['week-before'] }] },
   })
   assert.equal(query('SELECT * FROM notification_suppressions').length, 0)
 })
@@ -535,7 +519,7 @@ test('a delayed pending signup cannot overwrite a newer recovery generation or s
 test('SMS stop and final-community removal use one scoped bearer and preserve email/push even when sending is disabled', async () => {
   for (const action of ['stop', 'last-community'] as const) {
     const { database, query } = disposableDatabase()
-    const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
+    const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true }
     const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
     const push = JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.from(new Uint8Array(16)).toString('base64url') } })
     for (const [channel, contact, byte] of [['email', 'Alice@example.com', 1], ['sms', '+420777123456', 2], ['web-push', push, 3]] as const) {
@@ -589,7 +573,7 @@ test('management saves use the mutation contract for unknown and pending bearers
     outcome: 'removed',
     management: {
       state: 'active', channel: 'email', maskedContact: 'A•••@example.com',
-      communities: [{ slug: 'praha', title: 'praha', frequencies: ['created', 'day-before', 'week-before'] }],
+      communities: [{ slug: 'praha', title: 'Praha', frequencies: ['created', 'day-before', 'week-before'] }],
     },
   })
 

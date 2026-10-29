@@ -55,18 +55,12 @@ export default defineNuxtPlugin((nuxtApp) => {
   if (import.meta.hot) import.meta.hot.dispose(cleanup)
 
   const trackSubscriptionGuide = () => track('/kalendar/subscription-guide')
-  const trackSmsIntent = () => track('/kalendar/signin-sms')
-  const trackEmailIntent = () => track('/kalendar/signin-mail')
-  const trackWebIntent = () => track('/kalendar/signin-web')
   const trackICalendarCopy = () => track('/kalendar/copy-ical')
 
   return {
     provide: {
       counterscale: {
         trackSubscriptionGuide,
-        trackSmsIntent,
-        trackEmailIntent,
-        trackWebIntent,
         trackICalendarCopy,
       },
     },

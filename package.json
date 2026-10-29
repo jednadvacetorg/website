@@ -6,6 +6,7 @@
     "skills:install": "skills experimental_install -y",
     "build": "node --experimental-strip-types scripts/validate-content-routes.ts && NODE_OPTIONS=--max-old-space-size=4096 nuxt build",
     "build:cloudflare": "CLOUDFLARE_DEPLOY=1 npm run build",
+    "deploy:cloudflare": "wrangler d1 migrations apply DB --remote --config .output/server/wrangler.json && wrangler deploy --config .output/server/wrangler.json --keep-vars",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "nuxt typecheck",
     "verify:email-delivery": "node --experimental-strip-types scripts/verify-email-delivery.ts",

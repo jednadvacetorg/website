@@ -11,6 +11,8 @@ import type { NotificationDatabase, NotificationStatement } from '../server/util
 import { requestNotificationManagementRecovery } from '../server/utils/notifications.ts'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
 
+Object.assign(globalThis, { __NOTIFICATION_COMMUNITIES__: [{ slug: 'brno', title: 'Brno' }] })
+
 let runtimeConfig: Record<string, unknown> = { brevoCallbackSecret: 'callback-secret-for-tests' }
 ;(globalThis as typeof globalThis & { useRuntimeConfig: () => Record<string, unknown> }).useRuntimeConfig = () => runtimeConfig
 
@@ -522,7 +524,7 @@ test('callback racing generation recovery cannot delete or invalidate replacemen
   const paused = new Promise<void>(resolve => { release = resolve })
   const raced = applyBrevoCallback(callback('hard-bounce'), { ...database, batch: async statements => { entered(); await paused; return database.batch(statements) } })
   await ready
-  const config = await notificationConfig({ notificationCommunitySlugs: 'brno', notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''), notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09' })
+  const config = await notificationConfig({ notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''), notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org' })
   await requestNotificationManagementRecovery({ channel: 'email', contact: 'synthetic@example.test' }, { database, config: { ...config, emailSmsEnabled: true, emailSmsFirstMessageReady: true, emailSmsEventDeliveryReady: true, emailDeliveryReady: true } })
   release()
   await raced

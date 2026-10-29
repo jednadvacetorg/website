@@ -28,7 +28,7 @@ export default defineNitroPlugin((nitroApp) => {
     const event = queueEvent as unknown as { env?: { DB?: NotificationDatabase, NOTIFICATION_MESSAGES_QUEUE?: NotificationMessagesQueue }, context?: { notificationDatabase?: NotificationDatabase, notificationMessagesQueue?: NotificationMessagesQueue, portalCommunities?: PortalCommunity[] } }
 
     try {
-      const parsedBatch = parsePortalEventsQueueBatch(batch.messages as PortalEventsQueueEnvelope[])
+      const parsedBatch = parsePortalEventsQueueBatch(batch.messages as readonly PortalEventsQueueEnvelope[])
       for (const messageId of parsedBatch.invalidMessageIds) {
         console.error(`[portal-events] Discarded invalid queue message: ${messageId}`)
       }

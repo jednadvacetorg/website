@@ -335,13 +335,13 @@ test('native push operations probe uses matching VAPID and one encrypted request
   assert.equal(calls, 0)
 })
 
-test('multichannel observation review reuses runtime gates, joint switches and oldest expiry without promoting evidence', async t => {
+test('multichannel observation review reuses runtime gates without expiry or promoting evidence', async t => {
   const f = await fixture(t)
   const local = { ...f.options, mode: 'local-preflight' as const, target: 'local' as const, channels: ['email', 'sms', 'web-push'] as const }
   const options = { ...local, channels: [...local.channels] }
   const identity = await operations.runEmailVerification(options, f.dependencies)
   const runtime: Record<string, unknown> = {
-    notificationSmsEnabled: true, notificationWebPushEnabled: true,
+    notificationSmsEnabled: true,
     notificationRootKey: 'private-root-material', brevoApiKey: 'private-api-key', brevoCallbackSecret: 'private-callback-bearer', brevoSenderName: 'Jednadvacet.org', brevoSmsSender: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org',
     notificationVapidPrivateKey: 'private-vapid-material', notificationVapidPublicKey: 'public-vapid', notificationVapidSubject: 'mailto:synthetic@example.test',
   }
@@ -358,14 +358,15 @@ test('multichannel observation review reuses runtime gates, joint switches and o
   const result = await run(runtime)
   assert.deepEqual(result.channelReadiness, { email: true, sms: true, 'web-push': true })
   assert.equal(result.evidenceKind, 'local-candidate')
-  assert.equal(result.expiresAt, new Date(now + 60_000).toISOString())
+  assert.equal(result.expiresAt, undefined)
   assert.equal(result.gates.liveCanary, 'pending', 'review does not perform live probes')
   safe(result)
-  for (const field of ['notificationSmsEnabled', 'notificationWebPushEnabled']) await assert.rejects(run({ ...runtime, [field]: false }), /evidence/)
+  await assert.rejects(run({ ...runtime, notificationSmsEnabled: false }), /evidence/)
   for (const name of ['Email', 'Sms', 'WebPush']) {
     const field = `notification${name}Evidence`
     const original = JSON.parse(runtime[field] as string)
-    for (const mutation of [{ evidenceKind: 'local-candidate' }, { targetIdentity: 'f'.repeat(64) }, { bundleHash: 'f'.repeat(64) }, { migrationHash: 'f'.repeat(64) }, { configHash: 'f'.repeat(64) }, { keyHash: 'f'.repeat(64) }, { expiresAt: new Date(now).toISOString() }, { verifiedAt: new Date(now + 1).toISOString() }, { gates: { ...original.gates, sharedManagementStop: 'pending', callbackMetadata: 'pending' } }]) await assert.rejects(run({ ...runtime, [field]: JSON.stringify({ ...original, ...mutation }) }), /evidence/)
+    await run({ ...runtime, [field]: JSON.stringify({ ...original, verifiedAt: new Date(now - 90 * 86400000).toISOString(), expiresAt: new Date(now - 1000).toISOString() }) })
+    for (const mutation of [{ evidenceKind: 'local-candidate' }, { targetIdentity: 'f'.repeat(64) }, { bundleHash: 'f'.repeat(64) }, { migrationHash: 'f'.repeat(64) }, { configHash: 'f'.repeat(64) }, { keyHash: 'f'.repeat(64) }, { verifiedAt: new Date(now + 1).toISOString() }, { gates: { ...original.gates, sharedManagementStop: 'pending', callbackMetadata: 'pending' } }]) await assert.rejects(run({ ...runtime, [field]: JSON.stringify({ ...original, ...mutation }) }), /evidence/)
   }
   await assert.rejects(run({ ...runtime, notificationSmsDeliveryCallbacksConfigured: true }), /evidence/)
   const sms = JSON.parse(runtime.notificationSmsEvidence as string)
@@ -707,12 +708,12 @@ test('provider timeout attempts once and cannot turn into accepted evidence', as
   assert.equal(attempts, 1)
 })
 
-test('readiness cannot extend the oldest source expiry', async t => {
+test('readiness records deployment verification without a delivery expiry', async t => {
   const f = await readinessFixture(t)
   f.evidence[0]!.verifiedAt = new Date(now - 1000).toISOString()
   f.evidence[0]!.expiresAt = new Date(now + 5000).toISOString()
   await f.save('evidence.json', f.evidence)
-  assert.equal((await f.verify()).expiresAt, new Date(now + 5000).toISOString())
+  assert.equal((await f.verify()).expiresAt, undefined)
 })
 
 test('readiness accepts an explicitly pinned switch-off deployment only with authenticated same-artifact history', async t => {

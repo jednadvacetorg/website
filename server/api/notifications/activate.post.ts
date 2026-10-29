@@ -1,8 +1,9 @@
-import { createError, defineEventHandler, getRequestHeader, readBody } from 'h3'
+import { createError, defineEventHandler, getRequestHeader, getRequestURL, readBody } from 'h3'
 import { evaluateNotificationAbuse } from '../../utils/notificationAbuse.ts'
 import { activateNotificationChannel, NotificationLifecycleError, validateNotificationActivation, type NotificationDatabase, type NotificationLifecycleConfig } from '../../utils/notifications.ts'
 import { notificationConfig } from '../../utils/notificationConfig.ts'
 import { publishPendingNotificationPointers, type NotificationMessagesQueue } from '../../utils/notificationMessagesQueue.ts'
+import { rememberNotificationBrowser } from '../../utils/notificationBrowserSession.ts'
 
 export default defineEventHandler(async (event) => {
   const input: unknown = await readBody(event)
@@ -29,7 +30,9 @@ export default defineEventHandler(async (event) => {
     })
   }
   try {
-    const result = await activateNotificationChannel(input, { database, config })
+    const result = await activateNotificationChannel(input, { database, config, onWebPushActivated: token => {
+      if (getRequestHeader(event, 'origin') === getRequestURL(event).origin) rememberNotificationBrowser(event, token)
+    } })
     const queue = (event.context._platform as { cloudflare?: { env?: { NOTIFICATION_MESSAGES_QUEUE?: NotificationMessagesQueue } } } | undefined)?.cloudflare?.env?.NOTIFICATION_MESSAGES_QUEUE
     const publication = Promise.resolve().then(async () => {
       if (!queue?.send) throw new Error('Notification Queue unavailable')

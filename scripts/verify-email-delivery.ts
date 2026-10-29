@@ -55,7 +55,7 @@ export interface EmailVerificationEvidence {
   configHash: string
   manualSwitch: boolean
   verifiedAt: string
-  expiresAt: string
+  expiresAt?: string
   evidenceKind: EvidenceKind
   mode: EmailVerificationMode
   gates: Record<Gate, 'passed' | 'pending'>
@@ -281,18 +281,16 @@ export const runEmailVerification = async (options: EmailVerificationOptions, de
         // Private operator observations are checked with the very same runtime contract.
         // No provider call or guessed SMS callback contract is constructed here.
         const observations = record(json(await read(options.evidencePath!)))
-        check(observations.notificationSmsEnabled === true && observations.notificationWebPushEnabled === true, 'joint-switch')
+        check(observations.notificationSmsEnabled === true, 'sms-switch')
         for (const [field, value] of Object.entries({ TargetIdentity: targetIdentity, DeploymentId: deploymentId, BundleHash: bundleHash, MigrationHash: migrationHash, ConfigHash: configHash })) check(observations[`notificationExpected${field}`] === value, 'evidence-identity')
         for (const channel of options.channels!) {
           channelReadiness[channel] = (await operationalEvidence(channel, observations, { subtle: crypto.subtle, randomBytes: length => crypto.getRandomValues(new Uint8Array(length)) }, dependencies.now))()
           check(channelReadiness[channel], 'evidence-gate')
-          const name = channel === 'web-push' ? 'WebPush' : channel === 'sms' ? 'Sms' : 'Email'
-          evidenceExpiry = Math.min(evidenceExpiry, Date.parse(String(record(json(String(observations[`notification${name}Evidence`]))).expiresAt)))
         }
       }
       const verifiedAt = dependencies.now()
       check(Number.isFinite(verifiedAt) && verifiedAt < evidenceExpiry, 'clock')
-      return { channel: probeChannel ?? 'email', channels: options.channels, channelReadiness, ...(probe ? { probe } : {}), targetIdentity, deploymentId, bundleHash, migrationHash, configHash, manualSwitch: !local && !probeChannel, verifiedAt: new Date(verifiedAt).toISOString(), expiresAt: new Date(evidenceExpiry).toISOString(), evidenceKind: 'local-candidate', mode: options.mode, gates: outcomes }
+      return { channel: probeChannel ?? 'email', channels: options.channels, channelReadiness, ...(probe ? { probe } : {}), targetIdentity, deploymentId, bundleHash, migrationHash, configHash, manualSwitch: !local && !probeChannel, verifiedAt: new Date(verifiedAt).toISOString(), ...(options.mode === 'readiness' ? {} : { expiresAt: new Date(evidenceExpiry).toISOString() }), evidenceKind: 'local-candidate', mode: options.mode, gates: outcomes }
     }
     check(modes.has(options.mode) && options.target === 'production' && typeof options.expectedSwitch === 'boolean', stage)
     check(['local-candidate', 'production-observation'].includes(dependencies.evidenceKind), stage)
@@ -551,7 +549,7 @@ export const runEmailVerification = async (options: EmailVerificationOptions, de
     await observeDeployment()
     const verifiedAt = dependencies.now()
     check(Number.isFinite(verifiedAt) && verifiedAt < evidenceExpiry, 'clock')
-    return { channel: 'email', targetIdentity, deploymentId, bundleHash, migrationHash, configHash, manualSwitch, verifiedAt: new Date(verifiedAt).toISOString(), expiresAt: new Date(Math.min(verifiedAt + day, evidenceExpiry)).toISOString(), evidenceKind: dependencies.evidenceKind, mode: options.mode, gates: outcomes }
+    return { channel: 'email', targetIdentity, deploymentId, bundleHash, migrationHash, configHash, manualSwitch, verifiedAt: new Date(verifiedAt).toISOString(), ...(options.mode === 'readiness' ? {} : { expiresAt: new Date(Math.min(verifiedAt + day, evidenceExpiry)).toISOString() }), evidenceKind: dependencies.evidenceKind, mode: options.mode, gates: outcomes }
   } catch { return fail(stage) }
 }
 

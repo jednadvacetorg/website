@@ -3,7 +3,7 @@ import { parseWebPushSubscription, validateWebPushSubscriptionPoint, type Canoni
 export type NotificationChannel = 'email' | 'sms' | 'web-push'
 export type NotificationFrequency = 'created' | 'week-before' | 'day-before'
 
-export interface ActivationInput { channel: NotificationChannel, contact: string | CanonicalWebPushSubscription, communitySlugs: string[], frequencies: NotificationFrequency[], consentAt: string, consentVersion: string }
+export interface ActivationInput { channel: NotificationChannel, contact: string | CanonicalWebPushSubscription, communitySlugs: string[], frequencies: NotificationFrequency[], consentAt: string }
 export interface ActivationResult { state: 'active' | 'updated' | 'pending-reactivation' }
 export interface NotificationManagementRequestInput { channel: NotificationChannel, contact: string | CanonicalWebPushSubscription }
 export class NotificationLifecycleError extends Error {
@@ -24,7 +24,6 @@ export interface NotificationLifecycleConfig {
   abuseHashKey: CryptoKey
   turnstile: { secret: string, expectedHostname: string }
   outboxTransportKey: CryptoKey
-  consentVersion: string
   /** Set by the build-specific configuration, never from an HTTP request origin. */
   managementOrigin?: string
   emailSmsEnabled: boolean
@@ -34,29 +33,26 @@ export interface NotificationLifecycleConfig {
   smsFirstMessageReady: boolean
   smsEventDeliveryReady: boolean
   smsDeliveryReady: boolean
-  /** Target-bound migration evidence; the supplied D1 is also probed at authorization. */
+  /** Implemented outbox capability; the actual D1 schema is probed at authorization. */
   eventSmsOutboxSupported: boolean
-  /** Unattested/absent is false. The supplied D1 is also probed at authorization. */
+  /** Implemented outbox capability; the actual D1 schema is probed at authorization. */
   eventWebPushOutboxSupported?: boolean
-  /** Complete, private, deployment-bound authority for external event email. */
+  /** Complete private provider configuration plus the email manual switch. */
   emailDeliveryReady: boolean
   brevoApiKey?: string
   brevoSenderName?: string
   brevoCallbackSecret?: string
-  webPushEnabled: boolean
-  webPushFirstMessageReady: boolean
-  webPushEventDeliveryReady: boolean
   /** Present only when the private VAPID material is valid and importable. */
   webPushDelivery?: import('./webPush.ts').VapidConfiguration
   webPushDeliveryReady: boolean
 }
-export interface NotificationDependencies { database: NotificationDatabase, config: NotificationLifecycleConfig, now?: () => Date, crypto?: NotificationCrypto }
+export interface NotificationDependencies { database: NotificationDatabase, config: NotificationLifecycleConfig, now?: () => Date, crypto?: NotificationCrypto, onWebPushActivated?: (token: string) => void }
 
 interface ContactRow { id: number, channel: NotificationChannel, destination: string, destination_hash: string, management_token_digest: string, state: 'active' | 'pending-reactivation', capability_generation: number }
 interface SubscriptionRow { community_slug: string, frequency: NotificationFrequency }
 interface SuppressionRow { id: number, destination_hash: string }
 export interface NotificationManagementCommunity { slug: string, title: string, frequencies: NotificationFrequency[] }
-export type NotificationManagementResult = { state: 'active' | 'pending-reactivation', channel: NotificationChannel, maskedContact: string, communities: NotificationManagementCommunity[] } | { state: 'unavailable' }
+export type NotificationManagementResult = { state: 'active' | 'pending-reactivation', channel: NotificationChannel, maskedContact: string, communities: NotificationManagementCommunity[], confirmation?: 'pending' | 'submitted' | 'unavailable' | 'unknown' } | { state: 'unavailable' }
 export type NotificationManagementMutationResult =
   | { outcome: 'saved' | 'removed' | 'reactivated', management: Exclude<NotificationManagementResult, { state: 'unavailable' }> }
   | { outcome: 'stopped' }
@@ -99,7 +95,7 @@ export const normalizeNotificationContact = (channel: NotificationChannel, value
 }
 
 export const isNotificationChannelReady = (channel: NotificationChannel, config: NotificationLifecycleConfig) => channel === 'web-push'
-  ? config.webPushEnabled && config.webPushFirstMessageReady && config.webPushEventDeliveryReady && config.webPushDeliveryReady
+  ? config.webPushDeliveryReady
   : channel === 'sms'
     ? config.smsEnabled && config.smsFirstMessageReady && config.smsEventDeliveryReady && config.smsDeliveryReady && config.eventSmsOutboxSupported
     : config.emailSmsEnabled && config.emailSmsFirstMessageReady && config.emailSmsEventDeliveryReady && config.emailDeliveryReady
@@ -132,12 +128,14 @@ const maskContact = (channel: NotificationChannel, contact: string) => channel =
 export const validateNotificationActivation = (input: unknown, config: NotificationLifecycleConfig, now = new Date()) => {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new NotificationLifecycleError('Invalid notification activation')
   const activation = input as Partial<ActivationInput>
-  if (!channels.has(activation.channel as NotificationChannel) || activation.consentVersion !== config.consentVersion || typeof activation.consentAt !== 'string' || Number.isNaN(Date.parse(activation.consentAt)) || !Array.isArray(activation.communitySlugs) || !Array.isArray(activation.frequencies)) throw new NotificationLifecycleError('Invalid notification activation')
+  if (!channels.has(activation.channel as NotificationChannel) || typeof activation.consentAt !== 'string' || Number.isNaN(Date.parse(activation.consentAt)) || !Array.isArray(activation.communitySlugs) || !Array.isArray(activation.frequencies)) throw new NotificationLifecycleError('Invalid notification activation')
   const channel = activation.channel as NotificationChannel
   const communitySlugs = [...new Set(activation.communitySlugs)].sort()
   const selectedFrequencies = [...new Set(activation.frequencies)].sort()
   if (!communitySlugs.length || !selectedFrequencies.length || !communitySlugs.every(slug => config.communitySlugs.includes(slug)) || !selectedFrequencies.every(frequency => frequencies.has(frequency))) throw new NotificationLifecycleError('Invalid notification activation')
-  return { channel, contact: normalizeNotificationContact(channel, activation.contact, now), communitySlugs, selectedFrequencies, consentAt: activation.consentAt, consentVersion: activation.consentVersion }
+  // Retain the historical consent record, but its wording revision belongs to
+  // the deployed code, not an operator variable or an untrusted form field.
+  return { channel, contact: normalizeNotificationContact(channel, activation.contact, now), communitySlugs, selectedFrequencies, consentAt: activation.consentAt, consentVersion: '2026-09' }
 }
 const outboxStatement = async (contact: ContactRow, token: string, kind: 'first-activation' | 'reactivation' | 'management-recovery', dependencies: NotificationDependencies, now: string) => {
   const cryptoApi = dependencies.crypto ?? defaultCrypto()
@@ -203,6 +201,7 @@ export const activateNotificationChannel = async (input: unknown, dependencies: 
   if (changed(results, 0) !== 1) throw new NotificationLifecycleError('Notification activation is unavailable', 409)
   const activated = await database.prepare('SELECT state FROM notification_contacts WHERE channel = ? AND destination = ? AND management_token_digest = ?').bind(parsed.channel, parsed.contact, tokenDigest).first<{ state: ContactRow['state'] }>()
   if (!activated) throw new NotificationLifecycleError('Notification activation is unavailable', 503)
+  if (parsed.channel === 'web-push' && activated.state === 'active') dependencies.onWebPushActivated?.(token)
   return { state: activated.state === 'pending-reactivation' ? 'pending-reactivation' : 'active' }
 }
 
@@ -261,7 +260,12 @@ const communitiesFor = async (contactId: number, dependencies: NotificationDepen
 export const readNotificationManagement = async (token: unknown, dependencies: NotificationDependencies): Promise<NotificationManagementResult> => {
   const contact = await findContact(token, dependencies)
   if (!contact) return unavailable
-  return { state: contact.state, channel: contact.channel, maskedContact: maskContact(contact.channel, contact.destination), communities: await communitiesFor(contact.id, dependencies) }
+  const communities = await communitiesFor(contact.id, dependencies)
+  if (contact.channel !== 'web-push') return { state: contact.state, channel: contact.channel, maskedContact: maskContact(contact.channel, contact.destination), communities }
+  const message = await dependencies.database.prepare(`SELECT status FROM notification_outbox WHERE contact_id = ? AND expected_capability_generation = ? AND kind IN ('first-activation', 'reactivation', 'management-recovery') ORDER BY created_at DESC, id DESC LIMIT 1`)
+    .bind(contact.id, contact.capability_generation).first<{ status: string }>()
+  const confirmation = !message ? 'unknown' : message.status === 'consumed' ? 'submitted' : message.status === 'invalidated' ? 'unavailable' : 'pending'
+  return { state: contact.state, channel: contact.channel, maskedContact: maskContact(contact.channel, contact.destination), communities, confirmation }
 }
 const parseManagement = (community: unknown, selected: unknown, config: NotificationLifecycleConfig) => {
   if (typeof community !== 'string' || !config.communitySlugs.includes(community) || !Array.isArray(selected)) throw new NotificationLifecycleError('Invalid notification management action')

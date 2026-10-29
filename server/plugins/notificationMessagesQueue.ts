@@ -47,9 +47,15 @@ export const dispatchNotificationQueueMessage = (message: NotificationQueueEnvel
         }, dependencies.config.webPushDelivery, authorizedFetch)
       }
       if (!('capability' in payload)) throw new Error('Notification channel is invalid')
+      const { results: subscriptions } = await dependencies.database.prepare('SELECT DISTINCT community_slug FROM notification_subscriptions WHERE contact_id = ? ORDER BY community_slug')
+        .bind(authorization.contact_id).all<{ community_slug: string }>()
+      const scope = subscriptions.length === dependencies.config.communitySlugs.length
+        ? 'celé Česko'
+        : subscriptions.map(({ community_slug: slug }) => dependencies.config.communityTitles?.[slug] ?? slug.replace(/-/g, ' ').replace(/^./, letter => letter.toLocaleUpperCase('cs'))).join(', ')
+      const confirmation = `Odebíráš upozornění pro ${scope}.`
       return sendWebPush(parseWebPushSubscription(JSON.parse(payload.destination)), {
         title: 'Jednadvacet.org',
-        body: payload.kind === 'reactivation' ? 'Potvrď obnovení upozornění.' : payload.kind === 'management-recovery' ? 'Otevři nové nastavení upozornění.' : 'Odběr upozornění je aktivní.',
+        body: payload.kind === 'reactivation' ? 'Potvrď obnovení upozornění.' : payload.kind === 'management-recovery' ? 'Otevři nové nastavení upozornění.' : Array.from(confirmation).length <= 240 ? confirmation : `${Array.from(confirmation).slice(0, 239).join('').trimEnd()}…`,
         url: `/notifications/manage/${payload.capability}`,
       }, dependencies.config.webPushDelivery, authorizedFetch)
     }

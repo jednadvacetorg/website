@@ -1,5 +1,5 @@
 import { defineEventHandler, setResponseHeader } from 'h3'
-import { notificationConfig } from '../../utils/notificationConfig.ts'
+import { notificationConfig, NotificationConfigurationError } from '../../utils/notificationConfig.ts'
 import { isNotificationChannelReady, notificationSchemaReady, type NotificationDatabase } from '../../utils/notifications.ts'
 
 export interface NotificationReadiness {
@@ -12,11 +12,23 @@ const unavailable: NotificationReadiness = { email: false, sms: false, webPush: 
 
 /** Projects private delivery configuration into the only public readiness contract. */
 export const projectNotificationReadiness = async (runtimeConfig: Record<string, unknown>, database?: NotificationDatabase): Promise<NotificationReadiness> => {
+  const report = (reason: string) => console.warn('[notifications] Readiness unavailable', { reason })
   try {
-    const config = await notificationConfig(runtimeConfig)
-    if (!database || !await notificationSchemaReady(database)) return unavailable
+    const config = await notificationConfig(runtimeConfig, undefined, report)
+    if (!database) {
+      report('database-binding-missing')
+      return unavailable
+    }
+    if (!await notificationSchemaReady(database)) {
+      report('database-schema-unavailable-or-incompatible')
+      return unavailable
+    }
+    const switches = ['notificationEmailManualEnabled', 'notificationEmailSmsEnabled', 'notificationEmailSmsFirstMessageReady', 'notificationEmailSmsEventDeliveryReady', 'notificationSmsEnabled', 'notificationSmsFirstMessageReady', 'notificationSmsEventDeliveryReady'] as const
+    const disabledSwitches = switches.filter(name => runtimeConfig[name] !== true && runtimeConfig[name] !== 'true')
+    if (disabledSwitches.length) console.info('[notifications] Readiness switches disabled', { switches: disabledSwitches })
     return { email: isNotificationChannelReady('email', config), sms: isNotificationChannelReady('sms', config), webPush: isNotificationChannelReady('web-push', config) }
-  } catch {
+  } catch (error) {
+    report(error instanceof NotificationConfigurationError ? error.reason : 'configuration-or-crypto-unavailable')
     return unavailable
   }
 }
