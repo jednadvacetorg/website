@@ -525,7 +525,7 @@ test('callback racing generation recovery cannot delete or invalidate replacemen
   const raced = applyBrevoCallback(callback('hard-bounce'), { ...database, batch: async statements => { entered(); await paused; return database.batch(statements) } })
   await ready
   const config = await notificationConfig({ notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''), notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org' })
-  await requestNotificationManagementRecovery({ channel: 'email', contact: 'synthetic@example.test' }, { database, config: { ...config, emailSmsEnabled: true, emailSmsFirstMessageReady: true, emailSmsEventDeliveryReady: true, emailDeliveryReady: true } })
+  await requestNotificationManagementRecovery({ channel: 'email', contact: 'synthetic@example.test' }, { database, config: { ...config, emailDeliveryReady: true } })
   release()
   await raced
   assert.equal(sqlite.prepare('SELECT capability_generation FROM notification_contacts').get().capability_generation, 8)

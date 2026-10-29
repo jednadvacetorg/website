@@ -41,12 +41,8 @@ const digest = async (value: string, cryptoApi: NotificationCrypto) => base64Url
 
 /** Material state and all its recipient work commit together. Portal changedAt is the source watermark. */
 export const planEventNotifications = async (events: PortalCalendarEvent[], dependencies: { database: NotificationDatabase, config: NotificationLifecycleConfig, now?: () => Date, crypto?: NotificationCrypto }) => {
-  const emailPlanningEnabled = dependencies.config.emailSmsEnabled
-    && dependencies.config.emailSmsEventDeliveryReady
-    && dependencies.config.emailDeliveryReady
-  const smsPlanningEnabled = dependencies.config.smsEnabled
-    && dependencies.config.smsEventDeliveryReady
-    && dependencies.config.smsDeliveryReady
+  const emailPlanningEnabled = dependencies.config.emailDeliveryReady
+  const smsPlanningEnabled = dependencies.config.smsDeliveryReady
   const enabled = {
     email: emailPlanningEnabled,
     sms: smsPlanningEnabled && dependencies.config.eventSmsOutboxSupported,

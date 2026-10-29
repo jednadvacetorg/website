@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createHash } from 'node:crypto'
 
-import { notificationConfig, operationalEvidence } from '../server/utils/notificationConfig.ts'
+import { notificationConfig } from '../server/utils/notificationConfig.ts'
 import { isNotificationChannelReady } from '../server/utils/notifications.ts'
 
 Object.assign(globalThis, { __NOTIFICATION_COMMUNITIES__: [{ slug: 'brno', title: 'Brno' }] })
@@ -12,8 +11,8 @@ const base = {
   notificationTurnstileSecret: 'secret', notificationTurnstileExpectedHostname: 'example.test',
 }
 
-test('email delivery configuration is disabled unless every private and operational gate is exact', async () => {
-  const config = await notificationConfig({ ...base, notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true })
+test('email delivery is unavailable without complete private provider configuration', async () => {
+  const config = await notificationConfig(base)
   assert.equal(config.emailDeliveryReady, false)
   assert.equal(JSON.stringify(config).includes('undefined'), false)
 })
@@ -33,14 +32,11 @@ test('both builds use concrete credentials without runtime evidence while keepin
     ...base, notificationTurnstileExpectedHostname: 'jednadvacetorg-web.learned-mantis.workers.dev',
     brevoApiKey: 'a'.repeat(24), brevoCallbackSecret: 'b'.repeat(24),
     brevoSenderName: 'Jednadvacet.org', brevoSmsSender: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org',
-    notificationEmailManualEnabled: true,
   }
   const preview = await previewConfig(runtime)
   assert.equal(preview.emailDeliveryReady, true)
   assert.equal(preview.smsDeliveryReady, true)
   assert.equal(preview.managementOrigin, 'https://jednadvacetorg-web.learned-mantis.workers.dev')
-  assert.equal(preview.emailSmsEnabled, false, 'channel switches still default off')
-  assert.equal(preview.smsEnabled, false)
   assert.equal(preview.webPushDeliveryReady, false, 'missing VAPID cannot authorize push')
   const vapid = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
   const push = await previewConfig({ ...runtime,
@@ -50,7 +46,7 @@ test('both builds use concrete credentials without runtime evidence while keepin
   })
   assert.equal(isNotificationChannelReady('web-push', push), true, 'valid VAPID credentials need no additional rollout switches')
   assert.equal(push.eventWebPushOutboxSupported, true)
-  for (const changes of [{ brevoApiKey: '' }, { brevoCallbackSecret: '' }, { notificationEmailManualEnabled: false }]) assert.equal((await previewConfig({ ...runtime, ...changes })).emailDeliveryReady, false)
+  for (const changes of [{ brevoApiKey: '' }, { brevoCallbackSecret: '' }]) assert.equal((await previewConfig({ ...runtime, ...changes })).emailDeliveryReady, false)
   for (const brevoSmsSender of ['', 'Invalid sender name']) assert.equal((await previewConfig({ ...runtime, brevoSmsSender })).smsDeliveryReady, false)
   await assert.rejects(previewConfig({ ...runtime, notificationTurnstileExpectedHostname: 'jednadvacet.org' }))
   await assert.rejects(previewConfig({ ...runtime, notificationRootKey: '' }))
@@ -80,7 +76,26 @@ test('notification scopes and titles come from the deployed content catalog', as
   assert.deepEqual(config.communityTitles, { brno: 'Brno' })
 })
 
-test('email readiness requires real private configuration and the manual switch, not legacy assertions', async () => {
+test('email and SMS need credentials, not rollout settings; retired false settings cannot disable them', async () => {
+  const credentials = { ...base, brevoApiKey: 'a'.repeat(24), brevoCallbackSecret: 'b'.repeat(24), brevoSenderName: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org', brevoSmsSender: 'Jednadvacet' }
+  const retired = ['notificationEmailManualEnabled', 'notificationEmailSmsEnabled', 'notificationEmailSmsFirstMessageReady', 'notificationEmailSmsEventDeliveryReady', 'notificationSmsEnabled', 'notificationSmsFirstMessageReady', 'notificationSmsEventDeliveryReady']
+  for (const value of [undefined, false, 'false']) {
+    const config = await notificationConfig({ ...credentials, ...Object.fromEntries(retired.map(name => [name, value])) })
+    assert.equal(isNotificationChannelReady('email', config), true)
+    assert.equal(isNotificationChannelReady('sms', config), true)
+  }
+  const noApiKey = await notificationConfig({ ...credentials, brevoApiKey: '' })
+  assert.equal(isNotificationChannelReady('email', noApiKey), false)
+  assert.equal(isNotificationChannelReady('sms', noApiKey), false)
+  const noCallbackSecret = await notificationConfig({ ...credentials, brevoCallbackSecret: '' })
+  assert.equal(isNotificationChannelReady('email', noCallbackSecret), false)
+  assert.equal(isNotificationChannelReady('sms', noCallbackSecret), true)
+  const noSmsSender = await notificationConfig({ ...credentials, brevoSmsSender: '' })
+  assert.equal(isNotificationChannelReady('sms', noSmsSender), false)
+  assert.equal(isNotificationChannelReady('email', noSmsSender), true)
+})
+
+test('email readiness requires real private configuration, not legacy assertions', async () => {
   const ready = {
     ...base,
     brevoApiKey: 'a'.repeat(24),
@@ -96,11 +111,9 @@ test('email readiness requires real private configuration and the manual switch,
     notificationMigrationVerified: true,
     brevoSandboxVerified: true,
     brevoLiveCanaryVerified: true,
-    notificationEmailManualEnabled: true,
   }
   assert.equal((await notificationConfig(ready)).emailDeliveryReady, true)
   assert.equal((await notificationConfig({ ...ready, brevoApiKey: '' })).emailDeliveryReady, false)
-  assert.equal((await notificationConfig({ ...ready, notificationEmailManualEnabled: false })).emailDeliveryReady, false)
   assert.equal((await notificationConfig({ ...ready, brevoSenderEmail: 'noreply@b.jednadvacet.org' })).emailDeliveryReady, false)
 })
 
@@ -128,9 +141,6 @@ test('SMS provider readiness does not inherit email callback or DNS gates', asyn
     brevoSenderName: 'Jednadvacet.org',
     brevoSmsSender: 'Jednadvacet',
     notificationProductionBindingsVerified: true,
-    notificationSmsEnabled: true,
-    notificationSmsFirstMessageReady: true,
-    notificationSmsEventDeliveryReady: true,
   })
   assert.equal(config.emailDeliveryReady, false)
   assert.equal(config.smsDeliveryReady, true)
@@ -167,59 +177,4 @@ test('VAPID rejects mismatched pairs, noncanonical encodings and invalid subject
     assert.equal(rejected.webPushDeliveryReady, false)
     assert.equal(rejected.webPushDelivery, undefined)
   }
-})
-
-test('offline release review binds artifacts, target and keys without becoming runtime authority', async () => {
-  let now = Date.parse('2026-10-04T12:00:00Z')
-  const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
-  const ready = { ...base, brevoApiKey: 'a'.repeat(24), brevoCallbackSecret: 'b'.repeat(24), brevoSenderName: 'Jednadvacet.org', brevoSmsSender: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org', notificationEmailManualEnabled: true,
-    notificationVapidPrivateKey: (await crypto.subtle.exportKey('jwk', pair.privateKey)).d,
-    public: { notificationVapidPublicKey: Buffer.from(await crypto.subtle.exportKey('raw', pair.publicKey)).toString('base64url') }, notificationVapidSubject: 'mailto:test@example.test',
-    notificationExpectedTargetIdentity: '1'.repeat(64), notificationExpectedBundleHash: '2'.repeat(64), notificationExpectedMigrationHash: '3'.repeat(64), notificationExpectedConfigHash: '4'.repeat(64), notificationExpectedDeploymentId: '11111111-1111-1111-1111-111111111111' }
-  const gates = Object.fromEntries(['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs', 'account', 'credits', 'country', 'compliance', 'sharedManagementStop', 'vapid', 'protocol', 'interoperability', 'browser:chromium', 'firstMessage', 'eventDelivery'].map(gate => [gate, 'passed']))
-  const hash = (material: unknown[]) => createHash('sha256').update(JSON.stringify(material)).digest('hex')
-  const common = { evidenceKind: 'production-observation', mode: 'readiness', manualSwitch: true, targetIdentity: ready.notificationExpectedTargetIdentity, bundleHash: ready.notificationExpectedBundleHash, migrationHash: ready.notificationExpectedMigrationHash, configHash: ready.notificationExpectedConfigHash, deploymentId: ready.notificationExpectedDeploymentId, verifiedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 60_000).toISOString(), gates }
-  const email = { ...common, channel: 'email', keyHash: hash([ready.notificationRootKey, ready.brevoApiKey, ready.brevoCallbackSecret, ready.brevoSenderName, ready.brevoSenderEmail]) }
-  const sms = { ...common, channel: 'sms', keyHash: hash([ready.notificationRootKey, ready.brevoApiKey, ready.brevoSmsSender]) }
-  const push = { ...common, channel: 'web-push', interoperability: ['chromium'], keyHash: hash([ready.notificationRootKey, ready.notificationVapidPrivateKey, ready.public.notificationVapidPublicKey, ready.notificationVapidSubject]) }
-  const runtime = { ...ready, notificationEmailEvidence: JSON.stringify(email), notificationSmsEvidence: JSON.stringify(sms), notificationWebPushEvidence: JSON.stringify(push) }
-  const load = async (overrides = {}) => {
-    const value = { ...runtime, ...overrides }
-    const config = await notificationConfig(value)
-    const cryptoApi = { subtle: crypto.subtle, randomBytes: (length: number) => crypto.getRandomValues(new Uint8Array(length)) }
-    const [email, sms, push] = await Promise.all(['email', 'sms', 'web-push'].map(channel => operationalEvidence(channel as 'email' | 'sms' | 'web-push', value, cryptoApi, () => now)))
-    return { ...config, emailDeliveryReady: config.emailDeliveryReady && email!(), smsDeliveryReady: config.smsDeliveryReady && sms!(), webPushDeliveryReady: config.webPushDeliveryReady && push!() }
-  }
-  const config = await load()
-  assert.equal(config.emailDeliveryReady, true)
-  assert.equal(config.smsDeliveryReady, true)
-  assert.equal(config.webPushDeliveryReady, true)
-  assert.equal((await load({ brevoSmsSender: '' })).smsDeliveryReady, false, 'email sender is never an SMS fallback')
-  assert.equal((await load({ brevoSmsSender: 'JinySender' })).smsDeliveryReady, false, 'SMS evidence binds the independent sender')
-  assert.equal((await load({ brevoSenderName: 'Jiny emailovy nazev' })).smsDeliveryReady, true, 'email name changes do not change SMS identity')
-  for (const [field, changed] of Object.entries({ evidenceKind: 'local-candidate', mode: 'preflight', manualSwitch: false, channel: 'sms', targetIdentity: '0'.repeat(64), deploymentId: '22222222-2222-2222-2222-222222222222', bundleHash: '0'.repeat(64), migrationHash: '0'.repeat(64), configHash: '0'.repeat(64), keyHash: '0'.repeat(64), verifiedAt: new Date(now + 1).toISOString() })) {
-    const invalid = await load({ notificationEmailEvidence: JSON.stringify({ ...email, [field]: changed }) })
-    assert.equal(invalid.emailDeliveryReady, false, field)
-    assert.equal(invalid.smsDeliveryReady, true)
-    assert.equal(invalid.webPushDeliveryReady, true)
-  }
-  for (const gate of ['sender', 'dns', 'callback', 'sandbox', 'liveCanary', 'humanInbox', 'firstMessage', 'eventDelivery']) assert.equal((await load({ notificationEmailEvidence: JSON.stringify({ ...email, gates: { ...gates, [gate]: 'pending' } }) })).emailDeliveryReady, false, gate)
-  assert.equal((await load({ notificationEmailManualEnabled: false })).emailDeliveryReady, false)
-  assert.equal((await load({ notificationRootKey: 'B'.repeat(42) + 'A' })).smsDeliveryReady, false)
-  assert.equal((await load({ brevoApiKey: 'c'.repeat(24) })).emailDeliveryReady, false)
-  assert.equal((await load({ notificationSmsDeliveryCallbacksConfigured: true })).smsDeliveryReady, false)
-  assert.equal((await load({ notificationSmsDeliveryCallbacksConfigured: true, notificationSmsEvidence: JSON.stringify({ ...sms, gates: { ...gates, deliveryCallbackAuth: 'passed' } }) })).smsDeliveryReady, true)
-  assert.equal((await load({ notificationWebPushEvidence: JSON.stringify({ ...push, interoperability: ['ios-home-screen'] }) })).webPushDeliveryReady, false)
-  for (const invalid of ['', 'not-json', '[]']) assert.equal((await load({ notificationEmailEvidence: invalid })).emailDeliveryReady, false)
-  now += 90 * 86_400_000
-  assert.equal(config.emailDeliveryReady, true, 'elapsed time must not stop delivery')
-  assert.equal(config.smsDeliveryReady, true)
-  assert.equal(config.webPushDeliveryReady, true)
-  const { expiresAt: _retiredExpiry, ...withoutExpiry } = email
-  assert.equal((await load({ notificationEmailEvidence: JSON.stringify(withoutExpiry) })).emailDeliveryReady, true)
-  assert.equal((await load({ notificationExpectedDeploymentId: '22222222-2222-2222-2222-222222222222' })).emailDeliveryReady, false, 'changed deployment still invalidates evidence')
-  const runtimeWithoutEvidence = await notificationConfig(ready)
-  assert.equal(runtimeWithoutEvidence.emailDeliveryReady, true)
-  assert.equal(runtimeWithoutEvidence.smsDeliveryReady, true)
-  assert.equal(runtimeWithoutEvidence.webPushDeliveryReady, true)
 })

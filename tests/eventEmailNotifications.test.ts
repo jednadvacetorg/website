@@ -14,7 +14,6 @@ import type { PortalCalendarEvent } from '../server/utils/portalEvents.ts'
 const config = { ...await notificationConfig({
   notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''),
   notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org',
-  notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
 }), emailDeliveryReady: true }
 const schema = ['0000_majestic_lightspeed'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
 const fixture = (fail?: (sql: string) => boolean) => {
@@ -54,7 +53,7 @@ const payloads = async (sqlite: Database.Database) => Promise.all((sqlite.prepar
 
 test('one shared traversal plans three independently deduped channels with exact selected scope', async () => {
   const { sqlite, dependencies } = fixture()
-  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
+  const ready = { ...dependencies, config: { ...config, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
   await signup(ready)
   for (const channel of ['sms', 'web-push']) {
     sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)
@@ -83,7 +82,7 @@ test('a disabled channel consumes discovery without sendable backlog and leaves 
     sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)
     sqlite.prepare("INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) SELECT id, 'brno', 'created', 'created', 'updated' FROM notification_contacts WHERE channel = ?").run(channel)
   }
-  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: false, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
+  const ready = { ...dependencies, config: { ...config, smsDeliveryReady: false, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
   assert.deepEqual((await planEventNotifications([item()], ready)).plannedByChannel, { email: 1, sms: 0, 'web-push': 1 })
   assert.deepEqual(sqlite.prepare('SELECT channel, status FROM notification_event_deliveries ORDER BY channel').all(), [{ channel: 'email', status: 'pending' }, { channel: 'sms', status: 'failed' }, { channel: 'web-push', status: 'pending' }])
   assert.equal((await planEventNotifications([item()], { ...ready, config: { ...ready.config, smsDeliveryReady: true } })).planned, 0)
@@ -330,7 +329,7 @@ test('time/end/venue revisions carry pending announcements while notifying only 
 
 test('a replacement revalidates queued work for every enabled channel and preserves the current event payload', async () => {
   const { sqlite, dependencies } = fixture()
-  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
+  const ready = { ...dependencies, config: { ...config, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
   await signup(ready)
   for (const channel of ['sms', 'web-push']) {
     sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)

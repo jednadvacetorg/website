@@ -82,7 +82,6 @@ const key = btoa('01234567890123456789012345678901').replace(/=+$/g, '')
 const config = { ...await notificationConfig({
   notificationRootKey: key,
   notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org',
-  notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
 }), emailDeliveryReady: true }
 
 const predictableCrypto = { randomBytes: (length: number) => new Uint8Array(length), subtle: crypto.subtle }
@@ -146,10 +145,10 @@ test('activation stores one plaintext contact, one row per frequency, and an enc
 })
 
 test('unavailable recovery preserves the existing capability, subscriptions and pending work', async t => {
-  for (const scenario of ['email-disabled', 'email-evidence-mismatch', 'sms-disabled', 'push-disabled', 'schema-unavailable'] as const) await t.test(scenario, async () => {
+  for (const scenario of ['email-unavailable', 'sms-unavailable', 'push-unavailable', 'schema-unavailable'] as const) await t.test(scenario, async () => {
     const { database, query } = disposableDatabase()
-    const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true }
-    const channel = scenario === 'sms-disabled' ? 'sms' : scenario === 'push-disabled' ? 'web-push' : 'email'
+    const ready = { ...config, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true }
+    const channel = scenario === 'sms-unavailable' ? 'sms' : scenario === 'push-unavailable' ? 'web-push' : 'email'
     const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
     const contact = channel === 'email' ? input.contact : channel === 'sms' ? '+420777123456' : {
       endpoint: 'https://push.example.test/recovery-device', expirationTime: null,
@@ -162,10 +161,9 @@ test('unavailable recovery preserves the existing capability, subscriptions and 
     const snapshot = () => ({ contacts: query('SELECT * FROM notification_contacts'), subscriptions: query('SELECT * FROM notification_subscriptions'), outbox: query('SELECT * FROM notification_outbox') })
     const before = snapshot()
     const unavailable = { ...ready,
-      emailSmsEnabled: scenario !== 'email-disabled',
-      emailDeliveryReady: scenario !== 'email-evidence-mismatch',
-      smsEnabled: scenario !== 'sms-disabled',
-      webPushDeliveryReady: scenario !== 'push-disabled',
+      emailDeliveryReady: scenario !== 'email-unavailable',
+      smsDeliveryReady: scenario !== 'sms-unavailable',
+      webPushDeliveryReady: scenario !== 'push-unavailable',
     }
     assert.equal(await requestNotificationManagementRecovery({ channel, contact }, { database, config: unavailable }), undefined)
     assert.deepEqual(snapshot(), before)
@@ -213,9 +211,6 @@ test('one private root derives a Worker AES-GCM key for an activation outbox wri
     notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationEmailSmsEnabled: true,
-    notificationEmailSmsFirstMessageReady: true,
-    notificationEmailSmsEventDeliveryReady: true,
   })
 
   assert.ok('outboxTransportKey' in runtimeConfig)
@@ -235,9 +230,6 @@ test('missing, malformed, short, and undefined private root material fails confi
     notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationEmailSmsEnabled: true,
-    notificationEmailSmsFirstMessageReady: true,
-    notificationEmailSmsEventDeliveryReady: true,
   }
   const invalidConfigurations = [
     { ...validRuntimeConfig, notificationRootKey: '' },
@@ -254,9 +246,6 @@ test('public readiness keeps email false until separate delivery evidence is com
     notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationEmailSmsEnabled: true,
-    notificationEmailSmsFirstMessageReady: true,
-    notificationEmailSmsEventDeliveryReady: true,
   }
 
   const { database } = disposableDatabase()
@@ -269,7 +258,6 @@ test('public readiness stays false without D1 or operational delivery evidence',
   const runtimeConfig = {
     notificationRootKey: key,
     notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
   }
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig), { email: false, sms: false, webPush: false })
   assert.deepEqual(await projectNotificationReadiness(runtimeConfig, database), { email: false, sms: false, webPush: false })
@@ -282,9 +270,6 @@ test('private abuse and Turnstile configuration imports a dedicated HMAC key wit
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
     notificationTurnstileSiteKey: 'public-turnstile-site-key',
-    notificationEmailSmsEnabled: true,
-    notificationEmailSmsFirstMessageReady: true,
-    notificationEmailSmsEventDeliveryReady: true,
   })
 
   assert.ok('abuseHashKey' in runtimeConfig)
@@ -519,7 +504,7 @@ test('a delayed pending signup cannot overwrite a newer recovery generation or s
 test('SMS stop and final-community removal use one scoped bearer and preserve email/push even when sending is disabled', async () => {
   for (const action of ['stop', 'last-community'] as const) {
     const { database, query } = disposableDatabase()
-    const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true }
+    const ready = { ...config, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true }
     const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
     const push = JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.from(new Uint8Array(16)).toString('base64url') } })
     for (const [channel, contact, byte] of [['email', 'Alice@example.com', 1], ['sms', '+420777123456', 2], ['web-push', push, 3]] as const) {
@@ -527,7 +512,7 @@ test('SMS stop and final-community removal use one scoped bearer and preserve em
     }
     const otherContacts = query("SELECT * FROM notification_contacts WHERE channel <> 'sms'")
     const otherWork = query('SELECT * FROM notification_outbox WHERE contact_id <> 2')
-    const disabled = { ...ready, smsEnabled: false }
+    const disabled = { ...ready, smsDeliveryReady: false }
     if (action === 'stop') await stopNotificationChannel(tokenForByte(2), { database, config: disabled })
     else await removeNotificationCommunity(tokenForByte(2), 'brno', { database, config: disabled })
     assert.deepEqual(query("SELECT * FROM notification_contacts WHERE channel <> 'sms'"), otherContacts)

@@ -65,6 +65,20 @@
 - Keep feature work separate from discovered tooling, devcontainer, build, documentation, and deployment-policy fixes. Report those separately and get approval before mixing them into the feature diff.
 - Before final verification, perform a simplification pass: identify one-use files and exports, duplicated identity or validation, unnecessary response envelopes, implementation-coupled tests, and behavior not required by the task.
 
+## Documentation Audience
+
+- Keep `README.md` primarily useful to people adding or editing content. Before adding anything, ask whether a typical content contributor needs it; do not turn the README into an agent operations manual.
+- Put necessary, durable agent-facing development and deployment instructions in `AGENTS.md`. Keep them concise and actionable; neither README nor AGENTS should accumulate session diaries, verification transcripts, one-time reset recipes, or historical rollout procedures.
+- Do not create a separate documentation file merely to preserve the steps of the current task. Keep transient diagnostics and evidence under `/tmp/opencode`; retain repository documentation only when it has a clear continuing audience and responsibility.
+
+## Mandatory Cleanup Before Commit and Merge
+
+- Always clean up your own obsolete scaffolding, superseded files, temporary assets, and one-off tooling before finishing. Inspect dependencies before removing them, and never delete or overwrite unrelated user work.
+- Before every commit, stop and strictly review **each newly added file**. Identify its concrete continuing product, published-content, build, or CI purpose after this branch is merged. Check whether an existing file or supported upstream command already covers it. If it is useful only for this session, branch, migration rehearsal, or release verification, do not commit it. Tests as its only consumer do not make a temporary helper necessary.
+- Keep only indispensable, long-lived scripts in `master`. Default one-off verification, smoke-test, inspection, and deployment-rehearsal scripts to `/tmp/opencode`, not repository `scripts/`. Keep lasting behavioral regression coverage in the normal test suite instead of retaining a second ad-hoc verification harness.
+- Before merge, inspect the complete final diff against the target branch and explicitly confirm that branch-only verification scripts and artifacts have been removed from the resulting tree. Remove their obsolete package commands, imports, CI references, and tests that only exercise the discarded tooling; preserve useful product/CI regression coverage. Do not promote temporary tooling into permanent infrastructure merely because it was used successfully during development.
+- If a one-off smoke test is still needed after merge, retain it under `/tmp/opencode` with the necessary invocation context, then run it after the separately authorized production deployment. Keeping it available temporarily does not justify shipping it in `master`, nor authorize deployment, production writes, or real sends.
+
 ## Local Development Workflow
 
 - The devcontainer normally starts the development server automatically. Before starting another server, browse `http://localhost:2103/` with `agent-browser` to check whether it is already running.
@@ -80,6 +94,11 @@
 - Save screenshots and browser artifacts under `/tmp/screenshots`. Do not add temporary artifacts to the repository.
 
 ## Verification
+
+- Production builds use `npm run build:cloudflare`; deploy with `npm run deploy:cloudflare` (D1 migrations first, then Worker with `--keep-vars`). Verify the generated target against the actual Cloudflare service before deploying. The deployment token needs D1 migration permissions; default Workers Builds tokens may omit them. Never reset D1 as part of deployment.
+- Notification configuration is listed in `.env.example`. Channels have no rollout switches or operator-evidence gates: readiness follows provider credentials and the actual schema. Keep established root/VAPID keys unchanged and separate between test and production. Configure public Turnstile/VAPID keys in both build variables and Worker runtime variables; build variables do not become runtime variables automatically. Brevo requires a verified sender/domain, authenticated delivery callbacks for email, and SMS account/credit/country permissions.
+- Check `/api/notifications/readiness` and sanitized `[notifications] Readiness unavailable` reasons in Worker logs; never log secrets or recipient data. After an authorized deployment, verify activation, actual receipt, event delivery/click, management recovery, stop and no subsequent delivery with authorized recipients. Provider acceptance alone does not prove receipt; do not bypass rate limits or replay messages blindly.
+- PR previews use `PREVIEW_DEPLOY=1 npm run build:cloudflare` and Wrangler's supported `deploy --temporary` flow. CI validates isolated bindings before deployment and keeps claim credentials out of public logs. These browser previews do not apply native D1 migrations or perform an initial refresh; they cannot prove notification delivery. Do not restore account-specific deployment orchestration.
 
 - For complex Cloudflare features, consider an isolated claim deployment with `wrangler deploy --temporary` before requesting production access. It can deploy uncommitted candidate code without a commit or push; PR preview CI is another option. The user accepted Cloudflare's Terms of Service and Privacy Policy on 2026-10-23 for this workflow; do not repeatedly request the same policy acceptance unless the policies or scope change.
 - Temporary deployments must use fresh isolated resources, never production bindings, secrets or user data. Check current supported products, permissions, asset limits and expiry; ordinary preview builds may omit KV, Queues or cron and cannot prove those integrations. After expiry, `--temporary` may silently provision a different account and hostname: check account identity and expiry before every redeploy or secret write, stop on identity changes, and never assume earlier secrets or resources survived. Keep sending disabled unless separately authorized. Treat temporary credentials and claim URLs as secrets. Report the preview URL and expiry; claiming an account, production operations, paid resources, real sends and Git integration require separate approval.

@@ -53,7 +53,6 @@ const root = btoa(String.fromCharCode(...keyMaterial)).replace(/=+$/g, '')
 const config = { ...await notificationConfig({
   notificationRootKey: root,
   notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org',
-  notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
 }), emailDeliveryReady: true }
 const predictableCrypto = { randomBytes: (length: number) => new Uint8Array(length), subtle: crypto.subtle }
 const input = { channel: 'email' as const, contact: 'alice@example.com', communitySlugs: ['brno'], frequencies: ['created'] as const, consentAt: '2026-09-17T00:00:00.000Z' }
@@ -83,8 +82,8 @@ test('lifecycle activation recovery and reactivation reserve authority through t
     const pointer = { outboxId: row.id as string, version: row.version as number }
     const globals = globalThis as typeof globalThis & { useRuntimeConfig?: unknown }
     const priorRuntime = globals.useRuntimeConfig, originalFetch = globalThis.fetch
-    const runtime = { ...syntheticRuntime, brevoSenderEmail: 'noreply@jednadvacet.org', brevoCallbackSecret: 'synthetic-callback', notificationRootKey: root, notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true }
-    Object.assign(runtime, { brevoApiKey: 'synthetic-api-key-at-least-24-characters', brevoCallbackSecret: 'synthetic-callback-at-least-24-characters', notificationEmailManualEnabled: true })
+    const runtime = { ...syntheticRuntime, brevoSenderEmail: 'noreply@jednadvacet.org', brevoCallbackSecret: 'synthetic-callback', notificationRootKey: root, notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org' }
+    Object.assign(runtime, { brevoApiKey: 'synthetic-api-key-at-least-24-characters', brevoCallbackSecret: 'synthetic-callback-at-least-24-characters' })
     globals.useRuntimeConfig = () => runtime
     const route = (await import('../server/api/notifications/brevo-events.post.ts')).default
     const app = createApp()
@@ -131,7 +130,7 @@ test('reserved lifecycle callback evidence converges monotonically across result
     await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
     const pointer = pointerFor(query)
     // Real sibling channel contacts, outboxes and subscriptions must survive every callback.
-    await activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true } })
+    await activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: { ...config, smsDeliveryReady: true, eventSmsOutboxSupported: true } })
     await database.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) SELECT 'web-push', 'https://push.example.test/opaque', destination_hash, 'push-sibling-digest', capability_generation, state, consent_at, consent_version, created_at, updated_at FROM notification_contacts WHERE channel = 'sms'").run()
     const siblings = query("SELECT * FROM notification_contacts WHERE channel <> 'email'")
     const siblingWork = query("SELECT * FROM notification_outbox WHERE contact_id IN (SELECT id FROM notification_contacts WHERE channel <> 'email')")
@@ -331,7 +330,7 @@ test('minute lifecycle retention shares spare abuse capacity and preserves origi
       await database.prepare("INSERT INTO notification_outbox (id, version, expected_capability_generation, status, payload_ciphertext, payload_iv, kind, created_at, updated_at) VALUES ('pending-sentinel', 1, 1, 'queued', 'keep-payload', 'keep-iv', 'first-activation', '2020-01-01', '2020-01-01')").run()
       await database.prepare("UPDATE notification_outbox SET terminal_at = '2020-01-01T00:00:00.000Z', email_destination_hash = (SELECT email_destination_hash FROM notification_outbox WHERE id = ?), email_attempt_version = 1, email_attempted_at = '2020-01-01T00:00:00.000Z', email_delivery_status = 'pending' WHERE id = 'pending-sentinel'").bind(owners[2]!.id).run()
       await database.prepare("INSERT INTO notification_lifecycle_email_callbacks (receipt_key, outbox_id, attempt_version, event, provider_message_id, received_at) VALUES (?, 'pending-sentinel', 1, 'delivered', 'pending-provider', '2020-01-01T00:00:00.000Z')").bind('e'.repeat(64)).run()
-      await activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true } })
+      await activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: { ...config, smsDeliveryReady: true, eventSmsOutboxSupported: true } })
       await database.prepare("UPDATE notification_outbox SET status = 'queued' WHERE contact_id IN (SELECT id FROM notification_contacts WHERE channel = 'sms')").run()
       await database.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) SELECT 'web-push', 'https://push.example.test/retention', destination_hash, 'push-retention-digest', capability_generation, state, consent_at, consent_version, created_at, updated_at FROM notification_contacts WHERE channel = 'sms'").run()
       await database.prepare("INSERT INTO notification_event_deliveries (id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, created_at, updated_at) VALUES ('retention-event', 1, 'event-hash', 'sentinel', 1, 'created', 'delivered', '2020-01-01', '2020-01-01')").run()
@@ -560,7 +559,7 @@ test('notification plugin accepts installed top-level env and reads supplied SQL
   let hook!: (event: unknown) => Promise<void>
   // This directly registered plugin boundary is not emitted Worker proof.
   ;(notificationQueuePlugin as unknown as (app: unknown) => void)({ hooks: { hook: (_name: string, handler: typeof hook) => { hook = handler } } })
-  globals.useRuntimeConfig = () => ({ notificationRootKey: root, notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true, notificationProductionBindingsVerified: true, notificationMigrationVerified: true, brevoSenderVerified: true })
+  globals.useRuntimeConfig = () => ({ notificationRootKey: root, notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationProductionBindingsVerified: true, notificationMigrationVerified: true, brevoSenderVerified: true })
   globals.fetch = async () => { calls++; throw Error('provider must not be called') }
   try {
     await hook({ batch: { queue: 'notification-messages', messages: [{ id: 'synthetic', body: pointerFor(query) }] }, env: { DB: observed }, context: { waitUntil: () => {} } })
@@ -598,7 +597,7 @@ const jointFixture = async () => {
   const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
   const vapid = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
   const contact = { endpoint: 'https://push.example.test/subscription', keys: { p256dh: encode(new Uint8Array(await crypto.subtle.exportKey('raw', receiver.publicKey))), auth: encode(new Uint8Array(16)) } }
-  const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true, webPushDelivery: { privateKey: vapid.privateKey, publicKey: encode(new Uint8Array(await crypto.subtle.exportKey('raw', vapid.publicKey))), subject: 'mailto:test@example.test' } }
+  const ready = { ...config, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true, webPushDelivery: { privateKey: vapid.privateKey, publicKey: encode(new Uint8Array(await crypto.subtle.exportKey('raw', vapid.publicKey))), subject: 'mailto:test@example.test' } }
   const dependencies = { database: fixture.database, config: ready, now: () => new Date('2026-10-04T10:00:00Z') }
   for (const channel of ['email', 'sms', 'web-push'] as const) await activateNotificationChannel({ ...input, channel, contact: channel === 'email' ? input.contact : channel === 'sms' ? '+420777123456' : contact }, dependencies)
   return { ...fixture, dependencies, receiver, contact }
@@ -735,8 +734,6 @@ test('registered default Queue hook bounds real lifecycle/event transports, pres
   const runtime = {
     ...syntheticRuntime, brevoApiKey: 'synthetic-key-at-least-24-characters', brevoCallbackSecret: 'synthetic-callback-at-least-24', brevoSenderEmail: 'noreply@jednadvacet.org', brevoSandbox: true,
     notificationRootKey: root, notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationEmailManualEnabled: true, notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
-    notificationSmsEnabled: true, notificationSmsFirstMessageReady: true, notificationSmsEventDeliveryReady: true,
   }
   const configured: Record<string, unknown> = { ...runtime }
   globals.useRuntimeConfig = () => configured
@@ -1391,7 +1388,7 @@ test('Web Push transient provider outcomes retain the ciphertext for Queue retry
 test('real SMS signup/recovery dispatch carries a usable SMS-only management link and stop revokes it', async () => {
   const { database, query } = disposableDatabase()
   const managementOrigin = 'https://jednadvacet.org'
-  const ready = { ...config, managementOrigin, emailSmsEnabled: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true }
+  const ready = { ...config, managementOrigin, emailDeliveryReady: false, smsDeliveryReady: true, eventSmsOutboxSupported: true }
   const contact = '+420777123456'
   await activateNotificationChannel({ ...input, channel: 'sms', contact }, { database, config: ready })
   let firstToken = ''
@@ -1808,7 +1805,7 @@ test('attempted event email rate limiting is terminal and never writes unsupport
 
 test('SMS lifecycle provider failures retry transient results and retain terminal failure evidence', async () => {
   const { database, query } = disposableDatabase()
-  const smsConfig = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true }
+  const smsConfig = { ...config, smsDeliveryReady: true, eventSmsOutboxSupported: true }
   await activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: smsConfig, crypto: predictableCrypto })
   const pointer = pointerFor(query)
 
@@ -1879,7 +1876,7 @@ test('a stale lifecycle Web Push endpoint is suppressed and removed', async () =
 test('SMS activation rejects missing database schema despite provider flags', async () => {
   const { database, query } = disposableDatabase()
   await database.prepare('DROP TABLE notification_lifecycle_email_callbacks').run()
-  const smsConfig = { ...config, emailSmsEnabled: false, emailSmsEventDeliveryReady: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true }
+  const smsConfig = { ...config, emailDeliveryReady: false, smsDeliveryReady: true }
   await assert.rejects(activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: smsConfig, crypto: predictableCrypto }), error => (error as { statusCode: number }).statusCode === 503)
   assert.deepEqual(query('SELECT id FROM notification_contacts'), [])
 })
@@ -1891,9 +1888,6 @@ test('scheduled drain publishes bounded pointers and consumer failures remain re
     notificationRootKey: root,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationEmailSmsEnabled: true,
-    notificationEmailSmsFirstMessageReady: true,
-    notificationEmailSmsEventDeliveryReady: true,
   }
   const globals = globalThis as typeof globalThis & { defineTask?: unknown, defineNitroPlugin?: unknown }
   const previousTask = globals.defineTask

@@ -20,18 +20,17 @@ test('public readiness fails closed without a database or private configuration'
 const runtime = {
   notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''),
   notificationTurnstileSecret: 'synthetic-turnstile', notificationTurnstileExpectedHostname: 'jednadvacet.org',
-  notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
   brevoApiKey: 'synthetic-api-key-at-least-24', brevoCallbackSecret: 'synthetic-callback-at-least-24', brevoSenderName: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org',
   brevoSenderVerified: true, brevoSpfVerified: true, brevoDkimVerified: true, brevoDmarcVerified: true, brevoCallbackVerified: true,
-  notificationProductionBindingsVerified: true, notificationMigrationVerified: true, brevoSandboxVerified: true, brevoLiveCanaryVerified: true, notificationEmailManualEnabled: true,
+  notificationProductionBindingsVerified: true, notificationMigrationVerified: true, brevoSandboxVerified: true, brevoLiveCanaryVerified: true,
 }
 
 test('every channel readiness prerequisite independently rejects direct activation before database access', async () => {
-  const base = { ...await notificationConfig(runtime), emailDeliveryReady: true, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true }
+  const base = { ...await notificationConfig(runtime), emailDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true }
   const database: NotificationDatabase = { prepare: () => { throw new Error('Unexpected database access') }, batch: async () => { throw new Error('Unexpected database writes') } }
   const gates = {
-    email: ['emailSmsEnabled', 'emailSmsFirstMessageReady', 'emailSmsEventDeliveryReady', 'emailDeliveryReady'],
-    sms: ['smsEnabled', 'smsFirstMessageReady', 'smsEventDeliveryReady', 'smsDeliveryReady', 'eventSmsOutboxSupported'],
+    email: ['emailDeliveryReady'],
+    sms: ['smsDeliveryReady', 'eventSmsOutboxSupported'],
     'web-push': ['webPushDeliveryReady'],
   } as const
   const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])

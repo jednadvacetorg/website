@@ -326,7 +326,7 @@ export const consumeNotificationOutboxPointer = async (pointer: NotificationOutb
   }
 
   try {
-    // A manual switch-off is terminal, not retryable backlog: nothing reaches Brevo.
+    // Unavailable delivery configuration is terminal, not retryable backlog: nothing reaches Brevo.
     if (!isNotificationChannelReady(authorization.channel, dependencies.config) || !await notificationSchemaReady(dependencies.database)) {
       if ('deliveryId' in payload) await dependencies.database.prepare('UPDATE notification_event_deliveries SET status = ?, updated_at = ? WHERE id = ? AND status = ?')
         .bind('failed', nowIso(dependencies), payload.deliveryId, 'pending').run()

@@ -23,9 +23,6 @@ export const projectNotificationReadiness = async (runtimeConfig: Record<string,
       report('database-schema-unavailable-or-incompatible')
       return unavailable
     }
-    const switches = ['notificationEmailManualEnabled', 'notificationEmailSmsEnabled', 'notificationEmailSmsFirstMessageReady', 'notificationEmailSmsEventDeliveryReady', 'notificationSmsEnabled', 'notificationSmsFirstMessageReady', 'notificationSmsEventDeliveryReady'] as const
-    const disabledSwitches = switches.filter(name => runtimeConfig[name] !== true && runtimeConfig[name] !== 'true')
-    if (disabledSwitches.length) console.info('[notifications] Readiness switches disabled', { switches: disabledSwitches })
     return { email: isNotificationChannelReady('email', config), sms: isNotificationChannelReady('sms', config), webPush: isNotificationChannelReady('web-push', config) }
   } catch (error) {
     report(error instanceof NotificationConfigurationError ? error.reason : 'configuration-or-crypto-unavailable')

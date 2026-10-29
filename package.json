@@ -13,7 +13,6 @@
     "deploy:cloudflare": "wrangler d1 migrations apply DB --remote --config .output/server/wrangler.json && wrangler deploy --config .output/server/wrangler.json --keep-vars",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "nuxt typecheck",
-    "verify:email-delivery": "node --experimental-strip-types scripts/verify-email-delivery.ts",
     "dev": "CHOKIDAR_USEPOLLING=1 CHOKIDAR_INTERVAL=500 nuxt dev --port 2103",
     "dev:tunnel": "UNTUN_ACCEPT_CLOUDFLARE_NOTICE=true npm run dev -- --tunnel"
   },

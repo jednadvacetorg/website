@@ -26,18 +26,12 @@ export interface NotificationLifecycleConfig {
   outboxTransportKey: CryptoKey
   /** Set by the build-specific configuration, never from an HTTP request origin. */
   managementOrigin?: string
-  emailSmsEnabled: boolean
-  emailSmsFirstMessageReady: boolean
-  emailSmsEventDeliveryReady: boolean
-  smsEnabled: boolean
-  smsFirstMessageReady: boolean
-  smsEventDeliveryReady: boolean
   smsDeliveryReady: boolean
   /** Implemented outbox capability; the actual D1 schema is probed at authorization. */
   eventSmsOutboxSupported: boolean
   /** Implemented outbox capability; the actual D1 schema is probed at authorization. */
   eventWebPushOutboxSupported?: boolean
-  /** Complete private provider configuration plus the email manual switch. */
+  /** Complete private email provider configuration. */
   emailDeliveryReady: boolean
   brevoApiKey?: string
   brevoSenderName?: string
@@ -97,8 +91,8 @@ export const normalizeNotificationContact = (channel: NotificationChannel, value
 export const isNotificationChannelReady = (channel: NotificationChannel, config: NotificationLifecycleConfig) => channel === 'web-push'
   ? config.webPushDeliveryReady
   : channel === 'sms'
-    ? config.smsEnabled && config.smsFirstMessageReady && config.smsEventDeliveryReady && config.smsDeliveryReady && config.eventSmsOutboxSupported
-    : config.emailSmsEnabled && config.emailSmsFirstMessageReady && config.emailSmsEventDeliveryReady && config.emailDeliveryReady
+    ? config.smsDeliveryReady && config.eventSmsOutboxSupported
+    : config.emailDeliveryReady
 
 /** Read the supplied binding, not a schema file or a claimed migration boolean. No subscriber data is loaded. */
 export const notificationSchemaReady = async (database: NotificationDatabase) => {

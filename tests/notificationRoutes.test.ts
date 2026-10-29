@@ -65,11 +65,10 @@ const managementDatabase = () => {
 const managementRuntime = {
   notificationRootKey: Buffer.alloc(32, 4).toString('base64url'),
   notificationTurnstileSecret: 'synthetic-turnstile', notificationTurnstileExpectedHostname: 'example.test',
-  notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
 }
 const managementToken = Buffer.alloc(32, 1).toString('base64url')
 const readyEmailRuntime = () => {
-  return { ...managementRuntime, brevoApiKey: 'synthetic-api-key'.repeat(3), brevoCallbackSecret: 'synthetic-callback-secret'.repeat(2), brevoSenderName: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org', notificationEmailManualEnabled: true }
+  return { ...managementRuntime, brevoApiKey: 'synthetic-api-key'.repeat(3), brevoCallbackSecret: 'synthetic-callback-secret'.repeat(2), brevoSenderName: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org' }
 }
 const managementCrypto = { randomBytes: (length: number) => new Uint8Array(length).fill(1), subtle: crypto.subtle }
 const managementActions = [
@@ -662,12 +661,12 @@ test('allowed real recovery registers identical generic wake for eligible, absen
   assert.ok(bodies.every(body => !body.includes('Alice') && !body.includes('Queue')))
 })
 
-test('HTTP recovery with disabled or invalid provider configuration preserves the old management link and generic response', async t => {
+test('HTTP recovery with invalid API or callback credentials preserves the old management link and generic response', async t => {
   const previous = runtimeConfig
   t.after(() => { runtimeConfig = previous })
-  for (const scenario of ['disabled', 'provider-invalid'] as const) await t.test(scenario, async () => {
+  for (const scenario of ['callback-invalid', 'provider-invalid'] as const) await t.test(scenario, async () => {
     runtimeConfig = readyEmailRuntime()
-    if (scenario === 'disabled') runtimeConfig.notificationEmailManualEnabled = false
+    if (scenario === 'callback-invalid') runtimeConfig.brevoCallbackSecret = ''
     else runtimeConfig.brevoApiKey = ''
     const storage = managementDatabase()
     try {

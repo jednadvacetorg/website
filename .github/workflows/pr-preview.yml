@@ -41,14 +41,14 @@ jobs:
         run: |
           node --experimental-strip-types --input-type=module <<'JS'
           import { readFile } from 'node:fs/promises'
-          import { validatePreviewConfiguration } from './scripts/deploy-preview.ts'
+          import { validatePreviewConfiguration } from './scripts/validate-preview-config.ts'
           validatePreviewConfiguration(JSON.parse(await readFile('.output/server/wrangler.json', 'utf8')))
           JS
 
       # Wrangler's supported temporary-account flow can provision the generated
       # bindings, but it does not expose credentials to NuxtHub's native D1 migration
       # CLI. Keep this pre-existing browser preview working while the full refresh
-      # lifecycle remains explicitly blocked in the deployment script.
+      # lifecycle remains unavailable in this temporary browser preview.
       - name: Deploy temporary browser preview
         id: deploy
         run: |

@@ -100,31 +100,20 @@ export default defineNuxtConfig({
     eventsAdminToken: '',
     mapboxAccessToken: '',
     mapboxStyle: 'mapbox/dark-v10',
-    // Keep notification activation private and fail closed until Phases 6–7 provide both message types.
     // One root derives separated outbox, suppression, and abuse subkeys internally.
     notificationRootKey: '',
     notificationTurnstileSecret: '',
     notificationTurnstileExpectedHostname: '',
-    notificationEmailSmsEnabled: false,
-    notificationEmailSmsFirstMessageReady: false,
-    notificationEmailSmsEventDeliveryReady: false,
-    // SMS has independent provider/readiness evidence; event work remains
-    // fail-closed until a separately reviewed D1 schema migration exists.
-    notificationSmsEnabled: false,
-    notificationSmsFirstMessageReady: false,
-    notificationSmsEventDeliveryReady: false,
     // Provider verification and real-device checks belong to the release checklist.
     brevoApiKey: '',
     brevoCallbackSecret: '',
     brevoSenderName: '',
     brevoSmsSender: '',
     brevoSenderEmail: '',
-    notificationEmailManualEnabled: false,
     // VAPID private material stays server-only; its matching public key is the
     // sole Web Push value serialized to browsers.
     notificationVapidPrivateKey: '',
     notificationVapidSubject: 'https://jednadvacet.org',
-    // Private and inert outside an explicitly-owned development verification process.
     public: {
       // This is the only notification-abuse value intentionally exposed to browsers.
       notificationTurnstileSiteKey: '',
