@@ -2,6 +2,10 @@
   "name": "jednadvacet-org",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.13.0",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "skills:install": "skills experimental_install -y",
     "build": "node --experimental-strip-types scripts/validate-content-routes.ts && NODE_OPTIONS=--max-old-space-size=4096 nuxt build",
