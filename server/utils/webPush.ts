@@ -97,9 +97,15 @@ export const sendWebPush = async (subscription: WebPushSubscription, message: We
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 10_000)
   try {
-    const response = await fetcher(new URL(encrypted.endpoint), { method: 'POST', redirect: 'error', signal: controller.signal, headers: new Headers({ authorization, 'content-encoding': 'aes128gcm', ttl: '60', 'content-type': 'application/octet-stream' }), body: buffer(encrypted.body) })
+    // Workers supports manual redirects, not redirect: 'error'. Never follow a
+    // provider redirect with the subscription payload or VAPID authorization.
+    const response = await fetcher(new URL(encrypted.endpoint), { method: 'POST', redirect: 'manual', signal: controller.signal, headers: new Headers({ authorization, 'content-encoding': 'aes128gcm', ttl: '60', 'content-type': 'application/octet-stream' }), body: buffer(encrypted.body) })
     if (response.status >= 200 && response.status < 300) return { attempted: true, status: 'submitted', httpStatus: response.status }
+    console.warn('[notifications] Web Push provider rejected a request', { httpStatus: response.status })
     return { attempted: true, status: response.status === 404 || response.status === 410 ? 'stale-endpoint' : response.status === 429 ? 'rate-limited' : response.status === 401 || response.status === 403 ? 'auth' : response.status >= 500 ? 'provider-5xx' : 'invalid-request', httpStatus: response.status }
-  } catch { return { attempted: true, status: 'transport' } }
+  } catch (error) {
+    console.warn('[notifications] Web Push transport failed', { timedOut: controller.signal.aborted, errorType: error instanceof Error ? error.name : typeof error })
+    return { attempted: true, status: 'transport' }
+  }
   finally { clearTimeout(timeout) }
 }

@@ -8,6 +8,7 @@ type ManagementMutationResult =
   | { outcome: 'unavailable' }
 
 const route = useRoute()
+const requestFetch = useRequestFetch()
 const heading = useTemplateRef<HTMLElement>('heading')
 const stopTrigger = useTemplateRef<{ $el: HTMLButtonElement }>('stop-trigger')
 const stopOpen = ref(false)
@@ -34,16 +35,37 @@ const frequencyChoices: { value: Frequency, label: string }[] = [
   { value: 'day-before', label: 'den předem' },
 ]
 
-const { data: result } = await useAsyncData(`notification-management-${route.path}`, () =>
-  $fetch<ManagementResult>(`/api/notifications/manage/${encodeURIComponent(String(route.params.token ?? ''))}`)
+const { data: result, status: managementStatus } = await useAsyncData(`notification-management-${route.path}`, () =>
+  requestFetch<ManagementResult>(`/api/notifications/manage/${encodeURIComponent(String(route.params.token ?? ''))}`)
     .catch(() => ({ state: 'unavailable' as const })),
+  // The HttpOnly cookie belongs only to /api/notifications, not page requests.
+  // Explicit bearer links retain SSR; the browser session is read client-side.
+  { server: route.params.token !== 'browser' },
 )
 
 const isAvailable = computed(() => result.value?.state === 'active' || result.value?.state === 'pending-reactivation')
 const channelLabel = computed(() => result.value && 'channel' in result.value
-  ? ({ email: 'E-mail', sms: 'SMS', 'web-push': 'Oznámení ve webu' })[result.value.channel]
+  ? ({ email: 'E-mail', sms: 'SMS', 'web-push': 'Webové notifikace' })[result.value.channel]
   : '')
 const currentCommunities = computed(() => result.value && 'communities' in result.value ? result.value.communities : [])
+const { data: communityDetails } = await useAsyncData('notification-management-community-details', () =>
+  queryCollection('communities').select('path', 'title', 'region').all(),
+)
+const communityGroups = computed(() => {
+  const details = new Map((communityDetails.value ?? []).map(community => [community.path.replace(/^\//, ''), community]))
+  const groups = new Map<string, Community[]>()
+  for (const community of currentCommunities.value) {
+    const detail = details.get(community.slug)
+    const region = detail ? (Array.isArray(detail.region) ? [...detail.region].sort((a, b) => a.localeCompare(b, 'cs')).join(' / ') : detail.region) : 'Ostatní komunity'
+    const entries = groups.get(region) ?? []
+    entries.push({ ...community, title: detail?.title ?? community.title })
+    groups.set(region, entries)
+  }
+  return [...groups].sort(([a], [b]) => a.localeCompare(b, 'cs')).map(([region, communities]) => ({
+    region,
+    communities: communities.sort((a, b) => a.title.localeCompare(b.title, 'cs')),
+  }))
+})
 
 const frequencySummary = (frequencies: Frequency[]) => frequencies
   .map(frequency => frequencyChoices.find(choice => choice.value === frequency)?.label)
@@ -201,7 +223,19 @@ const reactivate = async () => {
 
 const focusStopTrigger = () => stopTrigger.value?.$el.focus()
 
-onMounted(() => heading.value?.focus())
+onMounted(async () => {
+  heading.value?.focus()
+  if (route.params.token !== 'browser' && result.value?.state !== 'unavailable' && result.value?.channel === 'web-push') {
+    try {
+      // SSR's internal read cannot set a browser cookie. Redeem the valid link
+      // in this browser, then remove its bearer from the visible URL.
+      const management = await $fetch<ManagementResult>(`/api/notifications/manage/${encodeURIComponent(String(route.params.token))}`, { cache: 'no-store', retry: 0 })
+      if (management.state !== 'unavailable' && management.channel === 'web-push') await navigateTo('/notifications/manage/browser', { replace: true })
+    } catch {
+      errorMessage.value = 'Přístup se nepodařilo zapamatovat pro tento prohlížeč. Tento odkaz můžeš dál používat ke správě.'
+    }
+  }
+})
 </script>
 
 <template>
@@ -211,10 +245,17 @@ onMounted(() => heading.value?.focus())
       <UAlert color="success" title="Odběr v tomto kanálu je ukončený. Další upozornění ti už nepošleme." role="status" />
     </template>
 
+    <template v-else-if="managementStatus === 'pending' || managementStatus === 'idle'">
+      <h1 ref="heading" tabindex="-1" class="text-xl font-semibold leading-tight">Správa notifikací</h1>
+      <p role="status">Načítáme nastavení tohoto prohlížeče…</p>
+    </template>
+
     <template v-else-if="!isAvailable">
       <h1 ref="heading" tabindex="-1" class="text-xl font-semibold leading-tight">Odkaz pro správu není dostupný</h1>
-      <p class="text-muted">Zkontroluj celý odkaz nebo si nech poslat nový odkaz pro správu.</p>
-      <section class="space-y-4" aria-labelledby="recovery-heading">
+      <p v-if="route.params.token === 'browser'" class="text-muted">V tomto prohlížeči chybí platný přístup ke správě. Povolená oznámení ho nenahrazují. Otevři webové notifikace a nech si poslat nový odkaz; jeho otevření obnoví přístup.</p>
+      <p v-else class="text-muted">Zkontroluj celý odkaz nebo si nech poslat nový odkaz pro správu.</p>
+      <UButton v-if="route.params.token === 'browser'" to="/kalendar" color="neutral" variant="outline">Otevřít webové notifikace a obnovit přístup</UButton>
+      <section v-if="route.params.token !== 'browser'" class="space-y-4" aria-labelledby="recovery-heading">
         <h2 id="recovery-heading" class="text-lg font-semibold">Nechat si poslat nový odkaz</h2>
         <UForm class="space-y-4" @submit="requestRecovery">
           <UFormField name="channel" label="Kanál">
@@ -235,7 +276,7 @@ onMounted(() => heading.value?.focus())
 
     <template v-else>
       <header class="space-y-2">
-        <h1 ref="heading" tabindex="-1" class="text-xl font-semibold leading-tight">Správa upozornění</h1>
+        <h1 ref="heading" tabindex="-1" class="text-xl font-semibold leading-tight">Správa notifikací</h1>
         <div class="flex flex-wrap items-center gap-2">
           <p class="min-w-0 break-words text-muted">{{ result && 'maskedContact' in result ? result.maskedContact : '' }}</p>
           <UBadge color="neutral" variant="subtle">{{ channelLabel }}</UBadge>
@@ -252,35 +293,38 @@ onMounted(() => heading.value?.focus())
         <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isReactivating" :disabled="isReactivating" @click="reactivate">Znovu aktivovat odběr</UButton>
       </section>
 
-      <section v-else class="space-y-2" aria-label="Nastavení komunit">
-        <UCollapsible v-for="community in currentCommunities" :key="community.slug" :data-community-slug="community.slug" class="border-b border-default py-2">
-          <template #default="{ open }">
-            <button type="button" class="flex min-h-11 w-full min-w-0 flex-col items-start gap-1 rounded-md px-2 py-2 text-left hover:bg-elevated focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:flex-row sm:items-center sm:justify-between">
-              <span class="min-w-0 break-words font-semibold">{{ community.title }}</span>
-              <span class="min-w-0 break-words text-sm text-muted">{{ frequencySummary(community.frequencies) }}</span>
-              <span class="sr-only">{{ open ? 'Skrýt nastavení komunity' : 'Zobrazit nastavení komunity' }}</span>
-            </button>
-          </template>
-          <template #content>
-            <div class="space-y-4 px-2 py-4">
-              <div class="space-y-3">
-                <UCheckbox
-                  v-for="choice in frequencyChoices"
-                  :key="choice.value"
-                  :model-value="draftFrequencies(community).includes(choice.value)"
-                  :label="choice.label"
-                  :disabled="pendingRows.has(community.slug)"
-                  @update:model-value="checked => toggleDraftFrequency(community, choice.value, checked)"
-                />
+      <section v-else class="space-y-6" aria-label="Nastavení komunit">
+        <section v-for="group in communityGroups" :key="group.region" :aria-label="group.region" class="space-y-2">
+          <h2 class="text-lg font-semibold">{{ group.region }}</h2>
+          <UCollapsible v-for="community in group.communities" :key="community.slug" :data-community-slug="community.slug" class="border-b border-default py-2">
+            <template #default="{ open }">
+              <button type="button" class="flex min-h-11 w-full min-w-0 flex-col items-start gap-1 rounded-md px-2 py-2 text-left hover:bg-elevated focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary sm:flex-row sm:items-center sm:justify-between">
+                <span class="min-w-0 break-words font-semibold">{{ community.title }}</span>
+                <span class="min-w-0 break-words text-sm text-muted">{{ frequencySummary(community.frequencies) }}</span>
+                <span class="sr-only">{{ open ? 'Skrýt nastavení komunity' : 'Zobrazit nastavení komunity' }}</span>
+              </button>
+            </template>
+            <template #content>
+              <div class="space-y-4 px-2 py-4">
+                <div class="space-y-3">
+                  <UCheckbox
+                    v-for="choice in frequencyChoices"
+                    :key="choice.value"
+                    :model-value="draftFrequencies(community).includes(choice.value)"
+                    :label="choice.label"
+                    :disabled="pendingRows.has(community.slug)"
+                    @update:model-value="checked => toggleDraftFrequency(community, choice.value, checked)"
+                  />
+                </div>
+                <p v-if="!draftFrequencies(community).length" class="text-sm text-error" role="alert">Vyber alespoň jednu frekvenci.</p>
+                <div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                  <UButton color="neutral" variant="outline" class="min-h-11 w-full sm:w-auto" :loading="pendingRows.has(community.slug)" :disabled="pendingRows.has(community.slug) || !draftFrequencies(community).length" @click="saveCommunity(community, draftFrequencies(community))">Uložit změny</UButton>
+                  <UButton color="neutral" variant="link" class="min-h-11 w-full sm:w-auto" :disabled="pendingRows.has(community.slug)" @click="removeCommunity(community)">Odebrat komunitu</UButton>
+                </div>
               </div>
-              <p v-if="!draftFrequencies(community).length" class="text-sm text-error" role="alert">Vyber alespoň jednu frekvenci.</p>
-              <div class="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
-                <UButton color="neutral" variant="outline" class="min-h-11 w-full sm:w-auto" :loading="pendingRows.has(community.slug)" :disabled="pendingRows.has(community.slug) || !draftFrequencies(community).length" @click="saveCommunity(community, draftFrequencies(community))">Uložit změny</UButton>
-                <UButton color="neutral" variant="link" class="min-h-11 w-full sm:w-auto" :disabled="pendingRows.has(community.slug)" @click="removeCommunity(community)">Odebrat komunitu</UButton>
-              </div>
-            </div>
-          </template>
-        </UCollapsible>
+            </template>
+          </UCollapsible>
+        </section>
       </section>
 
       <section class="space-y-4 border-t border-default pt-6">

@@ -6,7 +6,7 @@ export type EventEmailReason = 'created' | 'week-before' | 'day-before'
 
 const encoder = new TextEncoder()
 const parts = (date: Date) => Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
+  timeZone: 'Europe/Prague', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hourCycle: 'h23',
 }).formatToParts(date).filter(part => part.type !== 'literal').map(part => [part.type, part.value])) as Record<string, string>
 const base64Url = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
 const buffer = (value: Uint8Array) => value as unknown as BufferSource
@@ -16,7 +16,7 @@ const defaultCrypto = (): NotificationCrypto => ({ randomBytes: length => crypto
 export const dueEventEmailReasons = (event: Pick<PortalCalendarEvent, 'event' | 'cancelled'>, now: Date): EventEmailReason[] => {
   if (event.cancelled || Date.parse(event.event.start) <= now.getTime()) return []
   const current = parts(now)
-  if (current.hour !== '09') return []
+  if (Number(current.hour) < 9) return []
   const start = parts(new Date(event.event.start))
   const day = 86_400_000
   const currentDay = Date.UTC(Number(current.year), Number(current.month) - 1, Number(current.day))
@@ -50,8 +50,7 @@ export const planEventNotifications = async (events: PortalCalendarEvent[], depe
   const enabled = {
     email: emailPlanningEnabled,
     sms: smsPlanningEnabled && dependencies.config.eventSmsOutboxSupported,
-    'web-push': dependencies.config.webPushEnabled && dependencies.config.webPushEventDeliveryReady
-      && dependencies.config.webPushDeliveryReady && dependencies.config.eventWebPushOutboxSupported === true,
+    'web-push': dependencies.config.webPushDeliveryReady && dependencies.config.eventWebPushOutboxSupported === true,
   }
   const database = dependencies.database
   const cryptoApi = dependencies.crypto ?? defaultCrypto()
@@ -93,10 +92,11 @@ export const planEventNotifications = async (events: PortalCalendarEvent[], depe
       : 'NOT EXISTS (SELECT 1 FROM notification_event_state WHERE event_key = ?)') + ` AND ${snapshotGuard}`
     const stateValues = [...(previous ? [eventKey, previous.notification_revision, previous.updated_at] : [eventKey]), ...snapshotValues]
     const writes: NotificationStatement[] = []
+    const retirementWrites: NotificationStatement[] = []
     const insertedOutboxes: Array<{ index: number, channel: ActiveRecipient['channel'] }> = []
     if (materialChanged) {
-      writes.push(database.prepare(`UPDATE notification_outbox SET version = version + 1, status = 'invalidated', payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE kind IN ('event-email', 'event-sms', 'event-web-push') AND status IN ('pending', 'queued', 'claimed') AND EXISTS (SELECT 1 FROM notification_event_deliveries d WHERE d.event_uid = ? AND d.event_revision < ? AND (notification_outbox.id = 'event-' || d.id OR substr(notification_outbox.id, 1, length('event-' || d.id || '-g')) = 'event-' || d.id || '-g')) AND ${stateGuard}`).bind(timestamp, timestamp, uid, revision, ...stateValues))
-      writes.push(database.prepare(`UPDATE notification_event_deliveries SET status = 'failed', updated_at = ? WHERE event_uid = ? AND event_revision < ? AND status = 'pending' AND ${stateGuard}`).bind(timestamp, uid, revision, ...stateValues))
+      retirementWrites.push(database.prepare(`UPDATE notification_outbox SET version = version + 1, status = 'invalidated', payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE kind IN ('event-email', 'event-sms', 'event-web-push') AND status IN ('pending', 'queued', 'claimed') AND EXISTS (SELECT 1 FROM notification_event_deliveries d WHERE d.event_uid = ? AND d.event_revision < ? AND (notification_outbox.id = 'event-' || d.id OR substr(notification_outbox.id, 1, length('event-' || d.id || '-g')) = 'event-' || d.id || '-g')) AND ${stateGuard}`).bind(timestamp, timestamp, uid, revision, ...stateValues))
+      retirementWrites.push(database.prepare(`UPDATE notification_event_deliveries SET status = 'failed', updated_at = ? WHERE event_uid = ? AND event_revision < ? AND status = 'pending' AND ${stateGuard}`).bind(timestamp, uid, revision, ...stateValues))
     }
     for (const channel of ['email', 'sms', 'web-push'] as const) if (!enabled[channel]) {
       const kind = `event-${channel}`
@@ -108,6 +108,15 @@ export const planEventNotifications = async (events: PortalCalendarEvent[], depe
     const startLocalDay = Date.UTC(Number(startDay.year), Number(startDay.month) - 1, Number(startDay.day))
     const localNow = parts(now)
     const localNowDay = Date.UTC(Number(localNow.year), Number(localNow.month) - 1, Number(localNow.day))
+    const carriedReasons = new Map<number, Set<EventEmailReason>>()
+    if (materialChanged && previous) {
+      const { results: pending } = await database.prepare(`SELECT d.contact_id, d.reason FROM notification_event_deliveries d WHERE d.event_uid = ? AND d.event_revision = ? AND d.status = 'pending' AND d.submitted_at IS NULL AND d.reason IN ('created', 'week-before', 'day-before') AND EXISTS (SELECT 1 FROM notification_outbox o WHERE o.status IN ('pending', 'queued', 'claimed') AND (o.id = 'event-' || d.id OR substr(o.id, 1, length('event-' || d.id || '-g')) = 'event-' || d.id || '-g'))`).bind(uid, previous.notification_revision).all<{ contact_id: number, reason: EventEmailReason }>()
+      for (const row of pending) {
+        const reasons = carriedReasons.get(row.contact_id) ?? new Set<EventEmailReason>()
+        reasons.add(row.reason)
+        carriedReasons.set(row.contact_id, reasons)
+      }
+    }
     for (const { recipient, selected } of recipients.values()) {
       const reasons = new Set<DeliveryReason>()
       if (!item.cancelled && Date.parse(projection.start) > now.getTime()) {
@@ -123,13 +132,17 @@ export const planEventNotifications = async (events: PortalCalendarEvent[], depe
       // Recovery is for unsent ledger work only, never a reason to resend terminal/submitted work.
       const pending = await database.prepare("SELECT reason FROM notification_event_deliveries WHERE contact_id = ? AND event_uid = ? AND event_revision = ? AND status = 'pending' AND submitted_at IS NULL AND (expected_capability_generation <> ? OR community_slug IS NULL OR eligibility_frequency IS NULL)").bind(recipient.id, uid, revision, recipient.capability_generation).all<{ reason: DeliveryReason }>()
       for (const row of pending.results) if (row.reason === 'cancelled' || (!item.cancelled && Date.parse(projection.start) > now.getTime())) reasons.add(row.reason)
+      const independentlyEligibleReasons = new Set(reasons)
+      for (const reason of carriedReasons.get(recipient.id) ?? []) if (!item.cancelled && Date.parse(projection.start) > now.getTime()) reasons.add(reason)
       for (const reason of reasons) {
         const revisionReason = reason === 'updated' || reason === 'cancelled'
         const elapsed = selected.filter(frequency => frequency !== 'created' && (localNowDay > startLocalDay - (frequency === 'week-before' ? 7 : 1) * 86_400_000 || (localNowDay === startLocalDay - (frequency === 'week-before' ? 7 : 1) * 86_400_000 && Number(localNow.hour) > 9)))
         const allowed = revisionReason ? selected.slice(0, 1) : reason === 'created' ? (selected.includes('created') ? ['created'] : elapsed.slice(0, 1)) : selected.filter(frequency => frequency === reason)
         if (!allowed.length) continue
-        const authority = `EXISTS (SELECT 1 FROM notification_contacts c JOIN notification_subscriptions s ON s.contact_id = c.id WHERE c.id = ? AND c.channel = ? AND c.state = 'active' AND c.capability_generation = ? AND c.destination = ? AND s.community_slug = ? AND s.frequency IN (${allowed.map(() => '?').join(',')}) AND NOT EXISTS (SELECT 1 FROM notification_suppressions x WHERE x.channel = c.channel AND x.destination_hash = c.destination_hash))${revisionReason ? " AND EXISTS (SELECT 1 FROM notification_event_deliveries WHERE contact_id = ? AND event_uid = ? AND status IN ('submitted', 'delivered'))" : ''} AND ${stateGuard}`
-        const authorityValues = [recipient.id, recipient.channel, recipient.capability_generation, recipient.destination, item.community.id, ...allowed, ...(revisionReason ? [recipient.id, uid] : []), ...stateValues]
+        const carryOnly = !revisionReason && carriedReasons.get(recipient.id)?.has(reason as EventEmailReason) && !independentlyEligibleReasons.has(reason)
+        const carryGuard = carryOnly ? " AND EXISTS (SELECT 1 FROM notification_event_deliveries carry WHERE carry.contact_id = ? AND carry.event_uid = ? AND carry.event_revision = ? AND carry.reason = ? AND carry.status = 'pending' AND carry.submitted_at IS NULL AND EXISTS (SELECT 1 FROM notification_outbox o WHERE o.status IN ('pending', 'queued', 'claimed') AND (o.id = 'event-' || carry.id OR substr(o.id, 1, length('event-' || carry.id || '-g')) = 'event-' || carry.id || '-g')))" : ''
+        const authority = `EXISTS (SELECT 1 FROM notification_contacts c JOIN notification_subscriptions s ON s.contact_id = c.id WHERE c.id = ? AND c.channel = ? AND c.state = 'active' AND c.capability_generation = ? AND c.destination = ? AND s.community_slug = ? AND s.frequency IN (${allowed.map(() => '?').join(',')}) AND NOT EXISTS (SELECT 1 FROM notification_suppressions x WHERE x.channel = c.channel AND x.destination_hash = c.destination_hash))${revisionReason ? " AND EXISTS (SELECT 1 FROM notification_event_deliveries WHERE contact_id = ? AND event_uid = ? AND status IN ('submitted', 'delivered'))" : ''}${carryGuard} AND ${stateGuard}`
+        const authorityValues = [recipient.id, recipient.channel, recipient.capability_generation, recipient.destination, item.community.id, ...allowed, ...(revisionReason ? [recipient.id, uid] : []), ...(carryOnly ? [recipient.id, uid, previous!.notification_revision, reason] : []), ...stateValues]
         const deliveryId = await digest(`delivery:${recipient.id}:${uid}:${revision}:${reason}`, cryptoApi)
         const planningEnabled = enabled[recipient.channel]
         const kind = `event-${recipient.channel}`
@@ -137,7 +150,11 @@ export const planEventNotifications = async (events: PortalCalendarEvent[], depe
         writes.push(database.prepare(`UPDATE notification_event_deliveries SET channel = ?, community_slug = ?, eligibility_frequency = ?, expected_capability_generation = ?, status = ?, updated_at = ? WHERE id = ? AND status = 'pending' AND submitted_at IS NULL AND (expected_capability_generation <> ? OR community_slug IS NULL OR eligibility_frequency IS NULL) AND ${authority}`).bind(recipient.channel, item.community.id, allowed[0], recipient.capability_generation, planningEnabled ? 'pending' : 'failed', timestamp, deliveryId, recipient.capability_generation, ...authorityValues))
         if (!planningEnabled) continue
         const capability = base64Url(cryptoApi.randomBytes(32))
-        const encrypted = await encrypt({ destination: recipient.destination, deliveryId, managementCapability: capability, event: { ...projection, uid, sequence: revision, cancelled: item.cancelled }, reason, kind }, dependencies.config, cryptoApi)
+        const smsDetails = recipient.channel === 'sms' ? {
+          location: [...new Set([item.event.osm_name, item.event.osm_address, item.event.location].map(value => value?.trim()).filter((value): value is string => Boolean(value)))].join(', '),
+          communityUrl: `https://jednadvacet.org/${encodeURIComponent(item.community.id)}`,
+        } : {}
+        const encrypted = await encrypt({ destination: recipient.destination, deliveryId, managementCapability: capability, event: { ...projection, ...smsDetails, uid, sequence: revision, cancelled: item.cancelled }, reason, kind }, dependencies.config, cryptoApi)
         const outboxId = `event-${deliveryId}-g${recipient.capability_generation}`
         const ledgerGuard = "EXISTS (SELECT 1 FROM notification_event_deliveries WHERE id = ? AND status = 'pending' AND submitted_at IS NULL AND expected_capability_generation = ?)"
         writes.push(database.prepare(`UPDATE notification_outbox SET version = version + 1, status = 'invalidated', payload_ciphertext = NULL, payload_iv = NULL, claim_token = NULL, claim_expires_at = NULL, updated_at = ?, terminal_at = ? WHERE (id = ? OR substr(id, 1, length(?)) = ?) AND expected_capability_generation <> ? AND status IN ('pending', 'queued', 'claimed') AND ${authority}`).bind(timestamp, timestamp, `event-${deliveryId}`, `event-${deliveryId}-g`, `event-${deliveryId}-g`, recipient.capability_generation, ...authorityValues))
@@ -147,6 +164,7 @@ export const planEventNotifications = async (events: PortalCalendarEvent[], depe
         writes.push(database.prepare('INSERT INTO notification_management_capabilities (token_digest, contact_id, expected_capability_generation, created_at, expires_at) SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM notification_outbox WHERE id = ? AND payload_ciphertext = ?)').bind(await digest(capability, cryptoApi), recipient.id, recipient.capability_generation, timestamp, expiresAt, outboxId, encrypted.ciphertext))
       }
     }
+    writes.push(...retirementWrites)
     if (previous) writes.push(database.prepare(`UPDATE notification_event_state SET starts_at = ?, ends_at = ?, venue = ?, cancelled = ?, notification_revision = ?, updated_at = ? WHERE event_key = ? AND ${stateGuard}`).bind(projection.start, projection.end, venue, Number(item.cancelled), revision, sourceTime, eventKey, ...stateValues))
     else writes.push(database.prepare(`INSERT INTO notification_event_state (event_key, uid, starts_at, ends_at, venue, cancelled, notification_revision, updated_at) SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE ${stateGuard}`).bind(eventKey, uid, projection.start, projection.end, venue, Number(item.cancelled), revision, sourceTime, ...stateValues))
     const committed = await database.batch(writes) as { meta?: { changes?: number } }[]

@@ -55,7 +55,7 @@ if [[ -z "${1:-}" || "${1:-}" == '--config-isolation' ]]; then
   # and Wrangler auth profiles cannot enter either build or local execution.
   clean_env=(env -i "PATH=$PATH" "HOME=$evidence_dir/home" "TMPDIR=$evidence_dir" NODE_ENV=production NODE_USE_ENV_PROXY=1 HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 CLOUDFLARE_CF_FETCH_ENABLED=false WRANGLER_SEND_METRICS=false)
   while IFS= read -r variable; do clean_env+=("$variable"); done < <(node --input-type=module <<'JS'
-import { randomBytes, generateKeyPairSync, createHash } from 'node:crypto'
+import { randomBytes, generateKeyPairSync } from 'node:crypto'
 const pair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
 const key = pair.privateKey.export({ format: 'jwk' })
 const publicKey = Buffer.concat([Buffer.from([4]), Buffer.from(key.x, 'base64url'), Buffer.from(key.y, 'base64url')]).toString('base64url')
@@ -66,32 +66,17 @@ const vars = {
   NUXT_NOTIFICATION_VAPID_SUBJECT: 'mailto:synthetic@example.test',
   NUXT_BREVO_API_KEY: 'synthetic-api-' + randomBytes(24).toString('hex'),
   NUXT_BREVO_CALLBACK_SECRET: 'synthetic-callback-' + randomBytes(24).toString('hex'),
-  NUXT_NOTIFICATION_EMAIL_EVIDENCE: 'synthetic-email-' + randomBytes(24).toString('hex'),
-  NUXT_NOTIFICATION_SMS_EVIDENCE: 'synthetic-sms-' + randomBytes(24).toString('hex'),
-  NUXT_NOTIFICATION_WEB_PUSH_EVIDENCE: 'synthetic-push-' + randomBytes(24).toString('hex'),
   NUXT_NOTIFICATION_TURNSTILE_SECRET: 'synthetic-turnstile-' + randomBytes(24).toString('hex'),
   NUXT_NOTIFICATION_TURNSTILE_EXPECTED_HOSTNAME: 'example.test',
-  NUXT_NOTIFICATION_COMMUNITY_SLUGS: 'brno', NUXT_NOTIFICATION_CONSENT_VERSION: '2026-09',
-  NUXT_NOTIFICATION_UI_VERIFICATION_FIXTURE: 'true',
-  NUXT_PUBLIC_NOTIFICATION_TURNSTILE_SITE_KEY: 'notification-ui-verification-site-key',
+  NUXT_PUBLIC_NOTIFICATION_TURNSTILE_SITE_KEY: 'synthetic-notification-site-key',
   NUXT_NOTIFICATION_EMAIL_SMS_ENABLED: 'true', NUXT_NOTIFICATION_EMAIL_SMS_FIRST_MESSAGE_READY: 'true', NUXT_NOTIFICATION_EMAIL_SMS_EVENT_DELIVERY_READY: 'true', NUXT_NOTIFICATION_EMAIL_MANUAL_ENABLED: 'true',
   NUXT_NOTIFICATION_SMS_ENABLED: 'true', NUXT_NOTIFICATION_SMS_FIRST_MESSAGE_READY: 'true', NUXT_NOTIFICATION_SMS_EVENT_DELIVERY_READY: 'true',
-  NUXT_NOTIFICATION_WEB_PUSH_ENABLED: 'true', NUXT_NOTIFICATION_WEB_PUSH_FIRST_MESSAGE_READY: 'true', NUXT_NOTIFICATION_WEB_PUSH_EVENT_DELIVERY_READY: 'true',
-  NUXT_BREVO_SENDER_NAME: 'Jednadvacet', NUXT_BREVO_SENDER_EMAIL: 'noreply@jednadvacet.org',
+  NUXT_BREVO_SENDER_NAME: 'Jednadvacet', NUXT_BREVO_SMS_SENDER: 'Jednadvacet', NUXT_BREVO_SENDER_EMAIL: 'noreply@jednadvacet.org',
   // Old asserted gates are also true: their defaults must not explain rejection.
   NUXT_BREVO_SENDER_VERIFIED: 'true', NUXT_BREVO_SPF_VERIFIED: 'true', NUXT_BREVO_DKIM_VERIFIED: 'true', NUXT_BREVO_DMARC_VERIFIED: 'true', NUXT_BREVO_CALLBACK_VERIFIED: 'true',
   NUXT_BREVO_SANDBOX_VERIFIED: 'true', NUXT_BREVO_LIVE_CANARY_VERIFIED: 'true', NUXT_NOTIFICATION_PRODUCTION_BINDINGS_VERIFIED: 'true', NUXT_NOTIFICATION_MIGRATION_VERIFIED: 'true',
   NOTIFICATION_SYNTHETIC_PUSH_CONTACT: JSON.stringify({ endpoint: 'https://push.example.test/local-proof', expirationTime: null, keys: { p256dh: publicKey, auth: randomBytes(16).toString('base64url') } }),
 }
-// Structurally complete local attestations must be rejected because of kind,
-// rather than merely because invalid JSON or missing prerequisite fields fail.
-const identities = { targetIdentity: '1'.repeat(64), bundleHash: '2'.repeat(64), migrationHash: '3'.repeat(64), configHash: '4'.repeat(64), deploymentId: '11111111-1111-1111-1111-111111111111' }
-for (const [field, value] of Object.entries(identities)) vars[`NUXT_NOTIFICATION_EXPECTED_${field.replace(/[A-Z]/g, letter => `_${letter}`).toUpperCase()}`] = value
-for (const [channel, field, material, gates] of [
-  ['email', 'EMAIL', [vars.NUXT_NOTIFICATION_ROOT_KEY, vars.NUXT_BREVO_API_KEY, vars.NUXT_BREVO_CALLBACK_SECRET, vars.NUXT_BREVO_SENDER_NAME, vars.NUXT_BREVO_SENDER_EMAIL], ['sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs']],
-  ['sms', 'SMS', [vars.NUXT_NOTIFICATION_ROOT_KEY, vars.NUXT_BREVO_API_KEY, vars.NUXT_BREVO_SENDER_NAME], ['sender', 'account', 'credits', 'country', 'compliance', 'sharedManagementStop']],
-  ['web-push', 'WEB_PUSH', [vars.NUXT_NOTIFICATION_ROOT_KEY, key.d, publicKey, vars.NUXT_NOTIFICATION_VAPID_SUBJECT], ['vapid', 'protocol', 'interoperability', 'browser:chromium', 'sharedManagementStop']],
-]) vars[`NUXT_NOTIFICATION_${field}_EVIDENCE`] = JSON.stringify({ ...identities, channel, evidenceKind: 'local-candidate', mode: 'readiness', manualSwitch: true, verifiedAt: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString(), keyHash: createHash('sha256').update(JSON.stringify(material)).digest('hex'), interoperability: ['chromium'], gates: Object.fromEntries(['artifacts', 'deployment', 'bindings', 'migration', 'firstMessage', 'eventDelivery', 'liveCanary', ...gates].map(gate => [gate, 'passed'])) })
 for (const [name, value] of Object.entries(vars)) console.log(`${name}=${value}`)
 JS
   )
@@ -112,6 +97,7 @@ JS
     then echo "$profile build contains errors; retaining the actual artifact for diagnosis, not a passing build." >&2; fi
     if [[ ${#layer_args[@]} -eq 0 ]]; then cp -a .output "$evidence_dir/$profile/output"; fi
     [[ -f "$evidence_dir/$profile/output/server/wrangler.json" ]] || { echo 'Actual generated Wrangler JSON missing.' >&2; exit 1; }
+    "${clean_env[@]}" TMPDIR="$evidence_dir" node --experimental-strip-types scripts/verify-notification-migration.ts --bundle-contract "$evidence_dir/$profile/output/server/wrangler.json" >"$evidence_dir/$profile/migration-bundle-contract.log" 2>&1
   done
   "${clean_env[@]}" NOTIFICATION_CONFIG_ISOLATION=true "NOTIFICATION_PRODUCTION_CONFIG=$evidence_dir/production/output/server/wrangler.json" "NOTIFICATION_PREVIEW_CONFIG=$evidence_dir/preview/output/server/wrangler.json" node --experimental-strip-types --test --test-name-pattern='generated notification configuration' tests/emailDeliveryOperations.test.ts >"$evidence_dir/generated-config-tests.log" 2>&1
   for profile in production preview; do
@@ -126,7 +112,7 @@ JS
     done
     # Bind the same owned synthetic inputs inside workerd, not just the Node
     # launcher. Keep canonical generated config and its bindings unchanged.
-    "${clean_env[@]}" "NOTIFICATION_CANONICAL_CONFIG=$evidence_dir/$profile/output/server/wrangler.json" node --input-type=module <<'JS'
+    "${clean_env[@]}" "NOTIFICATION_PROFILE=$profile" "NOTIFICATION_CANONICAL_CONFIG=$evidence_dir/$profile/output/server/wrangler.json" node --input-type=module <<'JS'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
@@ -134,6 +120,11 @@ const path = process.env.NOTIFICATION_CANONICAL_CONFIG
 const canonical = readFileSync(path)
 const config = JSON.parse(canonical)
 const vars = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith('NUXT_')))
+// Both builds use credentials rather than operator evidence. This no-send
+// profile disables email/SMS and omits private VAPID material intentionally.
+if (process.env.NOTIFICATION_PROFILE === 'preview') vars.NUXT_NOTIFICATION_TURNSTILE_EXPECTED_HOSTNAME = 'preview-isolation.workers.dev'
+for (const name of ['EMAIL_SMS_ENABLED', 'EMAIL_MANUAL_ENABLED', 'SMS_ENABLED']) vars[`NUXT_NOTIFICATION_${name}`] = 'false'
+vars.NUXT_NOTIFICATION_VAPID_PRIVATE_KEY = ''
 const runtime = { ...config, vars: { ...config.vars, ...vars } }
 const overlay = JSON.stringify(runtime, null, 2)
 writeFileSync(join(dirname(path), 'wrangler.local.json'), overlay, { mode: 0o600 })
@@ -177,17 +168,17 @@ assert.deepEqual(await readiness.json(), { email: false, sms: false, webPush: fa
 let requester = 1
 const headers = () => ({ 'content-type': 'application/json', 'CF-Connecting-IP': `192.0.2.${requester++}` })
 for (const channel of ['email', 'sms', 'web-push']) {
-  const body = { channel, contact: channel === 'email' ? 'guide@example.test' : channel === 'sms' ? '+420777123456' : JSON.parse(process.env.NOTIFICATION_SYNTHETIC_PUSH_CONTACT), communitySlugs: ['brno'], frequencies: ['created'], consentAt: '2026-10-04', consentVersion: '2026-09', turnstileToken: 'notification-ui-verification-token' }
+  // First requests use the real low-volume token-free allowance. A synthetic
+  // Turnstile token is invalid in a production bundle and stops earlier at 403.
+  const body = { channel, contact: channel === 'email' ? 'guide@example.test' : channel === 'sms' ? '+420777123456' : JSON.parse(process.env.NOTIFICATION_SYNTHETIC_PUSH_CONTACT), communitySlugs: ['brno'], frequencies: ['created'], consentAt: '2026-10-04' }
   const activation = await fetch(`${base}/api/notifications/activate`, { method: 'POST', headers: headers(), body: JSON.stringify(body) })
   assert.equal(activation.status, 503, 'valid native/contact requests must fail the readiness gate')
   safe(await activation.text())
-  const results = []
-  for (const token of [undefined, 'notification-ui-verification-token']) {
+  for (const token of [undefined, 'synthetic-invalid-token']) {
     const recovery = await fetch(`${base}/api/notifications/manage-request`, { method: 'POST', headers: headers(), body: JSON.stringify({ channel, contact: body.contact, turnstileToken: token }) })
-    assert.equal(recovery.status, 202)
-    const text = await recovery.text(); safe(text); results.push(text)
+    assert.equal(recovery.status, token ? 403 : 202, 'an arbitrary invalid token must not bypass real verification')
+    safe(await recovery.text())
   }
-  assert.equal(results[0], results[1])
 }
 for (const token of ['notification-ui-management-active', 'notification-ui-management-pending-reactivation', 'notification-ui-management-stopped', 'notification-ui-management-old', 'notification-ui-management-unavailable', 'malformed', 'A'.repeat(43)]) {
   const response = await fetch(`${base}/api/notifications/manage/${token}`)
@@ -209,7 +200,7 @@ assert.equal(result.success, true)
 const data = JSON.parse(result.data.result)
 assert.equal(data.public.notificationVapidPublicKey, process.env.NUXT_PUBLIC_NOTIFICATION_VAPID_PUBLIC_KEY)
 for (const [name, value] of Object.entries(process.env)) if (name.startsWith('NUXT_') && !name.startsWith('NUXT_PUBLIC_') && value.length > 24) assert.ok(!JSON.stringify(data).includes(value), name)
-for (const key of ['notificationRootKey', 'notificationVapidPrivateKey', 'brevoApiKey', 'brevoCallbackSecret', 'notificationEmailEvidence', 'notificationSmsEvidence', 'notificationWebPushEvidence']) {
+for (const key of ['notificationRootKey', 'notificationVapidPrivateKey', 'brevoApiKey', 'brevoCallbackSecret']) {
   assert.equal(key in data.public, false, key)
   assert.ok(!data.html.includes(`"${key}"`), 'private property serialized in SSR/hydrated HTML')
 }

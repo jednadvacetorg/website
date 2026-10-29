@@ -31,56 +31,37 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build (Cloudflare Workers, preview bindings)
+      - name: Build preview profile
         env:
-          # Drops the prod D1 id so the temp account provisions its own fresh DB.
           PREVIEW_DEPLOY: "1"
           NODE_OPTIONS: --max-old-space-size=4096
-        run: npm run build
+        run: npm run build:cloudflare
 
-      - name: Deploy to temporary Cloudflare account
+      - name: Validate isolated preview bindings
+        run: |
+          node --experimental-strip-types --input-type=module <<'JS'
+          import { readFile } from 'node:fs/promises'
+          import { validatePreviewConfiguration } from './scripts/deploy-preview.ts'
+          validatePreviewConfiguration(JSON.parse(await readFile('.output/server/wrangler.json', 'utf8')))
+          JS
+
+      # Wrangler's supported temporary-account flow can provision the generated
+      # bindings, but it does not expose credentials to NuxtHub's native D1 migration
+      # CLI. Keep this pre-existing browser preview working while the full refresh
+      # lifecycle remains explicitly blocked in the deployment script.
+      - name: Deploy temporary browser preview
         id: deploy
         run: |
           set -euo pipefail
-
-          # Guard: preview build must not contain production data bindings.
-          if grep -q "76d271b2-5335-40ba-81dd-bf7e1ef79522" .output/server/wrangler.json; then
-            echo "::error::Preview build leaked the production D1 database_id. Aborting."
-            exit 1
-          fi
-          if grep -qE "PORTAL_EVENT_SNAPSHOTS|5e0aa50166db40ae8414c83614dbae4d" .output/server/wrangler.json; then
-            echo "::error::Preview build leaked the production Portal KV binding. Aborting."
-            exit 1
-          fi
-          if grep -qE 'files-jednadvacet-org|"binding": "BLOB"' .output/server/wrangler.json; then
-            echo "::error::Preview build leaked the production community-map R2 binding. Aborting."
-            exit 1
-          fi
-          # Deploy from repo root so wrangler follows Nuxt's redirect config.
-          set +e
-          npx wrangler deploy --temporary 2>&1 | tee deploy.log
-          status=${PIPESTATUS[0]}
-          set -e
-          if [ "$status" -ne 0 ]; then
-            echo "::error::wrangler deploy --temporary failed (exit $status)."
-            exit "$status"
-          fi
-
-          # Mask the claim URL (bearer credential) out of public logs.
-          claim_url="$(grep -oE 'https://dash\.cloudflare\.com/claim-preview[^[:space:]]*' deploy.log | head -n1 || true)"
-          if [ -n "$claim_url" ]; then
-            echo "::add-mask::$claim_url"
-          fi
-
-          preview_url="$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev[^[:space:]]*' deploy.log | grep -v 'claim-preview' | head -n1 || true)"
-
+          raw_log="$(mktemp)"
+          trap 'rm -f "$raw_log"' EXIT
+          npx wrangler deploy --temporary --keep-vars --config .output/server/wrangler.json >"$raw_log" 2>&1
+          preview_url="$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev[^[:space:]]*' "$raw_log" | head -n1 || true)"
           if [ -z "$preview_url" ]; then
-            echo "::error::Could not parse a preview URL from wrangler output."
+            echo '::error::Temporary deployment did not provide a public Worker URL.'
             exit 1
           fi
-
-          echo "Preview URL: $preview_url"
-          echo "preview_url=$preview_url" >> "$GITHUB_OUTPUT"
+          printf 'preview_url=%s\n' "$preview_url" >> "$GITHUB_OUTPUT"
 
       - name: Write preview metadata artifact
         env:

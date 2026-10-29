@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
-import { createECDH, createDecipheriv, createHash, hkdfSync } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
+import { createECDH, createDecipheriv, hkdfSync } from 'node:crypto'
 import test from 'node:test'
 import { setImmediate } from 'node:timers/promises'
 import { createServer } from 'node:http'
@@ -9,6 +10,8 @@ import { createApp, eventHandler, toNodeListener } from 'h3'
 
 import { consumeNotificationOutboxPointer, parseNotificationOutboxPointer, publishPendingNotificationPointers } from '../server/utils/notificationMessagesQueue.ts'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
+
+Object.assign(globalThis, { __NOTIFICATION_COMMUNITIES__: [{ slug: 'brno', title: 'Brno' }] })
 import { planEventNotifications } from '../server/utils/eventEmailNotifications.ts'
 import { applyBrevoCallback, normalizeBrevoCallback } from '../server/utils/brevoCallbacks.ts'
 import type { PortalCalendarEvent } from '../server/utils/portalEvents.ts'
@@ -19,7 +22,7 @@ const Database = createRequire(import.meta.url)('better-sqlite3') as new (filena
   prepare(sql: string): { run(...values: unknown[]): unknown, get(...values: unknown[]): unknown, all(...values: unknown[]): unknown[] }
 }
 
-const schema = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
+const schema = ['0000_majestic_lightspeed'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
 
 const disposableDatabase = (): { database: NotificationDatabase, query(sql: string): Record<string, unknown>[] } => {
   const sqlite = new Database(':memory:')
@@ -48,12 +51,12 @@ const disposableDatabase = (): { database: NotificationDatabase, query(sql: stri
 const keyMaterial = new TextEncoder().encode('01234567890123456789012345678901')
 const root = btoa(String.fromCharCode(...keyMaterial)).replace(/=+$/g, '')
 const config = { ...await notificationConfig({
-  notificationCommunitySlugs: 'brno', notificationRootKey: root,
-  notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
+  notificationRootKey: root,
+  notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org',
   notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
 }), emailDeliveryReady: true }
 const predictableCrypto = { randomBytes: (length: number) => new Uint8Array(length), subtle: crypto.subtle }
-const input = { channel: 'email' as const, contact: 'alice@example.com', communitySlugs: ['brno'], frequencies: ['created'] as const, consentAt: '2026-09-17T00:00:00.000Z', consentVersion: '2026-09' }
+const input = { channel: 'email' as const, contact: 'alice@example.com', communitySlugs: ['brno'], frequencies: ['created'] as const, consentAt: '2026-09-17T00:00:00.000Z' }
 const pointerFor = (query: (sql: string) => Record<string, unknown>[]) => {
   const [outbox] = query('SELECT id, version FROM notification_outbox')
   return { outboxId: outbox!.id as string, version: outbox!.version as number }
@@ -65,7 +68,7 @@ const previousPlugin = pluginGlobals.defineNitroPlugin
 pluginGlobals.defineNitroPlugin = (plugin: unknown) => plugin
 const { dispatchNotificationQueueMessage, default: notificationQueuePlugin } = await import('../server/plugins/notificationMessagesQueue.ts')
 pluginGlobals.defineNitroPlugin = previousPlugin
-const syntheticRuntime = { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet' }
+const syntheticRuntime = { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet', brevoSmsSender: 'Meetupy' }
 
 test('lifecycle activation recovery and reactivation reserve authority through the registered Queue hook before authenticated early callback', async t => {
   for (const kind of ['first-activation', 'management-recovery', 'reactivation']) await t.test(kind, async () => {
@@ -80,10 +83,9 @@ test('lifecycle activation recovery and reactivation reserve authority through t
     const pointer = { outboxId: row.id as string, version: row.version as number }
     const globals = globalThis as typeof globalThis & { useRuntimeConfig?: unknown }
     const priorRuntime = globals.useRuntimeConfig, originalFetch = globalThis.fetch
-    const runtime = { ...syntheticRuntime, brevoSenderEmail: 'noreply@jednadvacet.org', brevoCallbackSecret: 'synthetic-callback', notificationRootKey: root, notificationCommunitySlugs: 'brno', notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true, notificationExpectedTargetIdentity: 'a'.repeat(64), notificationExpectedBundleHash: 'b'.repeat(64), notificationExpectedMigrationHash: 'c'.repeat(64), notificationExpectedConfigHash: 'd'.repeat(64), notificationExpectedDeploymentId: '11111111-1111-4111-8111-111111111111' }
+    const runtime = { ...syntheticRuntime, brevoSenderEmail: 'noreply@jednadvacet.org', brevoCallbackSecret: 'synthetic-callback', notificationRootKey: root, notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true }
     Object.assign(runtime, { brevoApiKey: 'synthetic-api-key-at-least-24-characters', brevoCallbackSecret: 'synthetic-callback-at-least-24-characters', notificationEmailManualEnabled: true })
-    // Synthetic gate input exercises the real verifier; this fixture is not operational evidence.
-    globals.useRuntimeConfig = () => ({ ...runtime, notificationEmailEvidence: JSON.stringify({ channel: 'email', evidenceKind: 'production-observation', mode: 'readiness', manualSwitch: true, targetIdentity: runtime.notificationExpectedTargetIdentity, bundleHash: runtime.notificationExpectedBundleHash, migrationHash: runtime.notificationExpectedMigrationHash, configHash: runtime.notificationExpectedConfigHash, deploymentId: runtime.notificationExpectedDeploymentId, verifiedAt: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString(), keyHash: createHash('sha256').update(JSON.stringify([runtime.notificationRootKey, runtime.brevoApiKey, runtime.brevoCallbackSecret, runtime.brevoSenderName, runtime.brevoSenderEmail])).digest('hex'), gates: Object.fromEntries(['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs', 'firstMessage', 'eventDelivery'].map(key => [key, 'passed'])) }) })
+    globals.useRuntimeConfig = () => runtime
     const route = (await import('../server/api/notifications/brevo-events.post.ts')).default
     const app = createApp()
     app.use('/callback', eventHandler(event => { event.context._platform = { cloudflare: { env: { DB: database } } }; return route(event) }))
@@ -210,7 +212,7 @@ test('reserved lifecycle callback evidence converges monotonically across result
 
 test('supplied pre-lifecycle schema cannot activate or reach transport', async () => {
   const sqlite = new Database(':memory:')
-  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk']) sqlite.exec(execFileSync('git', ['show', `ec1001951d6df22f1e77f68ecd3ab678f0a49208:server/db/migrations/sqlite/${name}.sql`], { encoding: 'utf8' }))
   const old: NotificationDatabase = { prepare: sql => ({ bind() { return this }, all: async <T>() => ({ results: sqlite.prepare(sql).all() as T[] }), first: async <T>() => sqlite.prepare(sql).get() as T, run: async () => sqlite.prepare(sql).run() }), batch: async () => { throw Error('no mutation allowed') } }
   assert.equal(await notificationSchemaReady(old), false)
   await assert.rejects(activateNotificationChannel(input, { database: old, config }), /activation is unavailable/)
@@ -447,7 +449,7 @@ test('Portal plugin plans against top-level DB and publishes committed pointers 
     await activateNotificationChannel(input, { database, config })
     const snapshots = new Map<string, unknown>()
     globals.useStorage = () => ({ getItem: async (key: string) => snapshots.get(key), setItem: async (key: string, value: unknown) => { snapshots.set(key, value) } })
-    const runtime = { notificationCommunitySlugs: 'brno', notificationRootKey: root, notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09' }
+    const runtime = { notificationRootKey: root, notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org' }
     let googleReads = 0
     globals.useRuntimeConfig = () => new Proxy(runtime, { get(target, key) {
       if (String(key).startsWith('google')) {
@@ -596,11 +598,79 @@ const jointFixture = async () => {
   const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
   const vapid = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
   const contact = { endpoint: 'https://push.example.test/subscription', keys: { p256dh: encode(new Uint8Array(await crypto.subtle.exportKey('raw', receiver.publicKey))), auth: encode(new Uint8Array(16)) } }
-  const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true, webPushDelivery: { privateKey: vapid.privateKey, publicKey: encode(new Uint8Array(await crypto.subtle.exportKey('raw', vapid.publicKey))), subject: 'mailto:test@example.test' } }
+  const ready = { ...config, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true, webPushDelivery: { privateKey: vapid.privateKey, publicKey: encode(new Uint8Array(await crypto.subtle.exportKey('raw', vapid.publicKey))), subject: 'mailto:test@example.test' } }
   const dependencies = { database: fixture.database, config: ready, now: () => new Date('2026-10-04T10:00:00Z') }
   for (const channel of ['email', 'sms', 'web-push'] as const) await activateNotificationChannel({ ...input, channel, contact: channel === 'email' ? input.contact : channel === 'sms' ? '+420777123456' : contact }, dependencies)
   return { ...fixture, dependencies, receiver, contact }
 }
+
+test('first Web Push confirms the subscribed community and only provider submission is recorded', async () => {
+  const { query, dependencies, receiver, contact } = await jointFixture()
+  const config = { ...dependencies.config, communitySlugs: ['brno', 'praha'], communityTitles: { brno: 'Brno' } }
+  const row = query("SELECT o.id, o.version FROM notification_outbox o JOIN notification_contacts c ON c.id = o.contact_id WHERE c.channel = 'web-push'")[0]!
+  let calls = 0
+  const result = await dispatchNotificationQueueMessage({ id: 'first-push', body: { outboxId: row.id, version: row.version } }, { ...dependencies, config }, {}, async (_url, request) => {
+    calls++
+    assert.equal(request?.redirect, 'manual')
+    const body = Buffer.from(request!.body as ArrayBuffer)
+    const ecdh = createECDH('prime256v1')
+    ecdh.setPrivateKey(Buffer.from((await crypto.subtle.exportKey('jwk', receiver.privateKey)).d!, 'base64url'))
+    const shared = ecdh.computeSecret(body.subarray(21, 86))
+    const ikm = hkdfSync('sha256', shared, Buffer.from(contact.keys.auth, 'base64url'), Buffer.concat([Buffer.from('WebPush: info\0'), Buffer.from(contact.keys.p256dh, 'base64url'), body.subarray(21, 86)]), 32)
+    const key = hkdfSync('sha256', Buffer.from(ikm), body.subarray(0, 16), Buffer.from('Content-Encoding: aes128gcm\0'), 16)
+    const nonce = hkdfSync('sha256', Buffer.from(ikm), body.subarray(0, 16), Buffer.from('Content-Encoding: nonce\0'), 12)
+    const decipher = createDecipheriv('aes-128-gcm', Buffer.from(key), Buffer.from(nonce))
+    decipher.setAuthTag(body.subarray(-16))
+    const plaintext = Buffer.concat([decipher.update(body.subarray(86, -16)), decipher.final()])
+    const message = JSON.parse(plaintext.subarray(0, -1).toString())
+    assert.equal(message.body, 'Odebíráš upozornění pro Brno.')
+    assert.ok(message.url.startsWith('/notifications/manage/'))
+    return new Response(null, { status: 201 })
+  })
+  assert.equal(result.delivered, true)
+  assert.equal(calls, 1)
+})
+
+test('an edited event rejects its published stale pointer and authorizes its carried replacement once', async () => {
+  const { database, query, dependencies } = await jointFixture()
+  await planEventNotifications([calendarEvent], dependencies)
+  const published: { outboxId: string, version: number }[] = []
+  await publishPendingNotificationPointers({ send: async pointer => { published.push(pointer) } }, dependencies)
+  const original = published.find(pointer => pointer.outboxId === query("SELECT id FROM notification_outbox WHERE kind = 'event-email'")[0]!.id)!
+  const changed = { ...calendarEvent, changedAt: '2026-10-05T00:00:00.000Z', event: { ...calendarEvent.event, location: 'Replacement venue' } }
+  assert.equal((await planEventNotifications([changed], dependencies)).planned, 3)
+  await publishPendingNotificationPointers({ send: async pointer => { published.push(pointer) } }, dependencies)
+  const replacementId = query("SELECT id FROM notification_outbox WHERE kind = 'event-email' AND status = 'queued'")[0]!.id as string
+  const replacement = published.find(pointer => pointer.outboxId === replacementId)!
+  let calls = 0
+  const deliver = async (_payload: Parameters<typeof consumeNotificationOutboxPointer>[2] extends (payload: infer Payload, ...args: never[]) => unknown ? Payload : never, _authorization: never, authorize: (signal?: AbortSignal) => Promise<boolean>) => {
+    if (await authorize()) calls++
+    return { attempted: true, status: 'submitted' as const, providerMessageId: 'replacement' }
+  }
+  assert.deepEqual(await consumeNotificationOutboxPointer(original, dependencies, deliver), { delivered: false, stale: true })
+  assert.deepEqual(await consumeNotificationOutboxPointer(replacement, dependencies, deliver), { delivered: true, stale: false })
+  assert.deepEqual(await consumeNotificationOutboxPointer(replacement, dependencies, deliver), { delivered: false, stale: true })
+  assert.equal(calls, 1)
+})
+
+test('a missed same-day reminder publishes and authorizes one catch-up delivery', async () => {
+  const { database, query, dependencies } = await jointFixture()
+  await database.prepare("UPDATE notification_subscriptions SET frequency = 'day-before'").run()
+  await planEventNotifications([calendarEvent], dependencies)
+  const catchUp = { ...dependencies, now: () => new Date('2026-10-11T08:15:00.000Z') }
+  assert.equal((await planEventNotifications([calendarEvent], catchUp)).planned, 3)
+  const published: { outboxId: string, version: number }[] = []
+  await publishPendingNotificationPointers({ send: async pointer => { published.push(pointer) } }, catchUp)
+  const email = published.find(pointer => pointer.outboxId === query("SELECT id FROM notification_outbox WHERE kind = 'event-email' AND status = 'queued'")[0]!.id)!
+  let calls = 0
+  const deliver = async (_payload: Parameters<typeof consumeNotificationOutboxPointer>[2] extends (payload: infer Payload, ...args: never[]) => unknown ? Payload : never, _authorization: never, authorize: (signal?: AbortSignal) => Promise<boolean>) => {
+    if (await authorize()) calls++
+    return { attempted: true, status: 'submitted' as const, providerMessageId: 'catch-up' }
+  }
+  assert.deepEqual(await consumeNotificationOutboxPointer(email, catchUp, deliver), { delivered: true, stale: false })
+  assert.deepEqual(await consumeNotificationOutboxPointer(email, catchUp, deliver), { delivered: false, stale: true })
+  assert.equal(calls, 1)
+})
 
 for (const channel of ['email', 'sms'] as const) for (const work of ['lifecycle', 'event']) for (const phase of (channel === 'sms' && work === 'lifecycle' ? ['schema', 'read'] : ['schema', 'read', 'reservation'])) test(`deadline during ${work} ${channel} final ${phase} cannot resume provider or new SQL`, { timeout: 10000 }, async t => {
   const { database, query, dependencies } = await jointFixture()
@@ -664,19 +734,11 @@ test('registered default Queue hook bounds real lifecycle/event transports, pres
   // Unit-boundary inputs only: no native/production evidence is written or claimed.
   const runtime = {
     ...syntheticRuntime, brevoApiKey: 'synthetic-key-at-least-24-characters', brevoCallbackSecret: 'synthetic-callback-at-least-24', brevoSenderEmail: 'noreply@jednadvacet.org', brevoSandbox: true,
-    notificationRootKey: root, notificationCommunitySlugs: 'brno', notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
+    notificationRootKey: root, notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org',
     notificationEmailManualEnabled: true, notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
     notificationSmsEnabled: true, notificationSmsFirstMessageReady: true, notificationSmsEventDeliveryReady: true,
-    notificationExpectedTargetIdentity: 'a'.repeat(64), notificationExpectedBundleHash: 'b'.repeat(64), notificationExpectedMigrationHash: 'c'.repeat(64), notificationExpectedConfigHash: 'd'.repeat(64), notificationExpectedDeploymentId: '11111111-1111-4111-8111-111111111111',
   }
   const configured: Record<string, unknown> = { ...runtime }
-  for (const channel of ['email', 'sms']) configured[channel === 'email' ? 'notificationEmailEvidence' : 'notificationSmsEvidence'] = JSON.stringify({
-    channel, evidenceKind: 'production-observation', mode: 'readiness', manualSwitch: true,
-    targetIdentity: runtime.notificationExpectedTargetIdentity, bundleHash: runtime.notificationExpectedBundleHash, migrationHash: runtime.notificationExpectedMigrationHash, configHash: runtime.notificationExpectedConfigHash, deploymentId: runtime.notificationExpectedDeploymentId,
-    verifiedAt: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString(),
-    keyHash: createHash('sha256').update(JSON.stringify(channel === 'email' ? [root, runtime.brevoApiKey, runtime.brevoCallbackSecret, runtime.brevoSenderName, runtime.brevoSenderEmail] : [root, runtime.brevoApiKey, runtime.brevoSenderName])).digest('hex'),
-    gates: Object.fromEntries(['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs', 'account', 'credits', 'country', 'compliance', 'sharedManagementStop', 'firstMessage', 'eventDelivery'].map(gate => [gate, 'passed'])),
-  })
   globals.useRuntimeConfig = () => configured
   try {
     for (const channel of ['email', 'sms'] as const) for (const work of ['lifecycle', 'event']) for (const stall of ['headers', 'body']) for (const earlyCallback of (channel === 'email' && stall === 'body' ? [false, true] : [false])) await t.test(`${work} ${channel} ${stall} callback=${earlyCallback}`, async t => {
@@ -807,6 +869,8 @@ for (const work of ['lifecycle', 'event']) for (const change of ['stop', 'recove
 
 test('actual single planner dispatches three transports, encrypted push is independently visible and SMS stop leaves siblings', async () => {
   const { database, query, dependencies, receiver, contact } = await jointFixture()
+  const managementOrigin = 'https://jednadvacet.org'
+  Object.assign(dependencies.config, { managementOrigin })
   assert.equal((await planEventNotifications([calendarEvent], dependencies)).planned, 3)
   const rows = query("SELECT id, version, kind, payload_ciphertext, payload_iv FROM notification_outbox WHERE kind LIKE 'event-%'")
   assert.equal(rows.length, 3)
@@ -835,7 +899,9 @@ test('actual single planner dispatches three transports, encrypted push is indep
         return new Response(null, { status: 201 })
       }
       const body = JSON.parse(request!.body as string)
-      if (row.kind === 'event-sms') { assert.equal(body.type, 'transactional'); assert.ok(body.content.length <= 160); return new Response(JSON.stringify({ messageId: 12345 }), { status: 201 }) }
+      if (row.kind === 'event-sms') { assert.equal(body.sender, syntheticRuntime.brevoSmsSender); assert.equal(body.type, 'transactional'); assert.ok(body.content.length <= 160); return new Response(JSON.stringify({ messageId: 12345 }), { status: 201 }) }
+      assert.equal(body.sender.name, syntheticRuntime.brevoSenderName)
+      assert.ok(body.textContent.includes(`${managementOrigin}/notifications/manage/`))
       assert.equal(body.attachment.length, 1)
       return new Response(JSON.stringify({ messageId: 'synthetic_message_123' }), { status: 201 })
     }
@@ -975,7 +1041,7 @@ test('late stale push response cannot suppress a recovered device generation', a
   for (const eventWork of [false, true]) {
     const { database, query } = disposableDatabase()
     const contact = { endpoint: 'https://push.example.test/subscription', keys: { p256dh: 'BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4', auth: 'BTBZMqHH6r4Tts7J_aSIgg' } }
-    const ready = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true }
+    const ready = { ...config, webPushDeliveryReady: true, eventWebPushOutboxSupported: true }
     const dependencies = { database, config: ready, now: () => new Date('2026-10-04T10:00:00Z') }
     await activateNotificationChannel({ ...input, channel: 'web-push', contact }, dependencies)
     if (eventWork) await planEventNotifications([calendarEvent], dependencies)
@@ -1086,11 +1152,13 @@ test('a crash after the final email attempt reservation is terminally retired in
 
 test('real Queue dispatch sends a usable channel-scoped first email after durable signup and publication', async () => {
   const { database, query } = disposableDatabase()
+  const managementOrigin = 'https://jednadvacetorg-web.learned-mantis.workers.dev'
+  const previewConfig = { ...config, managementOrigin }
   await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
   const pointers: unknown[] = []
   await publishPendingNotificationPointers({ send: async pointer => { pointers.push(pointer) } }, { database, config })
   const requests: RequestInit[] = []
-  const result = await dispatchNotificationQueueMessage({ id: 'synthetic-message', body: pointers[0] }, { database, config }, { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet' }, async (_url, request) => {
+  const result = await dispatchNotificationQueueMessage({ id: 'synthetic-message', body: pointers[0] }, { database, config: previewConfig }, { brevoApiKey: 'synthetic-key', brevoSenderName: 'Jednadvacet' }, async (_url, request) => {
     requests.push(request!)
     return new Response(JSON.stringify({ messageId: 'synthetic-provider-id' }), { status: 201 })
   })
@@ -1100,7 +1168,7 @@ test('real Queue dispatch sends a usable channel-scoped first email after durabl
   assert.deepEqual(body.to, [{ email: input.contact }])
   assert.deepEqual(body.sender, { name: 'Jednadvacet', email: 'noreply@jednadvacet.org' })
   assert.equal(body.attachment, undefined)
-  assert.ok(body.textContent.includes(`https://jednadvacet.org/notifications/manage/${initialToken}`))
+  assert.ok(body.textContent.includes(`${managementOrigin}/notifications/manage/${initialToken}`))
   assert.equal((await readNotificationManagement(initialToken, { database, config })).state, 'active')
   assert.equal(query('SELECT payload_ciphertext FROM notification_outbox')[0]!.payload_ciphertext, null)
 })
@@ -1226,7 +1294,7 @@ test('Web Push stop during awaited VAPID preparation denies the real transport b
   const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
   const publicKey = encode(new Uint8Array(await crypto.subtle.exportKey('raw', vapid.publicKey)))
   const contact = JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: encode(new Uint8Array(await crypto.subtle.exportKey('raw', receiver.publicKey))), auth: encode(new Uint8Array(16)) } })
-  const pushConfig = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, webPushDelivery: { privateKey: vapid.privateKey, publicKey, subject: 'mailto:test@example.test' } }
+  const pushConfig = { ...config, webPushDeliveryReady: true, webPushDelivery: { privateKey: vapid.privateKey, publicKey, subject: 'mailto:test@example.test' } }
   await activateNotificationChannel({ ...input, channel: 'web-push', contact }, { database, config: pushConfig, crypto: predictableCrypto })
   const sign = crypto.subtle.sign
   let calls = 0
@@ -1308,7 +1376,7 @@ test('pending recovery/repeated signup at decrypt barriers revoke claimed and qu
 test('Web Push transient provider outcomes retain the ciphertext for Queue retry', async () => {
   for (const status of ['rate-limited', 'provider-5xx', 'transport'] as const) {
     const { database, query } = disposableDatabase()
-    const ready = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
+    const ready = { ...config, webPushDeliveryReady: true }
     const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
     const contact = JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: encode(new Uint8Array(await crypto.subtle.exportKey('raw', receiver.publicKey))), auth: encode(new Uint8Array(16)) } })
     await activateNotificationChannel({ ...input, channel: 'web-push', contact }, { database, config: ready, crypto: predictableCrypto })
@@ -1322,7 +1390,8 @@ test('Web Push transient provider outcomes retain the ciphertext for Queue retry
 
 test('real SMS signup/recovery dispatch carries a usable SMS-only management link and stop revokes it', async () => {
   const { database, query } = disposableDatabase()
-  const ready = { ...config, emailSmsEnabled: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true }
+  const managementOrigin = 'https://jednadvacet.org'
+  const ready = { ...config, managementOrigin, emailSmsEnabled: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true }
   const contact = '+420777123456'
   await activateNotificationChannel({ ...input, channel: 'sms', contact }, { database, config: ready })
   let firstToken = ''
@@ -1336,8 +1405,10 @@ test('real SMS signup/recovery dispatch carries a usable SMS-only management lin
       assert.equal(url, 'https://api.brevo.com/v3/transactionalSMS/send')
       const body = JSON.parse(request!.body as string)
       assert.equal(body.recipient, contact)
+      assert.equal(body.sender, syntheticRuntime.brevoSmsSender)
       assert.equal(body.type, 'transactional')
-      token = body.content.match(/https:\/\/jednadvacet.org\/notifications\/manage\/([A-Za-z0-9_-]+)/)[1]
+      assert.ok(body.content.includes(`${managementOrigin}/notifications/manage/`))
+      token = body.content.match(/\/notifications\/manage\/([A-Za-z0-9_-]+)/)[1]
       return new Response(JSON.stringify({ messageId: 'synthetic-sms' }), { status: 201 })
     })
     assert.equal(calls, 1)
@@ -1396,7 +1467,7 @@ test('hourly task drains committed lifecycle work despite calendar or planning f
   globals.defineTask = (task: unknown) => task
   try {
     const { drainNotificationMessages } = await import('../server/tasks/notification-messages.ts')
-    for (const scenario of ['missing-one', 'empty-registry', 'malformed', 'planner-read', 'planner-batch'] as const) await t.test(scenario, async () => {
+    for (const scenario of ['missing-one', 'empty-registry', 'malformed', 'planner-read', 'planner-batch'] as const) await t.test(scenario, async scenarioTest => {
       const { database, query } = disposableDatabase()
       await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
       const pointer = pointerFor(query)
@@ -1416,9 +1487,11 @@ test('hourly task drains committed lifecycle work despite calendar or planning f
         },
       }
       const sent: unknown[] = []
+      Object.assign(globalThis, { __NOTIFICATION_COMMUNITIES__: (scenario === 'empty-registry' ? [] : scenario === 'missing-one' ? ['brno', 'praha'] : ['brno']).map(slug => ({ slug, title: slug })) })
+      scenarioTest.after(() => Object.assign(globalThis, { __NOTIFICATION_COMMUNITIES__: [{ slug: 'brno', title: 'Brno' }] }))
       await assert.rejects(drainNotificationMessages({ notificationDatabase: planningDatabase, notificationMessagesQueue: { send: async value => { sent.push(value) } }, portalStorage }, {
-        notificationCommunitySlugs: scenario === 'empty-registry' ? '' : scenario === 'missing-one' ? 'brno,praha' : 'brno', notificationRootKey: root,
-        notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
+        notificationRootKey: root,
+        notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org',
       }), (error: Error) => {
         assert.deepEqual(sent, [pointer], scenario)
         assert.match(error.message, /Notification event planning failed \((calendar-404|calendar-503|planner)\)/)
@@ -1447,7 +1520,7 @@ test('hourly task retains pending rows and reports publication failure alone or 
       let calls = 0
       await assert.rejects(drainNotificationMessages({ notificationDatabase: database, notificationMessagesQueue: { send: async () => { calls++; throw new Error(`Private Queue failure ${input.contact}`) } }, portalStorage: {
         getItem: async () => missing ? null : { schemaVersion: 1, community: { id: 'brno', path: '/brno', title: 'Brno' }, events: [], cancellations: [], signals: {}, fetchedAt: '2026-10-04T00:00:00.000Z' }, setItem: async () => {}, getKeys: async () => [],
-      } }, { notificationCommunitySlugs: 'brno', notificationRootKey: root, notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09' }), (error: Error) => {
+      } }, { notificationRootKey: root, notificationTurnstileSecret: 'private-turnstile-secret', notificationTurnstileExpectedHostname: 'jednadvacet.org' }), (error: Error) => {
         const errors = error instanceof AggregateError ? error.errors : [error]
         assert.deepEqual(errors.map(item => item.message), [...(missing ? ['Notification event planning failed (calendar-404)'] : []), 'Notification pointer publication failed'])
         assert.doesNotMatch(JSON.stringify(error, Object.getOwnPropertyNames(error)), /alice@example.com|Private Queue/)
@@ -1791,7 +1864,7 @@ test('a stop committed during the awaited schema probe precedes the final transp
 
 test('a stale lifecycle Web Push endpoint is suppressed and removed', async () => {
   const { database, query } = disposableDatabase()
-  const webPushConfig = { ...config, webPushEnabled: true, webPushFirstMessageReady: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true }
+  const webPushConfig = { ...config, webPushDeliveryReady: true }
   const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
   const webPushInput = { ...input, channel: 'web-push' as const, contact: JSON.stringify({ endpoint: 'https://push.example.test/subscription', keys: { p256dh: encode(new Uint8Array(await crypto.subtle.exportKey('raw', receiver.publicKey))), auth: encode(new Uint8Array(16)) } }) }
   await activateNotificationChannel(webPushInput, { database, config: webPushConfig, crypto: predictableCrypto })
@@ -1803,8 +1876,9 @@ test('a stale lifecycle Web Push endpoint is suppressed and removed', async () =
   assert.deepEqual(query('SELECT id FROM notification_contacts'), [])
 })
 
-test('SMS activation rejects missing migration evidence despite provider flags', async () => {
+test('SMS activation rejects missing database schema despite provider flags', async () => {
   const { database, query } = disposableDatabase()
+  await database.prepare('DROP TABLE notification_lifecycle_email_callbacks').run()
   const smsConfig = { ...config, emailSmsEnabled: false, emailSmsEventDeliveryReady: false, emailDeliveryReady: false, smsEnabled: true, smsFirstMessageReady: true, smsEventDeliveryReady: true, smsDeliveryReady: true }
   await assert.rejects(activateNotificationChannel({ ...input, channel: 'sms', contact: '+420777123456' }, { database, config: smsConfig, crypto: predictableCrypto }), error => (error as { statusCode: number }).statusCode === 503)
   assert.deepEqual(query('SELECT id FROM notification_contacts'), [])
@@ -1814,17 +1888,12 @@ test('scheduled drain publishes bounded pointers and consumer failures remain re
   const { database, query } = disposableDatabase()
   await activateNotificationChannel(input, { database, config, crypto: predictableCrypto })
   const runtimeConfig = {
-    notificationCommunitySlugs: 'brno',
     notificationRootKey: root,
     notificationTurnstileSecret: 'private-turnstile-secret',
     notificationTurnstileExpectedHostname: 'jednadvacet.org',
-    notificationConsentVersion: '2026-09',
     notificationEmailSmsEnabled: true,
     notificationEmailSmsFirstMessageReady: true,
     notificationEmailSmsEventDeliveryReady: true,
-    notificationWebPushEnabled: false,
-    notificationWebPushFirstMessageReady: false,
-    notificationWebPushEventDeliveryReady: false,
   }
   const globals = globalThis as typeof globalThis & { defineTask?: unknown, defineNitroPlugin?: unknown }
   const previousTask = globals.defineTask

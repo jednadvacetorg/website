@@ -55,7 +55,7 @@ export interface EmailVerificationEvidence {
   configHash: string
   manualSwitch: boolean
   verifiedAt: string
-  expiresAt: string
+  expiresAt?: string
   evidenceKind: EvidenceKind
   mode: EmailVerificationMode
   gates: Record<Gate, 'passed' | 'pending'>
@@ -94,7 +94,7 @@ const bounded = async <T>(operation: Promise<T>, milliseconds = timeoutMs): Prom
 }
 
 /** Validates generated JSON, shared by the CLI and the local built-Worker safety gate. */
-export const validateNotificationDeploymentConfiguration = (input: unknown, profile: 'production' | 'preview', expected = { worker: 'jednadvacetorg-web', d1Id: '76d271b2-5335-40ba-81dd-bf7e1ef79522', d1Name: 'web', queue: 'notification-messages', dlq: 'notification-messages-dlq' }) => {
+export const validateNotificationDeploymentConfiguration = (input: unknown, profile: 'production' | 'preview', expected: { worker: string, d1Id: string, d1Name: string, queue: string, dlq: string, kvId?: string } = { worker: 'jednadvacetorg-web', d1Id: '76d271b2-5335-40ba-81dd-bf7e1ef79522', d1Name: 'web', queue: 'notification-messages', dlq: 'notification-messages-dlq' }) => {
   const config = record(input)
   check(config.name === expected.worker && typeof config.main === 'string', 'worker')
   const databases = rows(config.d1_databases)
@@ -111,8 +111,11 @@ export const validateNotificationDeploymentConfiguration = (input: unknown, prof
   const crons = config.triggers ? record(config.triggers).crons : []
   check(Array.isArray(crons), 'cron')
   if (profile === 'preview') {
-    check(databases.length === 1 && d1[0]!.database_name === 'web-preview' && !d1[0]!.database_id, 'preview-d1')
-    check(rows(config.kv_namespaces ?? []).length === 0 && rows(config.r2_buckets ?? []).length === 0 && producers.length === 0 && consumers.length === 0 && crons.length === 0, 'preview-production-binding')
+    const previewKv = rows(config.kv_namespaces ?? []).filter(binding => binding.binding === 'PORTAL_EVENT_SNAPSHOTS')
+    const resolvedTarget = expected.d1Name === 'web-preview'
+    check(databases.length === 1 && d1[0]!.database_name === 'web-preview' && d1[0]!.database_id !== '76d271b2-5335-40ba-81dd-bf7e1ef79522' && (!resolvedTarget || d1[0]!.database_id === expected.d1Id), 'preview-d1')
+    check(previewKv.length === 1 && previewKv[0]!.id !== 'fc1c8f97503145fd8f6563fd22358ab6' && (!resolvedTarget || !expected.kvId || previewKv[0]!.id === expected.kvId), 'preview-kv')
+    check(rows(config.r2_buckets ?? []).length === 0 && !config.services && producers.some(binding => binding.binding === 'PORTAL_EVENTS_QUEUE' && binding.queue === 'portal-events') && producers.some(binding => binding.binding === 'NOTIFICATION_MESSAGES_QUEUE' && binding.queue === expected.queue) && consumers.some(binding => binding.queue === 'portal-events') && consumers.some(binding => binding.queue === expected.queue && binding.dead_letter_queue === expected.dlq) && crons.length === 3 && ['47 3 * * *', '13 * * * *', '* * * * *'].every(cron => crons.includes(cron)) && !producers.some(binding => binding.binding === 'COMMUNITY_MAPS_QUEUE'), 'preview-production-binding')
   } else {
     check(d1[0]!.database_id === expected.d1Id && d1[0]!.database_name === expected.d1Name, 'd1')
     check(producers.filter(binding => binding.binding === 'NOTIFICATION_MESSAGES_QUEUE' && binding.queue === expected.queue).length === 1, 'queue')
@@ -269,7 +272,7 @@ export const runEmailVerification = async (options: EmailVerificationOptions, de
         const vapid = probeChannel === 'web-push' ? await optionalVapidConfiguration({ notificationVapidPrivateKey: required(env, 'NUXT_NOTIFICATION_VAPID_PRIVATE_KEY'), notificationVapidPublicKey: required(env, 'NUXT_PUBLIC_NOTIFICATION_VAPID_PUBLIC_KEY'), notificationVapidSubject: required(env, 'NUXT_NOTIFICATION_VAPID_SUBJECT') }, cryptoApi) : undefined
         if (probeChannel === 'web-push') check(vapid, 'probe-vapid')
         const result = probeChannel === 'sms'
-          ? await sendBrevoLifecycleSms({ apiKey: required(env, 'NUXT_BREVO_API_KEY'), sender: required(env, 'NUXT_BREVO_SENDER_NAME') }, { recipient: required(env, 'NOTIFICATION_VERIFY_RECIPIENT'), capability, kind: 'management-recovery' }, fetcher)
+          ? await sendBrevoLifecycleSms({ apiKey: required(env, 'NUXT_BREVO_API_KEY'), sender: required(env, 'NUXT_BREVO_SMS_SENDER') }, { recipient: required(env, 'NOTIFICATION_VERIFY_RECIPIENT'), capability, kind: 'management-recovery' }, fetcher)
           : await sendWebPush(parseWebPushSubscription(json(required(env, 'NOTIFICATION_VERIFY_PUSH_SUBSCRIPTION'))), { title: 'Jednadvacet', body: 'Nastavení upozornění', url: `https://jednadvacet.org/notifications/manage/${capability}` }, vapid!, fetcher, new Date(now), cryptoApi)
         check(result.attempted && result.status === 'submitted', 'probe-result')
         probe = { acceptance: 'submitted', liveReceipt: 'pending', sharedManagementStop: 'pending', deliveryCallback: probeChannel === 'sms' ? 'not-configured' : 'pending' }
@@ -278,18 +281,16 @@ export const runEmailVerification = async (options: EmailVerificationOptions, de
         // Private operator observations are checked with the very same runtime contract.
         // No provider call or guessed SMS callback contract is constructed here.
         const observations = record(json(await read(options.evidencePath!)))
-        check(observations.notificationSmsEnabled === true && observations.notificationWebPushEnabled === true, 'joint-switch')
+        check(observations.notificationSmsEnabled === true, 'sms-switch')
         for (const [field, value] of Object.entries({ TargetIdentity: targetIdentity, DeploymentId: deploymentId, BundleHash: bundleHash, MigrationHash: migrationHash, ConfigHash: configHash })) check(observations[`notificationExpected${field}`] === value, 'evidence-identity')
         for (const channel of options.channels!) {
           channelReadiness[channel] = (await operationalEvidence(channel, observations, { subtle: crypto.subtle, randomBytes: length => crypto.getRandomValues(new Uint8Array(length)) }, dependencies.now))()
           check(channelReadiness[channel], 'evidence-gate')
-          const name = channel === 'web-push' ? 'WebPush' : channel === 'sms' ? 'Sms' : 'Email'
-          evidenceExpiry = Math.min(evidenceExpiry, Date.parse(String(record(json(String(observations[`notification${name}Evidence`]))).expiresAt)))
         }
       }
       const verifiedAt = dependencies.now()
       check(Number.isFinite(verifiedAt) && verifiedAt < evidenceExpiry, 'clock')
-      return { channel: probeChannel ?? 'email', channels: options.channels, channelReadiness, ...(probe ? { probe } : {}), targetIdentity, deploymentId, bundleHash, migrationHash, configHash, manualSwitch: !local && !probeChannel, verifiedAt: new Date(verifiedAt).toISOString(), expiresAt: new Date(evidenceExpiry).toISOString(), evidenceKind: 'local-candidate', mode: options.mode, gates: outcomes }
+      return { channel: probeChannel ?? 'email', channels: options.channels, channelReadiness, ...(probe ? { probe } : {}), targetIdentity, deploymentId, bundleHash, migrationHash, configHash, manualSwitch: !local && !probeChannel, verifiedAt: new Date(verifiedAt).toISOString(), ...(options.mode === 'readiness' ? {} : { expiresAt: new Date(evidenceExpiry).toISOString() }), evidenceKind: 'local-candidate', mode: options.mode, gates: outcomes }
     }
     check(modes.has(options.mode) && options.target === 'production' && typeof options.expectedSwitch === 'boolean', stage)
     check(['local-candidate', 'production-observation'].includes(dependencies.evidenceKind), stage)
@@ -548,7 +549,7 @@ export const runEmailVerification = async (options: EmailVerificationOptions, de
     await observeDeployment()
     const verifiedAt = dependencies.now()
     check(Number.isFinite(verifiedAt) && verifiedAt < evidenceExpiry, 'clock')
-    return { channel: 'email', targetIdentity, deploymentId, bundleHash, migrationHash, configHash, manualSwitch, verifiedAt: new Date(verifiedAt).toISOString(), expiresAt: new Date(Math.min(verifiedAt + day, evidenceExpiry)).toISOString(), evidenceKind: dependencies.evidenceKind, mode: options.mode, gates: outcomes }
+    return { channel: 'email', targetIdentity, deploymentId, bundleHash, migrationHash, configHash, manualSwitch, verifiedAt: new Date(verifiedAt).toISOString(), ...(options.mode === 'readiness' ? {} : { expiresAt: new Date(Math.min(verifiedAt + day, evidenceExpiry)).toISOString() }), evidenceKind: dependencies.evidenceKind, mode: options.mode, gates: outcomes }
   } catch { return fail(stage) }
 }
 

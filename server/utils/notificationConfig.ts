@@ -1,9 +1,17 @@
 import type { NotificationChannel, NotificationCrypto, NotificationLifecycleConfig } from './notifications.ts'
 import type { VapidConfiguration } from './webPush.ts'
 
+// Nitro replaces this constant with a literal; runtime secrets cannot relax production.
+declare const __PREVIEW_DEPLOY__: boolean
+declare const __NOTIFICATION_COMMUNITIES__: readonly { slug: string, title: string }[]
+const isPreviewDeploy = typeof __PREVIEW_DEPLOY__ !== 'undefined' && __PREVIEW_DEPLOY__
+
 export class NotificationConfigurationError extends Error {
-  constructor() {
+  readonly reason: 'root-key-invalid' | 'turnstile-secret-invalid' | 'turnstile-hostname-invalid'
+
+  constructor(reason: NotificationConfigurationError['reason'] = 'root-key-invalid') {
     super('Notification configuration is unavailable')
+    this.reason = reason
   }
 }
 
@@ -44,19 +52,18 @@ const derivePurposeKeys = async (material: Uint8Array, subtle: SubtleCrypto) => 
 
 const asBoolean = (value: unknown) => value === true || value === 'true'
 const defaultCrypto = (): NotificationCrypto => ({ randomBytes: length => crypto.getRandomValues(new Uint8Array(length)), subtle: crypto.subtle })
-const requiredPrivateText = (value: unknown) => {
-  if (typeof value !== 'string' || !value.trim() || value.length > 4_096) throw new NotificationConfigurationError()
+const requiredPrivateText = (value: unknown, reason: 'turnstile-secret-invalid' | 'turnstile-hostname-invalid') => {
+  if (typeof value !== 'string' || !value.trim() || value.length > 4_096) throw new NotificationConfigurationError(reason)
   return value
 }
 const requiredHostname = (value: unknown) => {
-  const hostname = requiredPrivateText(value).toLowerCase()
-  if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname)) throw new NotificationConfigurationError()
+  const hostname = requiredPrivateText(value, 'turnstile-hostname-invalid').toLowerCase()
+  if (!/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(hostname)) throw new NotificationConfigurationError('turnstile-hostname-invalid')
   return hostname
 }
 const optionalPrivateText = (value: unknown) => typeof value === 'string' && value.trim() && value.length <= 4_096 ? value : undefined
 const exactTrue = (value: unknown) => value === true || value === 'true'
 
-const day = 86_400_000
 const hashPattern = /^[a-f0-9]{64}$/
 const evidenceGates = {
   email: ['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs'],
@@ -64,7 +71,7 @@ const evidenceGates = {
   'web-push': ['artifacts', 'deployment', 'bindings', 'migration', 'vapid', 'protocol', 'interoperability', 'sharedManagementStop', 'liveCanary'],
 } as const
 
-/** Operator-owned observations use the 06-15 evidence envelope. Never accept local CLI/test proofs. */
+/** Offline release-review observations only; never runtime delivery authority. */
 export const operationalEvidence = async (channel: NotificationChannel, value: Record<string, unknown>, cryptoApi: NotificationCrypto, now: () => number) => {
   try {
     const name = channel === 'web-push' ? 'WebPush' : channel === 'sms' ? 'Sms' : 'Email'
@@ -84,7 +91,7 @@ export const operationalEvidence = async (channel: NotificationChannel, value: R
     const publicConfig = value.public as Record<string, unknown> | undefined
     const material = channel === 'email'
       ? [value.notificationRootKey, value.brevoApiKey, value.brevoCallbackSecret, value.brevoSenderName, value.brevoSenderEmail]
-      : channel === 'sms' ? [value.notificationRootKey, value.brevoApiKey, value.brevoSenderName]
+      : channel === 'sms' ? [value.notificationRootKey, value.brevoApiKey, value.brevoSmsSender]
         : [value.notificationRootKey, value.notificationVapidPrivateKey, publicConfig?.notificationVapidPublicKey ?? value.notificationVapidPublicKey, value.notificationVapidSubject]
     const keyHash = Array.from(new Uint8Array(await cryptoApi.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(material)))), byte => byte.toString(16).padStart(2, '0')).join('')
     if (row.keyHash !== keyHash) return () => false
@@ -97,12 +104,9 @@ export const operationalEvidence = async (channel: NotificationChannel, value: R
       if (!Array.isArray(browsers) || !browsers.length || browsers.length > 8 || new Set(browsers).size !== browsers.length || !browsers.every(browser => ['chromium', 'firefox', 'safari-macos', 'ios-home-screen'].includes(browser) && gates[`browser:${browser}`] === 'passed')) return () => false
     }
     const verifiedAt = typeof row.verifiedAt === 'string' ? Date.parse(row.verifiedAt) : NaN
-    const expiresAt = typeof row.expiresAt === 'string' ? Date.parse(row.expiresAt) : NaN
-    // Re-evaluate on every gate read; a long-lived Queue request cannot retain expired authority.
-    return () => {
-      const current = now()
-      return Number.isFinite(verifiedAt) && Number.isFinite(expiresAt) && verifiedAt <= current && current - verifiedAt <= day && expiresAt > current && expiresAt > verifiedAt && expiresAt - verifiedAt <= day
-    }
+    // Deployment, configuration and key changes invalidate evidence; elapsed
+    // time alone must never switch off an otherwise unchanged deployment.
+    return () => Number.isFinite(verifiedAt) && verifiedAt <= now()
   } catch { return () => false }
 }
 
@@ -169,55 +173,57 @@ const emailDelivery = (value: Record<string, unknown>) => {
 
 const smsDelivery = (value: Record<string, unknown>) => {
   const apiKey = optionalPrivateText(value.brevoApiKey)
-  const sender = optionalPrivateText(value.brevoSenderName)
+  const sender = optionalPrivateText(value.brevoSmsSender)
   return Boolean(apiKey && apiKey.length >= 24
     && sender && /^(?:[A-Za-z0-9]{1,11}|\d{1,15})$/.test(sender))
 }
 
 /** Loads only private runtime configuration into non-extractable Worker Web Crypto keys. */
-export const notificationConfig = async (value: Record<string, unknown>, cryptoApi = defaultCrypto(), now = Date.now): Promise<NotificationLifecycleConfig> => {
+export const notificationConfig = async (value: Record<string, unknown>, cryptoApi = defaultCrypto(), report?: (reason: string) => void): Promise<NotificationLifecycleConfig> => {
+  const communities = typeof __NOTIFICATION_COMMUNITIES__ !== 'undefined' ? __NOTIFICATION_COMMUNITIES__ : []
+  const expectedHostname = requiredHostname(value.notificationTurnstileExpectedHostname)
+  if (isPreviewDeploy && !expectedHostname.endsWith('.workers.dev')) throw new NotificationConfigurationError('turnstile-hostname-invalid')
+  const turnstileSecret = requiredPrivateText(value.notificationTurnstileSecret, 'turnstile-secret-invalid')
+  if (typeof value.notificationRootKey !== 'string') throw new NotificationConfigurationError()
+  const keys = await derivePurposeKeys(decodeBase64Url(value.notificationRootKey), cryptoApi.subtle)
   const email = emailDelivery(value)
   const webPushDelivery = await optionalVapidConfiguration(value, cryptoApi)
-  const [emailEvidence, smsEvidence, pushEvidence] = await Promise.all([
-    operationalEvidence('email', value, cryptoApi, now),
-    operationalEvidence('sms', value, cryptoApi, now),
-    operationalEvidence('web-push', value, cryptoApi, now),
-  ])
+  // Used only by readiness. These fixed categories never contain runtime values,
+  // exception messages, provider responses or subscriber information.
+  if (report) {
+    const publicConfig = value.public as Record<string, unknown> | undefined
+    if (!optionalPrivateText(publicConfig?.notificationTurnstileSiteKey)) report('turnstile-public-site-key-missing-or-invalid')
+    if (!email.brevoApiKey || email.brevoApiKey.length < 24) report('brevo-api-key-missing-or-invalid')
+    if (!email.brevoCallbackSecret || email.brevoCallbackSecret.length < 24) report('email-callback-secret-missing-or-invalid')
+    if (!email.brevoSenderName || email.brevoSenderName.length > 96 || value.brevoSenderEmail !== 'noreply@jednadvacet.org') report('email-sender-missing-or-invalid')
+    if (!smsDelivery(value)) report('sms-provider-configuration-invalid')
+    if (!webPushDelivery) report('vapid-configuration-missing-invalid-or-mismatched')
+  }
   return {
-  communitySlugs: typeof value.notificationCommunitySlugs === 'string'
-    ? value.notificationCommunitySlugs.split(',').map(slug => slug.trim()).filter(Boolean)
-    : [],
-   ...await (async () => {
-     if (typeof value.notificationRootKey !== 'string') throw new NotificationConfigurationError()
-     const keys = await derivePurposeKeys(decodeBase64Url(value.notificationRootKey), cryptoApi.subtle)
-     return {
-       outboxTransportKey: keys.outbox,
-       suppressionHashKey: keys.suppression,
-       abuseHashKey: keys.abuse,
-     }
-   })(),
+   managementOrigin: isPreviewDeploy ? `https://${expectedHostname}` : 'https://jednadvacet.org',
+   communitySlugs: communities.map(community => community.slug),
+   communityTitles: Object.fromEntries(communities.map(community => [community.slug, community.title])),
+    outboxTransportKey: keys.outbox,
+    suppressionHashKey: keys.suppression,
+    abuseHashKey: keys.abuse,
   turnstile: {
-    secret: requiredPrivateText(value.notificationTurnstileSecret),
-    expectedHostname: requiredHostname(value.notificationTurnstileExpectedHostname),
+     secret: turnstileSecret,
+     expectedHostname,
   },
-  consentVersion: typeof value.notificationConsentVersion === 'string' ? value.notificationConsentVersion : '',
   emailSmsEnabled: asBoolean(value.notificationEmailSmsEnabled),
   emailSmsFirstMessageReady: asBoolean(value.notificationEmailSmsFirstMessageReady),
    emailSmsEventDeliveryReady: asBoolean(value.notificationEmailSmsEventDeliveryReady),
    smsEnabled: asBoolean(value.notificationSmsEnabled),
    smsFirstMessageReady: asBoolean(value.notificationSmsFirstMessageReady),
    smsEventDeliveryReady: asBoolean(value.notificationSmsEventDeliveryReady),
-    get smsDeliveryReady() { return smsDelivery(value) && smsEvidence() },
-    get eventSmsOutboxSupported() { return smsEvidence() },
-    get eventWebPushOutboxSupported() { return pushEvidence() },
-   get emailDeliveryReady() { return email.ready && emailEvidence() },
+    smsDeliveryReady: smsDelivery(value),
+    eventSmsOutboxSupported: true,
+    eventWebPushOutboxSupported: true,
+    emailDeliveryReady: email.ready,
   brevoApiKey: email.brevoApiKey,
   brevoSenderName: email.brevoSenderName,
   brevoCallbackSecret: email.brevoCallbackSecret,
-   webPushEnabled: asBoolean(value.notificationWebPushEnabled),
-   webPushFirstMessageReady: asBoolean(value.notificationWebPushFirstMessageReady),
-   webPushEventDeliveryReady: asBoolean(value.notificationWebPushEventDeliveryReady),
    webPushDelivery,
-    get webPushDeliveryReady() { return Boolean(webPushDelivery) && pushEvidence() },
+    webPushDeliveryReady: Boolean(webPushDelivery),
    }
 }

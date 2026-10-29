@@ -121,11 +121,28 @@ Image dále obsahuje:
 
 ## Náhledové verze (review apps)
 
-Ke každému pull requestu se přes [`wrangler deploy --temporary`](https://developers.cloudflare.com/workers/platform/claim-deployments/) nasadí dočasný náhled na izolovaný Cloudflare účet a do PR se přidá komentář s odkazem. Funguje i pro forky – nepoužívá žádný Cloudflare token.
+Produkční nasazení z `master` používá build `npm run build:cloudflare` a deploy `npm run deploy:cloudflare`. Deploy nejdřív aplikuje D1 migrace a teprve po jejich úspěchu nahraje Worker se zachováním nastavených proměnných. Samotný `wrangler deploy` migrace nespouští. Jednorázový reset starého experimentu, požadavky na build token, veřejné klíče a kontrolní seznam jsou v [provozním postupu](docs/email-delivery-operations.md). Reset není součástí žádného automatického příkazu.
+
+Ke každému pull requestu se přes [dočasný Cloudflare účet](https://developers.cloudflare.com/workers/platform/claim-deployments/) nasadí izolovaný náhled bez produkčních přístupů:
+
+```bash
+PREVIEW_DEPLOY=1 npm run build:cloudflare
+npx wrangler deploy --temporary --config .output/server/wrangler.json
+```
+
+CI zachytává výstup Wrangleru soukromě, protože obsahuje odkaz pro převzetí účtu. Dočasný náhled zatím neprovádí nativní migrace ani prvotní refresh: Wrangler neposkytuje dočasný token příkazu NuxtHubu pro migrace.
+
+Pro již ověřený účet Learned Mantis použij cílovou konfiguraci a vlastní přihlášení do Cloudflare:
+
+```bash
+node --experimental-strip-types scripts/deploy-preview.ts --target claimed --config /cesta/k/claimed-test.wrangler.json
+```
+
+Příkaz používá existující testovací D1, doplní izolované KV/fronty, spustí nativní migrace a po refreshi čeká na skutečná data a iCalendar. Přihlášení použije přes podporovaný `wrangler auth token --json`; token nevypisuje. Náhled nepotřebuje Google přihlašovací údaje; R2 a mapové zdroje se do něj nenasazují. Nový náhled má výchozí odesílání upozornění vypnuté, ale redeploy již ověřeného cíle zachová záměrně zapnuté kanály i existující nastavení poskytovatele. Kontrola nasazení ověřuje shodu JSONu událostí a iCalendaru, nikoli vypnuté odesílání; kontrola bezpečnosti vydání zůstává samostatná. Skutečné odeslání stále vyžaduje výslovné nastavení poskytovatele a autorizované příjemce.
 
 - Náhled **nemá přístup k produkční databázi**.
 - **Vyprší za ~60 min**; po každém commitu se nasadí čerstvý.
-- Pro trvalý náhled spusť `npx wrangler deploy --temporary` lokálně.
+- Dočasný náhled po přihlášení znovu ověř cílovou identitu; jeho platnost a URL se nesdílejí ve veřejných logách.
 - První PR může vyžadovat schválení (pokud máš nový GitHub účet).
 
 Napsat nám můžeš i soukromě:

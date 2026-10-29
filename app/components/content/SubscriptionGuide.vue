@@ -6,8 +6,6 @@ const { initialCommunity, directEntry = false } = defineProps<{
 const { $counterscale } = useNuxtApp()
 
 const wholeCountryValue = 'all-czech-communities'
-const falseReadinessMessage = 'Tato možnost ještě není připravená. Nic jsme neaktivovali; už teď můžeš odebírat kalendář přes iCalendar.'
-const interestConfirmation = 'Promiň, tato možnost ještě není připravená, takže jsme nic neaktivovali. Sleduj prosím naše sociální sítě; už teď můžeš odebírat kalendář přes iCalendar.'
 const temporaryUnavailableMessage = 'Tato možnost je teď dočasně nedostupná. Nic jsme neaktivovali; zkus to prosím později.'
 const { public: publicConfig } = useRuntimeConfig()
 const readiness = ref({ email: false, sms: false, webPush: false })
@@ -17,24 +15,6 @@ let readinessRequest = 0
 const refreshReadiness = async () => {
   const request = ++readinessRequest
   readiness.value = { email: false, sms: false, webPush: false }
-  turnstileToken.value = ''
-  recoveryTurnstileToken.value = ''
-  activationChallengeRevision.value++
-  recoveryChallengeRevision.value++
-  pushChallengeRevision.value++
-  pushRecoveryChallengeRevision.value++
-  isActivating.value = false
-  isRecovering.value = false
-  pushActivationRequest = undefined
-  pushRecoveryContact = undefined
-  webPushState.value = null
-  pushRecoveryState.value = null
-  isWebPushActivating.value = false
-  isPushRecovering.value = false
-  pushChallengeRequired.value = false
-  pushRecoveryChallengeRequired.value = false
-  pushTurnstileToken.value = ''
-  pushRecoveryTurnstileToken.value = ''
   isReadinessLoading.value = true
   try {
     const result = await $fetch<{ email: boolean, sms: boolean, webPush: boolean }>('/api/notifications/readiness', { cache: 'no-store', retry: 0 })
@@ -48,27 +28,17 @@ const refreshReadiness = async () => {
 }
 
 const refreshVisibleReadiness = () => {
-  if (document.visibilityState === 'visible') void refreshReadiness()
+  // Permission dialogs can hide the page. Returning must not invalidate the
+  // activation that opened the dialog or erase its result/challenge.
+  if (document.visibilityState === 'visible' && !isWebPushActivating.value && !isPushRecovering.value && !isPushManaging.value && !isActivating.value && !isRecovering.value) void refreshReadiness()
 }
-// These browser-only convenience values belong exclusively to false-readiness
-// fake doors and never cross the activation, recovery, or analytics boundary.
-const storedTelephone = useLocalStorage<string | null>('subscription-guide-telephone', null, { initOnMounted: true })
-const storedEmail = useLocalStorage<string | null>('subscription-guide-email', null, { initOnMounted: true })
-const fakeTelephone = computed({
-  get: () => storedTelephone.value ?? '',
-  set: value => { storedTelephone.value = value || null },
-})
-const fakeEmail = computed({
-  get: () => storedEmail.value ?? '',
-  set: value => { storedEmail.value = value || null },
-})
 const telephone = ref('')
 const email = ref('')
 const recoveryContact = ref('')
 const activeMethod = ref<'sms' | 'email' | null>(null)
 const recoveryMethod = ref<'sms' | 'email' | null>(null)
 const recoveryOpen = ref(false)
-const activationState = ref<'active' | 'updated' | 'pending-reactivation' | 'error' | null>(null)
+const activationState = ref<Record<'sms' | 'email', 'active' | 'updated' | 'pending-reactivation' | 'error' | null>>({ sms: null, email: null })
 const recoveryState = ref<'success' | 'error' | null>(null)
 const isActivating = ref(false)
 const isRecovering = ref(false)
@@ -80,16 +50,22 @@ const webPushState = ref<'active' | 'updated' | 'pending-reactivation' | 'defaul
 const isWebPushActivating = ref(false)
 const pushChallengeRequired = ref(false)
 const pushTurnstileToken = ref('')
-const pushRecoveryState = ref<'success' | 'error' | 'rate-limited' | null>(null)
+const pushRecoveryState = ref<'success' | 'error' | 'rate-limited' | 'missing' | null>(null)
 const isPushRecovering = ref(false)
 const pushRecoveryChallengeRequired = ref(false)
 const pushRecoveryTurnstileToken = ref('')
+const pushRecoveryOpen = ref(false)
+const isPushManaging = ref(false)
+const isPushChecking = ref(false)
+const pushDeviceIssue = ref<string | null>(null)
+const savedPushScope = ref('')
+const { data: browserManagement, refresh: refreshBrowserManagement, error: browserManagementError } = await useFetch('/api/notifications/manage/browser', { server: false, immediate: false, cache: 'no-store', retry: 0 })
 const activationChallengeRevision = ref(0)
 const recoveryChallengeRevision = ref(0)
 const pushChallengeRevision = ref(0)
 const pushRecoveryChallengeRevision = ref(0)
 // A challenge retries this same device/request, never a fresh permission prompt.
-let pushActivationRequest: { channel: 'web-push', contact: PushSubscriptionJSON, communitySlugs: string[], frequencies: FrequencyValue[], consentAt: string, consentVersion: string } | undefined
+let pushActivationRequest: { channel: 'web-push', contact: PushSubscriptionJSON, communitySlugs: string[], frequencies: FrequencyValue[], consentAt: string } | undefined
 let pushRecoveryContact: PushSubscriptionJSON | undefined
 
 const { data: communities, status, refresh } = await useAsyncData('subscription-guide-communities', () => {
@@ -149,20 +125,15 @@ const selectedCommunities = computed(() => {
 const hasSelectedScope = computed(() => selectedCommunities.value.length > 0)
 // Serialize the server origin so the first client render matches prerendered text.
 const { data: currentOrigin } = await useAsyncData('subscription-guide-origin', () => Promise.resolve(useRequestURL().origin))
-const calendarUrls = computed(() => {
-  if (!hasSelectedScope.value) return []
+const calendarUrl = computed(() => {
+  if (!hasSelectedScope.value) return null
   const scope = selectedCommunitySlugs.value.includes(wholeCountryValue)
     ? 'all'
     : selectedCommunities.value.map(community => community.path.replace(/^\//, '')).sort().join(',')
-  return [{
-    title: selectedScopeSummary.value,
-    url: `${currentOrigin.value}/ical/${scope}`,
-  }]
+  return `${currentOrigin.value}/ical/${scope}`
 })
 const hasTelephone = computed(() => /^\+[1-9]\d{7,14}$/.test(telephone.value.trim()))
 const hasEmail = computed(() => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.value.trim()))
-const hasFakeTelephone = computed(() => fakeTelephone.value.trim().length > 0)
-const hasFakeEmail = computed(() => fakeEmail.value.trim().length > 0)
 const hasRecoveryTelephone = computed(() => /^\+[1-9]\d{7,14}$/.test(recoveryContact.value.trim()))
 const hasRecoveryEmail = computed(() => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recoveryContact.value.trim()))
 const selectedScopeSummary = computed(() => selectedCommunitySlugs.value.includes(wholeCountryValue)
@@ -218,21 +189,6 @@ const setFrequency = (value: FrequencyValue, checked: boolean | 'indeterminate')
   }
 }
 
-const futureMethods = [
-  {
-    title: 'SMS',
-    description: 'Upozornění na vybrané události dostaneš jako SMS.',
-  },
-  {
-    title: 'E-mail',
-    description: 'Upozornění e-mailem může obsahovat událost, kterou si přidáš do vlastního kalendáře.',
-  },
-  {
-    title: 'Oznámení ve webu',
-    description: 'Upozornění dostaneš přímo v tomto prohlížeči.',
-  },
-] as const
-
 const retryCommunities = () => refresh()
 
 const isMethodReady = (method: 'sms' | 'email' | 'web-push') => readiness.value?.[method === 'web-push' ? 'webPush' : method] === true
@@ -262,26 +218,28 @@ const enableWebPush = async () => {
       if (Notification.permission === 'denied') { webPushState.value = 'denied'; return }
       // requestPermission starts synchronously in the click handler, before any await.
       const permission = Notification.permission === 'granted' ? 'granted' : await Notification.requestPermission()
-       if (!current()) return
+      if (!current()) return
       if (permission !== 'granted') { webPushState.value = permission === 'denied' ? 'denied' : 'default'; return }
       await navigator.serviceWorker.register('/notification-sw.js', { scope: '/' })
-       if (!current()) return
+      if (!current()) return
       const registration = await navigator.serviceWorker.ready
-       if (!current()) return
+      if (!current()) return
       const bytes = Uint8Array.from(atob(vapidPublicKey.value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - vapidPublicKey.value.length % 4) % 4)), character => character.charCodeAt(0))
       let subscription = await registration.pushManager.getSubscription()
-       if (!current()) return
+      if (!current()) return
       if (!subscription) {
         subscription = await registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: bytes })
-         if (!current()) return
+        if (!current()) return
       }
-      pushActivationRequest = { channel: 'web-push', contact: subscription.toJSON(), communitySlugs: [...notificationScope.value], frequencies: [...selectedFrequencies.value], consentAt: new Date().toISOString(), consentVersion: '2026-09' }
+      pushActivationRequest = { channel: 'web-push', contact: subscription.toJSON(), communitySlugs: [...notificationScope.value], frequencies: [...selectedFrequencies.value], consentAt: new Date().toISOString() }
     }
     if (!current()) return
     const result = await $fetch<{ state: 'active' | 'updated' | 'pending-reactivation' }>('/api/notifications/activate', { method: 'POST', retry: 0, body: { ...pushActivationRequest, ...(pushTurnstileToken.value ? { turnstileToken: pushTurnstileToken.value } : {}) } })
     if (!current()) return
     if (!['active', 'updated', 'pending-reactivation'].includes(result.state)) throw new Error('Unexpected activation response')
     webPushState.value = result.state
+    savedPushScope.value = selectedScopeSummary.value
+    await refreshBrowserManagement()
     pushChallengeRequired.value = false
     pushActivationRequest = undefined
   } catch (error) {
@@ -293,6 +251,38 @@ const enableWebPush = async () => {
   } finally {
     if (current()) { pushTurnstileToken.value = ''; isWebPushActivating.value = false; pushChallengeRevision.value++ }
   }
+}
+const openPushManagement = async () => {
+  if (isPushManaging.value) return
+  isPushManaging.value = true
+  try {
+    await refreshBrowserManagement()
+    if (browserManagement.value?.state === 'active' || browserManagement.value?.state === 'pending-reactivation') {
+      await navigateTo('/notifications/manage/browser')
+    } else {
+      pushRecoveryOpen.value = true
+    }
+  } finally { isPushManaging.value = false }
+}
+const checkPushDelivery = async () => {
+  if (isPushChecking.value) return
+  isPushChecking.value = true
+  pushDeviceIssue.value = null
+  try {
+    if (!window.isSecureContext || !('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+      pushDeviceIssue.value = 'Tento prohlížeč webové notifikace nepodporuje. Na iPhonu nebo iPadu otevři web z plochy jako aplikaci.'
+    } else if (Notification.permission !== 'granted') {
+      pushDeviceIssue.value = Notification.permission === 'denied'
+        ? 'Prohlížeč má oznámení pro tento web zakázaná. Povol je v nastavení webu a odběr zkus znovu aktivovat.'
+        : 'Oznámení zatím nejsou povolená. Klikni na Aktivovat webové notifikace a povol je.'
+    } else {
+      const registration = await navigator.serviceWorker.getRegistration('/')
+      if (!await registration?.pushManager.getSubscription()) pushDeviceIssue.value = 'V tomto prohlížeči chybí push odběr. Zkus webové notifikace znovu aktivovat.'
+    }
+    await refreshBrowserManagement()
+  } catch {
+    pushDeviceIssue.value = 'Stav tohoto prohlížeče se nepodařilo ověřit. Obnov stránku a zkus to znovu.'
+  } finally { isPushChecking.value = false }
 }
 const requestPushRecovery = async () => {
   if (!isMethodReady('web-push') || isPushRecovering.value || (pushRecoveryChallengeRequired.value && !pushRecoveryTurnstileToken.value)) return
@@ -313,7 +303,8 @@ const requestPushRecovery = async () => {
       }
     }
     if (!current()) return
-    if (pushRecoveryContact) await $fetch('/api/notifications/manage-request', { method: 'POST', retry: 0, body: { channel: 'web-push', contact: pushRecoveryContact, ...(pushRecoveryTurnstileToken.value ? { turnstileToken: pushRecoveryTurnstileToken.value } : {}) } })
+    if (!pushRecoveryContact) { pushRecoveryState.value = 'missing'; return }
+    await $fetch('/api/notifications/manage-request', { method: 'POST', retry: 0, body: { channel: 'web-push', contact: pushRecoveryContact, ...(pushRecoveryTurnstileToken.value ? { turnstileToken: pushRecoveryTurnstileToken.value } : {}) } })
     if (!current()) return
     pushRecoveryState.value = 'success'
     pushRecoveryChallengeRequired.value = false
@@ -328,18 +319,6 @@ const requestPushRecovery = async () => {
     if (current()) { pushRecoveryTurnstileToken.value = ''; isPushRecovering.value = false; pushRecoveryChallengeRevision.value++ }
   }
 }
-const expressSmsInterest = () => {
-  $counterscale.trackSmsIntent()
-  window.alert(interestConfirmation)
-}
-const expressEmailInterest = () => {
-  $counterscale.trackEmailIntent()
-  window.alert(interestConfirmation)
-}
-const expressWebInterest = () => {
-  $counterscale.trackWebIntent()
-  window.alert(interestConfirmation)
-}
 const methodContact = (method: 'sms' | 'email') => method === 'sms' ? telephone.value : email.value
 const validMethodContact = (method: 'sms' | 'email') => method === 'sms' ? hasTelephone.value : hasEmail.value
 const validRecoveryContact = (method: 'sms' | 'email') => method === 'sms' ? hasRecoveryTelephone.value : hasRecoveryEmail.value
@@ -351,7 +330,7 @@ const activate = async (method: 'sms' | 'email') => {
   if (!isMethodReady(method) || !hasSelectedScope.value || !validMethodContact(method) || isActivating.value || (challengeRequired.value && !turnstileToken.value)) return
   const revision = activationChallengeRevision.value
   isActivating.value = true
-  activationState.value = null
+  activationState.value[method] = null
   try {
     const result = await $fetch<{ state: 'active' | 'updated' | 'pending-reactivation' }>('/api/notifications/activate', {
       method: 'POST',
@@ -362,18 +341,17 @@ const activate = async (method: 'sms' | 'email') => {
         communitySlugs: notificationScope.value,
         frequencies: selectedFrequencies.value,
         consentAt: new Date().toISOString(),
-        consentVersion: '2026-09',
         ...(turnstileToken.value ? { turnstileToken: turnstileToken.value } : {}),
       },
     })
     if (revision !== activationChallengeRevision.value) return
-    activationState.value = result.state
+    activationState.value[method] = result.state
     challengeRequired.value = false
   } catch (error) {
     if (revision !== activationChallengeRevision.value) return
     challengeRequired.value = challengeRequired.value || (error as { statusCode?: number }).statusCode === 403
     turnstileToken.value = ''
-    activationState.value = 'error'
+    activationState.value[method] = 'error'
   } finally {
     if (revision === activationChallengeRevision.value) {
       isActivating.value = false
@@ -424,6 +402,7 @@ const copyCalendarUrl = async (url: string) => {
 onMounted(() => {
   currentOrigin.value = window.location.origin
   void refreshReadiness()
+  void refreshBrowserManagement()
   document.addEventListener('visibilitychange', refreshVisibleReadiness)
   if (directEntry) $counterscale.trackSubscriptionGuide()
 })
@@ -507,110 +486,146 @@ onBeforeUnmount(() => {
 
       <UAlert v-if="isReadinessLoading" color="neutral" title="Ověřujeme dostupné možnosti upozornění…" role="status" />
 
-      <template v-for="(method, index) in futureMethods" :key="method.title">
-        <section class="space-y-4">
-          <h3 class="text-xl font-semibold leading-tight">{{ method.title }}</h3>
-          <p>{{ method.description }}</p>
+      <section class="space-y-4">
+        <h3 class="text-xl font-semibold leading-tight">SMS</h3>
+        <p>Upozornění na vybrané události dostaneš jako SMS.</p>
+        <UFormField label="Telefonní číslo" name="telephone" :error="telephone && !hasTelephone ? 'Zadej telefonní číslo v mezinárodním formátu, například +420123456789.' : undefined">
+          <UInput v-model="telephone" type="tel" autocomplete="tel" class="w-full" :disabled="isActivating || !isMethodReady('sms')" />
+        </UFormField>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <UButton
+            color="primary"
+            class="min-h-11 w-full sm:w-auto"
+            :loading="isActivating && activeMethod === 'sms'"
+            :disabled="!isMethodReady('sms') || !hasSelectedScope || !hasTelephone || isActivating || (challengeRequired && !turnstileToken)"
+            @click="activeMethod = 'sms'; activate('sms')"
+          >Aktivovat odběr</UButton>
+          <UButton color="neutral" variant="link" class="ms-auto min-h-11" aria-label="Spravovat SMS notifikace" :disabled="!isMethodReady('sms')" @click="recoveryMethod = 'sms'; recoveryOpen = true">Správa notifikací</UButton>
+        </div>
+        <UAlert v-if="!isReadinessLoading && !isMethodReady('sms')" color="neutral" :title="temporaryUnavailableMessage" role="status" />
+        <UAlert v-else-if="activationState.sms === 'active'" color="success" title="Odběr je aktivní. Potvrzení a odkaz pro správu ti pošleme v první zprávě." role="status" aria-live="polite" />
+        <UAlert v-else-if="activationState.sms === 'updated'" color="success" title="Nastavení odběru jsme aktualizovali." role="status" aria-live="polite" />
+        <UAlert v-else-if="activationState.sms === 'pending-reactivation'" color="warning" title="Tento kontakt už dříve odhlásil upozornění. Obnovení potvrď přes odkaz pro správu; do té doby ti nic neposíláme." role="status" aria-live="polite" />
+        <UAlert v-else-if="activationState.sms === 'error'" color="error" :title="challengeRequired ? temporaryUnavailableMessage : 'Nastavení se teď nepodařilo uložit. Nic jsme nezměnili. Zkus to prosím znovu.'" role="alert" />
+        <NotificationChallenge v-if="challengeRequired && activeMethod === 'sms'" v-model="turnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="activationChallengeRevision" />
+      </section>
 
-          <template v-if="method.title === 'SMS'">
-            <template v-if="isMethodReady('sms')">
-              <UFormField label="Telefonní číslo" name="telephone" :error="telephone && !hasTelephone ? 'Zadej telefonní číslo v mezinárodním formátu, například +420123456789.' : undefined">
-                <UInput
-                  v-model="telephone"
-                  type="tel"
-                  autocomplete="tel"
-                  class="w-full"
-                  :disabled="isActivating"
-                />
-              </UFormField>
-              <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isActivating && activeMethod === 'sms'" :disabled="!hasSelectedScope || !hasTelephone || isActivating || (challengeRequired && !turnstileToken)" @click="activeMethod = 'sms'; activate('sms')">Aktivovat odběr</UButton>
-              <UButton color="neutral" variant="link" aria-label="Spravovat SMS notifikace" @click="recoveryMethod = 'sms'; recoveryOpen = true">Spravovat notifikace</UButton>
+      <USeparator label="nebo" />
+
+      <section class="space-y-4">
+        <h3 class="text-xl font-semibold leading-tight">E-mail</h3>
+        <p>Upozornění e-mailem může obsahovat událost, kterou si přidáš do vlastního kalendáře.</p>
+        <UFormField label="E-mail" name="email" :error="email && !hasEmail ? 'Zadej platný e-mail.' : undefined">
+          <UInput v-model="email" type="email" autocomplete="email" class="w-full" :disabled="isActivating || !isMethodReady('email')" />
+        </UFormField>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <UButton
+            color="primary"
+            class="min-h-11 w-full sm:w-auto"
+            :loading="isActivating && activeMethod === 'email'"
+            :disabled="!isMethodReady('email') || !hasSelectedScope || !hasEmail || isActivating || (challengeRequired && !turnstileToken)"
+            @click="activeMethod = 'email'; activate('email')"
+          >Aktivovat odběr</UButton>
+          <UButton color="neutral" variant="link" class="ms-auto min-h-11" aria-label="Spravovat e-mailové notifikace" :disabled="!isMethodReady('email')" @click="recoveryMethod = 'email'; recoveryOpen = true">Správa notifikací</UButton>
+        </div>
+        <UAlert v-if="!isReadinessLoading && !isMethodReady('email')" color="neutral" :title="temporaryUnavailableMessage" role="status" />
+        <UAlert v-else-if="activationState.email === 'active'" color="success" title="Odběr je aktivní. Potvrzení a odkaz pro správu ti pošleme v první zprávě." role="status" aria-live="polite" />
+        <UAlert v-else-if="activationState.email === 'updated'" color="success" title="Nastavení odběru jsme aktualizovali." role="status" aria-live="polite" />
+        <UAlert v-else-if="activationState.email === 'pending-reactivation'" color="warning" title="Tento kontakt už dříve odhlásil upozornění. Obnovení potvrď přes odkaz pro správu; do té doby ti nic neposíláme." role="status" aria-live="polite" />
+        <UAlert v-else-if="activationState.email === 'error'" color="error" :title="challengeRequired ? temporaryUnavailableMessage : 'Nastavení se teď nepodařilo uložit. Nic jsme nezměnili. Zkus to prosím znovu.'" role="alert" />
+        <NotificationChallenge v-if="challengeRequired && activeMethod === 'email'" v-model="turnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="activationChallengeRevision" />
+      </section>
+
+      <USeparator label="nebo" />
+
+      <section class="space-y-4">
+        <h3 class="text-xl font-semibold leading-tight">Webové notifikace</h3>
+        <p>Upozornění dostaneš přímo v tomto prohlížeči.</p>
+        <p class="text-sm text-muted">
+          Tato možnost je pro nás nejlevnější a pro tebe nejsoukromější.
+          <UPopover mode="hover" enable-touch :ui="{ content: 'max-w-xs p-4 text-sm' }">
+            <UButton icon="i-lucide-info" color="neutral" variant="link" aria-label="Proč jsou webové notifikace levnější a soukromější" />
+            <template #content>
+              <p>Odesílání SMS a e-mailů může Jednadvacet stát drobné poplatky a vyžaduje uložit tvůj kontakt do databáze. Za jednotlivé webové notifikace poskytovateli rozesílky neplatíme a místo e-mailu či telefonu ukládáme technické údaje odběru tohoto prohlížeče.</p>
             </template>
-            <template v-else>
-              <UFormField label="Telefonní číslo" name="telephone">
-                <UInput v-model="fakeTelephone" type="tel" autocomplete="tel" class="w-full" />
-              </UFormField>
-              <UButton color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope || !hasFakeTelephone" @click="expressSmsInterest">Mám zájem o SMS</UButton>
-              <p role="status" class="text-sm text-muted">{{ falseReadinessMessage }}</p>
-            </template>
+          </UPopover>
+        </p>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <UButton
+            color="primary"
+            class="min-h-11 w-full sm:w-auto"
+            :loading="isWebPushActivating"
+            :disabled="!isMethodReady('web-push') || !vapidPublicKey || !hasSelectedScope || isWebPushActivating || (pushChallengeRequired && !pushTurnstileToken)"
+            @click="enableWebPush"
+          >Aktivovat webové notifikace</UButton>
+          <UButton
+            color="neutral"
+            variant="link"
+            class="ms-auto min-h-11"
+            aria-label="Spravovat webové notifikace"
+            :loading="isPushManaging"
+            :disabled="isPushManaging"
+            @click="openPushManagement"
+          >Správa notifikací</UButton>
+        </div>
+        <UAlert v-if="!isReadinessLoading && (!isMethodReady('web-push') || !vapidPublicKey)" color="neutral" :title="temporaryUnavailableMessage" role="status" />
+        <UAlert v-else-if="webPushState === 'active'" color="success" :title="`Odběr pro ${savedPushScope} jsme uložili. Za chvíli by se měla zobrazit potvrzovací notifikace.`" description="Pokud ji do minuty neuvidíš, otevři níže Notifikace nepřišla? a zkontroluj možné příčiny. Správu odběru můžeš otevřít rovnou tlačítkem Správa notifikací." role="status" />
+        <UAlert v-else-if="webPushState === 'updated'" color="success" :title="`Nastavení odběru pro ${savedPushScope} jsme uložili.`" description="Další upozornění dostaneš podle zvolené frekvence. Tato změna neposílá nové potvrzení. Správa notifikací otevře nastavení přímo; pokud v tomto prohlížeči chybí přístup, nabídne obnovu odkazem v notifikaci." role="status" />
+        <UAlert v-else-if="webPushState === 'pending-reactivation'" color="warning" title="Obnovení potvrď přes odkaz pro správu. Do té doby ti upozornění na akce neposíláme." role="status" />
+        <UAlert v-else-if="webPushState === 'default'" color="neutral" title="Oznámení jsi zatím nepovolil. Nic jsme neaktivovali; můžeš to zkusit znovu." role="status" />
+        <UAlert v-else-if="webPushState === 'denied'" color="warning" title="Oznámení máš v prohlížeči zakázaná. Povol je v jeho nastavení a pak to zkus znovu." role="alert" />
+        <UAlert v-else-if="webPushState === 'install'" color="neutral" title="Na iPhonu nebo iPadu si nejdřív přidej web na plochu a otevři ho jako aplikaci." role="status">
+          <template #description>
+            <ol class="list-decimal space-y-1 ps-5">
+              <li>Na iPhonu otevři menu stránky ikonou vlevo od adresy. Na iPadu tento krok přeskoč.</li>
+              <li>Otevři menu Sdílení.</li>
+              <li>Vyber Přidat na plochu a potvrď přidání.</li>
+              <li>Otevři novou ikonu Jednadvacet na ploše. Pak můžeš aktivovat webové notifikace.</li>
+            </ol>
           </template>
-
-          <template v-else-if="method.title === 'E-mail'">
-            <template v-if="isMethodReady('email')">
-              <UFormField label="E-mail" name="email" :error="email && !hasEmail ? 'Zadej platný e-mail.' : undefined">
-                <UInput
-                  v-model="email"
-                  type="email"
-                  autocomplete="email"
-                  class="w-full"
-                  :disabled="isActivating"
-                />
-              </UFormField>
-              <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isActivating && activeMethod === 'email'" :disabled="!hasSelectedScope || !hasEmail || isActivating || (challengeRequired && !turnstileToken)" @click="activeMethod = 'email'; activate('email')">Aktivovat odběr</UButton>
-              <UButton color="neutral" variant="link" aria-label="Spravovat e-mailové notifikace" @click="recoveryMethod = 'email'; recoveryOpen = true">Spravovat notifikace</UButton>
-            </template>
-            <template v-else>
-              <UFormField label="E-mail" name="email">
-                <UInput v-model="fakeEmail" type="email" autocomplete="email" class="w-full" />
-              </UFormField>
-              <UButton color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope || !hasFakeEmail" @click="expressEmailInterest">Mám zájem o e-mail</UButton>
-              <p role="status" class="text-sm text-muted">{{ falseReadinessMessage }}</p>
-            </template>
+        </UAlert>
+        <UAlert v-else-if="webPushState === 'unsupported'" color="neutral" title="Tento prohlížeč teď oznámení nepodporuje. Můžeš odebírat kalendář přes iCalendar." role="status" />
+        <UAlert v-else-if="webPushState === 'rate-limited'" color="warning" title="Počkej prosím alespoň minutu, než to zkusíš znovu." role="alert" />
+        <UAlert v-else-if="webPushState === 'error'" color="error" :title="pushChallengeRequired ? 'Nejdřív ověř požadavek a pak aktivaci zkus znovu.' : 'Aktivaci se teď nepodařilo potvrdit. Zkus to prosím později.'" role="alert" />
+        <NotificationChallenge v-if="pushChallengeRequired" v-model="pushTurnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="pushChallengeRevision" label="Ověřit aktivaci oznámení" />
+        <UModal v-model:open="pushRecoveryOpen" title="Správa notifikací" description="Přístup ke správě se v tomto prohlížeči nepodařilo ověřit.">
+          <template #body>
+            <div class="space-y-3" aria-live="polite">
+              <p v-if="browserManagementError" role="alert">Správu se teď nepodařilo načíst. Zkus ji otevřít znovu později.</p>
+              <template v-else>
+                <p>Pro správu potřebuješ uložený přístup z první aktivace nebo z odkazu v notifikaci. U staršího odběru může chybět, například po smazání cookies. Povolená oznámení v Safari ani jiném prohlížeči ho nenahrazují.</p>
+                <p>Pokud tu máš existující odběr, pošli si nový odkaz tlačítkem níže. Otevření notifikace obnoví přístup. Opakovaná aktivace existujícího odběru nové potvrzení neposílá.</p>
+                <UButton color="neutral" variant="outline" :loading="isPushRecovering" :disabled="!isMethodReady('web-push') || isPushRecovering || (pushRecoveryChallengeRequired && !pushRecoveryTurnstileToken)" @click="requestPushRecovery">Obnovit přístup přes notifikaci</UButton>
+                <UAlert v-if="pushRecoveryState === 'success'" color="neutral" title="Pokud tu máš uložený odběr, pošleme do tohoto prohlížeče nový odkaz pro správu. Po otevření notifikace budeš moct správu otevírat přímo." role="status" />
+                <UAlert v-else-if="pushRecoveryState === 'missing'" color="warning" title="V tomto prohlížeči push odběr chybí. Není kam poslat odkaz. Zkus webové notifikace znovu aktivovat." role="status" />
+                <UAlert v-else-if="pushRecoveryState === 'rate-limited'" color="warning" title="Počkej prosím alespoň minutu, než požádáš o odkaz znovu." role="alert" />
+                <UAlert v-else-if="pushRecoveryState === 'error'" color="error" :title="pushRecoveryChallengeRequired ? 'Nejdřív ověř požadavek a pak požádej o odkaz znovu.' : 'Odkaz se teď nepodařilo vyžádat. Zkus to prosím později.'" role="alert" />
+                <NotificationChallenge v-if="pushRecoveryChallengeRequired" v-model="pushRecoveryTurnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="pushRecoveryChallengeRevision" label="Ověřit obnovu přístupu" />
+              </template>
+            </div>
           </template>
-
-          <template v-else>
-            <template v-if="isMethodReady('web-push') && vapidPublicKey">
-              <UButton color="primary" class="min-h-11 w-full sm:w-auto" :loading="isWebPushActivating" :disabled="!hasSelectedScope || isWebPushActivating || (pushChallengeRequired && !pushTurnstileToken)" @click="enableWebPush">Aktivovat oznámení v prohlížeči</UButton>
-              <UButton color="neutral" variant="link" :loading="isPushRecovering" :disabled="isPushRecovering || (pushRecoveryChallengeRequired && !pushRecoveryTurnstileToken)" @click="requestPushRecovery">Poslat odkaz pro správu tohoto prohlížeče</UButton>
-              <UAlert v-if="webPushState === 'active'" color="success" title="Oznámení jsou pro tento prohlížeč aktivní. Odkaz pro správu ti pošleme v první zprávě." role="status" />
-              <UAlert v-else-if="webPushState === 'updated'" color="success" title="Nastavení oznámení jsme aktualizovali." role="status" />
-              <UAlert v-else-if="webPushState === 'pending-reactivation'" color="warning" title="Obnovení potvrď přes odkaz pro správu. Do té doby ti upozornění na akce neposíláme." role="status" />
-              <UAlert v-else-if="webPushState === 'default'" color="neutral" title="Oznámení jsi zatím nepovolil. Nic jsme neaktivovali; můžeš to zkusit znovu." role="status" />
-              <UAlert v-else-if="webPushState === 'denied'" color="warning" title="Oznámení máš v prohlížeči zakázaná. Povol je v jeho nastavení a pak to zkus znovu." role="alert" />
-              <UAlert v-else-if="webPushState === 'install'" color="neutral" title="Na iPhonu nebo iPadu si nejdřív přidej web na plochu a otevři ho jako aplikaci." role="status" />
-              <UAlert v-else-if="webPushState === 'unsupported'" color="neutral" title="Tento prohlížeč teď oznámení nepodporuje. Můžeš odebírat kalendář přes iCalendar." role="status" />
-              <UAlert v-else-if="webPushState === 'rate-limited'" color="warning" title="Počkej prosím alespoň minutu, než to zkusíš znovu." role="alert" />
-              <UAlert v-else-if="webPushState === 'error'" color="error" :title="pushChallengeRequired ? 'Nejdřív ověř požadavek a pak aktivaci zkus znovu.' : 'Aktivaci se teď nepodařilo potvrdit. Zkus to prosím později.'" role="alert" />
-              <NotificationChallenge v-if="pushChallengeRequired" v-model="pushTurnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="pushChallengeRevision" label="Ověřit aktivaci oznámení" />
-              <UAlert v-if="pushRecoveryState === 'success'" color="neutral" title="Pokud pro tento prohlížeč existuje správa oznámení, pošleme ti odkaz. Bez uloženého odběru není co obnovit." role="status" />
-              <UAlert v-else-if="pushRecoveryState === 'rate-limited'" color="warning" title="Počkej prosím alespoň minutu, než požádáš o odkaz znovu." role="alert" />
-              <UAlert v-else-if="pushRecoveryState === 'error'" color="error" :title="pushRecoveryChallengeRequired ? 'Nejdřív ověř požadavek a pak požádej o odkaz znovu.' : 'Odkaz se teď nepodařilo vyžádat. Zkus to prosím později.'" role="alert" />
-              <NotificationChallenge v-if="pushRecoveryChallengeRequired" v-model="pushRecoveryTurnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="pushRecoveryChallengeRevision" label="Ověřit správu prohlížeče" />
-            </template>
-            <template v-else>
-              <UButton color="neutral" class="min-h-11 w-full sm:w-auto" :disabled="!hasSelectedScope" @click="expressWebInterest">Mám zájem o oznámení ve webu</UButton>
-              <p role="status" class="text-sm text-muted">{{ falseReadinessMessage }}</p>
-            </template>
+        </UModal>
+        <UCollapsible class="space-y-3" @update:open="$event && checkPushDelivery()">
+          <UButton color="neutral" variant="link">Notifikace nepřišla?</UButton>
+          <template #content>
+            <div class="space-y-3" aria-live="polite">
+              <p v-if="isPushChecking" role="status">Ověřujeme stav odběru…</p>
+              <UAlert v-else-if="pushDeviceIssue" color="warning" :title="pushDeviceIssue" role="status" />
+              <p v-if="browserManagementError">Stav odeslání se teď nepodařilo načíst. Zkus kontrolu znovu později.</p>
+              <template v-else-if="browserManagement && browserManagement.state !== 'unavailable'">
+                <p v-if="browserManagement.confirmation === 'pending'">Odeslání potvrzovací notifikace zatím není potvrzené. Zpráva čeká na zpracování nebo se odeslání opakuje po chybě. Pokud už čekáš déle než minutu, nemusí být problém u tebe. Zkus stav zkontrolovat později.</p>
+                <p v-else-if="browserManagement.confirmation === 'submitted'">Poskytovatel notifikaci přijal. To ale nepotvrzuje její zobrazení na zařízení.</p>
+                <p v-else-if="browserManagement.confirmation === 'unavailable'">Potvrzovací zpráva už není dostupná k odeslání. Stav odběru můžeš zkontrolovat přes Správu notifikací; samotné uložení odběru nepotvrzuje funkční doručování.</p>
+                <p v-else>U tohoto odběru nemáme dostupný stav potvrzovací zprávy.</p>
+              </template>
+              <p v-else-if="!isPushChecking">Bez platného přístupu ke správě nemůžeme ukázat stav odeslání. Otevři Správu notifikací a případně obnov přístup.</p>
+              <p>Zkontroluj také oznámení prohlížeče v nastavení systému, centrum oznámení a režim Nerušit nebo Soustředění. Jejich stav web neumí zjistit.</p>
+              <p>Pokud se potvrzení nezobrazí, doručování není ověřené. Do vyřešení můžeš použít e-mail nebo kalendářový feed.</p>
+              <UButton color="neutral" variant="outline" :loading="isPushChecking" @click="checkPushDelivery">Zkontrolovat znovu</UButton>
+            </div>
           </template>
-        </section>
-        <USeparator v-if="index < futureMethods.length - 1" label="nebo" />
-      </template>
-
-      <UAlert
-        v-if="activationState === 'active'"
-        color="success"
-        title="Odběr je aktivní. Potvrzení a odkaz pro správu ti pošleme v první zprávě."
-        role="status"
-        aria-live="polite"
-      />
-      <UAlert
-        v-else-if="activationState === 'updated'"
-        color="success"
-        title="Nastavení odběru jsme aktualizovali."
-        role="status"
-        aria-live="polite"
-      />
-      <UAlert
-        v-else-if="activationState === 'pending-reactivation'"
-        color="warning"
-        title="Tento kontakt už dříve odhlásil upozornění. Obnovení potvrď přes odkaz pro správu; do té doby ti nic neposíláme."
-        role="status"
-        aria-live="polite"
-      />
-      <div v-else-if="activationState === 'error'" class="space-y-3" role="alert">
-        <UAlert color="error" :title="challengeRequired ? temporaryUnavailableMessage : 'Nastavení se teď nepodařilo uložit. Nic jsme nezměnili. Zkus to prosím znovu.'" />
-      </div>
-      <NotificationChallenge v-if="challengeRequired" v-model="turnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="activationChallengeRevision" />
+        </UCollapsible>
+      </section>
 
       <USeparator label="nebo" />
       <section class="min-w-0 space-y-4">
@@ -619,27 +634,25 @@ onBeforeUnmount(() => {
         <p v-if="hasSelectedScope" class="text-sm text-muted">Vybraný rozsah: {{ selectedScopeSummary }}</p>
         <p v-else class="text-sm text-muted">Vyber alespoň jednu komunitu, abys získal adresu kalendáře.</p>
 
-        <div v-if="hasSelectedScope" class="space-y-4">
-          <div v-for="calendar in calendarUrls" :key="calendar.url" class="space-y-2">
-            <p class="text-sm font-semibold text-highlighted">{{ calendar.title }}</p>
-            <div class="flex min-w-0">
-              <code
-                tabindex="0"
-                :aria-label="`Adresa kalendáře pro ${calendar.title}`"
-                class="min-w-0 flex-1 select-all overflow-hidden text-ellipsis whitespace-nowrap rounded-s-md border border-e-0 border-default bg-elevated px-3 py-2 text-xs"
-              >{{ calendar.url }}</code>
-              <UButton
-                color="primary"
-                square
-                :aria-label="copiedCalendarUrl === calendar.url ? 'Adresa zkopírována' : 'Kopírovat adresu kalendáře'"
-                :title="copiedCalendarUrl === calendar.url ? 'Adresa zkopírována' : 'Kopírovat adresu kalendáře'"
-                class="shrink-0 justify-center rounded-s-none"
-                @click="copyCalendarUrl(calendar.url)"
-              >
-                <UIcon v-show="copiedCalendarUrl !== calendar.url" name="i-lucide-copy" class="size-5" />
-                <UIcon v-show="copiedCalendarUrl === calendar.url" name="i-lucide-check" class="size-5" />
-              </UButton>
-            </div>
+        <div v-if="calendarUrl" class="space-y-2">
+          <p class="text-sm font-semibold text-highlighted">{{ selectedScopeSummary }}</p>
+          <div class="flex min-w-0">
+            <code
+              tabindex="0"
+              :aria-label="`Adresa kalendáře pro ${selectedScopeSummary}`"
+              class="min-w-0 flex-1 select-all overflow-hidden text-ellipsis whitespace-nowrap rounded-s-md border border-e-0 border-default bg-elevated px-3 py-2 text-xs"
+            >{{ calendarUrl }}</code>
+            <UButton
+              color="primary"
+              square
+              :aria-label="copiedCalendarUrl === calendarUrl ? 'Adresa zkopírována' : 'Kopírovat adresu kalendáře'"
+              :title="copiedCalendarUrl === calendarUrl ? 'Adresa zkopírována' : 'Kopírovat adresu kalendáře'"
+              class="shrink-0 justify-center rounded-s-none"
+              @click="copyCalendarUrl(calendarUrl)"
+            >
+              <UIcon v-show="copiedCalendarUrl !== calendarUrl" name="i-lucide-copy" class="size-5" />
+              <UIcon v-show="copiedCalendarUrl === calendarUrl" name="i-lucide-check" class="size-5" />
+            </UButton>
           </div>
         </div>
 
@@ -694,14 +707,14 @@ onBeforeUnmount(() => {
         <UFormField :label="recoveryMethod === 'sms' ? 'Telefonní číslo' : 'E-mail'" name="recovery-contact">
           <UInput v-model="recoveryContact" :type="recoveryMethod === 'sms' ? 'tel' : 'email'" class="w-full" />
         </UFormField>
-        <UAlert v-if="recoveryState === 'success'" color="success" title="Pokud pro tento kontakt existuje správa notifikací, pošleme ti odkaz. Zkus to prosím později, pokud ti už odkaz přišel." role="status" aria-live="polite" />
-          <UAlert v-else-if="recoveryState === 'error'" color="error" :title="recoveryChallengeRequired ? temporaryUnavailableMessage : 'Odkaz se teď nepodařilo odeslat. Zkus to prosím později.'" role="alert" />
-          <NotificationChallenge v-if="recoveryOpen && recoveryChallengeRequired" v-model="recoveryTurnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="recoveryChallengeRevision" />
+        <UAlert v-if="recoveryState === 'success'" color="success" title="Pokud máš na tomto kontaktu odběr, pošleme ti nový odkaz pro správu. Zkontroluj i spam a použij nejnovější odkaz. Pokud zpráva nepřijde, počkej alespoň minutu a zkus to znovu." role="status" aria-live="polite" />
+        <UAlert v-else-if="recoveryState === 'error'" color="error" :title="recoveryChallengeRequired ? temporaryUnavailableMessage : 'Odkaz se teď nepodařilo odeslat. Zkus to prosím později.'" role="alert" />
+        <NotificationChallenge v-if="recoveryOpen && recoveryChallengeRequired" v-model="recoveryTurnstileToken" :site-key="publicConfig.notificationTurnstileSiteKey" :reset-key="recoveryChallengeRevision" />
       </div>
     </template>
     <template #footer>
       <UButton color="neutral" variant="outline" @click="recoveryOpen = false">Zrušit</UButton>
-       <UButton color="neutral" :loading="isRecovering" :disabled="!recoveryMethod || !validRecoveryContact(recoveryMethod) || isRecovering || (recoveryChallengeRequired && !recoveryTurnstileToken)" @click="requestRecovery(recoveryMethod!)">Poslat odkaz pro správu</UButton>
+      <UButton color="neutral" :loading="isRecovering" :disabled="!recoveryMethod || !validRecoveryContact(recoveryMethod) || isRecovering || (recoveryChallengeRequired && !recoveryTurnstileToken)" @click="requestRecovery(recoveryMethod!)">Poslat odkaz pro správu</UButton>
     </template>
   </UModal>
 </template>

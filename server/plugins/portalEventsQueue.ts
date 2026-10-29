@@ -16,6 +16,11 @@ import {
   type PortalEventsQueueMessage,
 } from '../utils/portalEventsQueue.ts'
 
+// Replaced by Nitro at build time so preview behaviour cannot be enabled by a
+// runtime variable in a deployed production Worker.
+declare const __PREVIEW_DEPLOY__: boolean
+const isPreviewDeploy = typeof __PREVIEW_DEPLOY__ !== 'undefined' && __PREVIEW_DEPLOY__
+
 export default defineNitroPlugin((nitroApp) => {
   nitroApp.hooks.hook('cloudflare:queue', async queueEvent => {
     const { batch } = queueEvent
@@ -23,7 +28,7 @@ export default defineNitroPlugin((nitroApp) => {
     const event = queueEvent as unknown as { env?: { DB?: NotificationDatabase, NOTIFICATION_MESSAGES_QUEUE?: NotificationMessagesQueue }, context?: { notificationDatabase?: NotificationDatabase, notificationMessagesQueue?: NotificationMessagesQueue, portalCommunities?: PortalCommunity[] } }
 
     try {
-      const parsedBatch = parsePortalEventsQueueBatch(batch.messages as PortalEventsQueueEnvelope[])
+      const parsedBatch = parsePortalEventsQueueBatch(batch.messages as readonly PortalEventsQueueEnvelope[])
       for (const messageId of parsedBatch.invalidMessageIds) {
         console.error(`[portal-events] Discarded invalid queue message: ${messageId}`)
       }
@@ -74,21 +79,25 @@ export default defineNitroPlugin((nitroApp) => {
       if (refreshAll) {
         // Use the materialized state that was just written. An immediate KV read is not
         // guaranteed to observe that write, even from the same Cloudflare location.
-        await reconcileGoogleCalendar(
-          result.calendarEvents,
-          getGoogleCalendarConfig(useRuntimeConfig() as unknown as Record<string, unknown>),
-        )
+        const runtimeConfig = useRuntimeConfig() as unknown as Record<string, unknown>
+        try {
+          await reconcileGoogleCalendar(result.calendarEvents, getGoogleCalendarConfig(runtimeConfig))
+        } catch (error) {
+          if (!isPreviewDeploy || !(error instanceof GoogleCalendarError) || error.message !== 'Google Calendar is not configured') throw error
+          console.info('[portal-events] Skipped Google Calendar reconciliation for credential-free preview')
+        }
       } else {
         const eventIds = new Set(changes.flatMap(change => change.eventId ? [change.eventId] : []))
         if (eventIds.size > 0) {
           const events = result.calendarEvents
             .filter(item => eventIds.has(item.event.id))
-          await syncGoogleCalendarChanges(
-            events,
-            getGoogleCalendarConfig(useRuntimeConfig() as unknown as Record<string, unknown>),
-            fetch,
-            result.deletedEventIds,
-          )
+          const runtimeConfig = useRuntimeConfig() as unknown as Record<string, unknown>
+          try {
+            await syncGoogleCalendarChanges(events, getGoogleCalendarConfig(runtimeConfig), fetch, result.deletedEventIds)
+          } catch (error) {
+            if (!isPreviewDeploy || !(error instanceof GoogleCalendarError) || error.message !== 'Google Calendar is not configured') throw error
+            console.info('[portal-events] Skipped Google Calendar incremental sync for credential-free preview')
+          }
         }
       }
       console.info(`[portal-events] Refreshed ${selected.length} communities from ${messages.length} messages`)

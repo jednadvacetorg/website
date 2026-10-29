@@ -5,13 +5,14 @@ import { createApp, createRouter, eventHandler, toNodeListener, type H3Event } f
 import type {} from 'nitropack'
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
+
+Object.assign(globalThis, { __NOTIFICATION_COMMUNITIES__: [{ slug: 'brno', title: 'Brno' }, { slug: 'praha', title: 'Praha' }] })
 import { activateNotificationChannel, requestNotificationManagementRecovery, stopNotificationChannel, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 import type { NotificationMessagesQueue } from '../server/utils/notificationMessagesQueue.ts'
 
-process.env.NODE_ENV = 'development'
-let runtimeConfig: Record<string, unknown> = { notificationUiVerificationFixture: true }
+let runtimeConfig: Record<string, unknown> = {}
 ;(globalThis as typeof globalThis & { useRuntimeConfig: () => Record<string, unknown> }).useRuntimeConfig = () => runtimeConfig
 
 const activate = (await import('../server/api/notifications/activate.post.ts')).default
@@ -19,14 +20,12 @@ const recover = (await import('../server/api/notifications/manage-request.post.t
 const manageGet = (await import('../server/api/notifications/manage/[token].get.ts')).default
 const managePost = (await import('../server/api/notifications/manage/[token].post.ts')).default
 
-const fixtureToken = 'notification-ui-verification-token'
 const activation = {
   channel: 'email',
   contact: 'guide@example.test',
   communitySlugs: ['brno'],
   frequencies: ['created'],
   consentAt: '2026-09-17T00:00:00.000Z',
-  consentVersion: '2026-09',
 }
 
 // Applied migrations and SQLite transactions retain real D1 statement change counts.
@@ -37,7 +36,7 @@ const managementDatabase = () => {
     transaction<T>(operation: () => T): () => T,
   }
   const sqlite = new Database(':memory:')
-  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+  for (const name of ['0000_majestic_lightspeed']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
   sqlite.exec('PRAGMA foreign_keys = ON')
   const executions = new WeakMap<NotificationStatement, () => { changes: number }>()
   let rejectBatch = false
@@ -64,20 +63,13 @@ const managementDatabase = () => {
 }
 
 const managementRuntime = {
-  notificationRootKey: Buffer.alloc(32, 4).toString('base64url'), notificationCommunitySlugs: 'brno,praha', notificationConsentVersion: '2026-09',
+  notificationRootKey: Buffer.alloc(32, 4).toString('base64url'),
   notificationTurnstileSecret: 'synthetic-turnstile', notificationTurnstileExpectedHostname: 'example.test',
   notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
 }
 const managementToken = Buffer.alloc(32, 1).toString('base64url')
 const readyEmailRuntime = () => {
-  const value = { ...managementRuntime, brevoApiKey: 'synthetic-api-key'.repeat(3), brevoCallbackSecret: 'synthetic-callback-secret'.repeat(2), brevoSenderName: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org', notificationEmailManualEnabled: true,
-    notificationExpectedTargetIdentity: '1'.repeat(64), notificationExpectedBundleHash: '2'.repeat(64), notificationExpectedMigrationHash: '3'.repeat(64), notificationExpectedConfigHash: '4'.repeat(64), notificationExpectedDeploymentId: '11111111-1111-1111-1111-111111111111' }
-  return { ...value, notificationEmailEvidence: JSON.stringify({ channel: 'email', evidenceKind: 'production-observation', mode: 'readiness', manualSwitch: true,
-    targetIdentity: value.notificationExpectedTargetIdentity, bundleHash: value.notificationExpectedBundleHash, migrationHash: value.notificationExpectedMigrationHash, configHash: value.notificationExpectedConfigHash, deploymentId: value.notificationExpectedDeploymentId,
-    verifiedAt: new Date(Date.now() - 1000).toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString(),
-    keyHash: createHash('sha256').update(JSON.stringify([value.notificationRootKey, value.brevoApiKey, value.brevoCallbackSecret, value.brevoSenderName, value.brevoSenderEmail])).digest('hex'),
-    gates: Object.fromEntries(['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs', 'firstMessage', 'eventDelivery'].map(gate => [gate, 'passed'])),
-  }) }
+  return { ...managementRuntime, brevoApiKey: 'synthetic-api-key'.repeat(3), brevoCallbackSecret: 'synthetic-callback-secret'.repeat(2), brevoSenderName: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org', notificationEmailManualEnabled: true }
 }
 const managementCrypto = { randomBytes: (length: number) => new Uint8Array(length).fill(1), subtle: crypto.subtle }
 const managementActions = [
@@ -146,21 +138,12 @@ const withRoutes = async (run: (baseUrl: string) => Promise<void>, database?: No
   }
 }
 
-test('activation accepts the fixture challenge only through the JSON body token', async () => {
-  await withRoutes(async baseUrl => {
-    const challenge = await fetch(`${baseUrl}/activate`, { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Turnstile-Response': fixtureToken }, body: JSON.stringify(activation) })
-    assert.equal(challenge.status, 403)
-    const success = await fetch(`${baseUrl}/activate`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...activation, turnstileToken: fixtureToken }) })
-    assert.equal(success.status, 200)
-    assert.deepEqual(await success.json(), { state: 'active' })
-  })
-})
-
 test('native push HTTP activation, challenge retry, pending reactivation and device-only recovery use applied D1', async t => {
   const Database = createRequire(import.meta.url)('better-sqlite3') as new (filename: string) => { close(): void, exec(sql: string): void, prepare(sql: string): { all(...values: unknown[]): Record<string, unknown>[], get(...values: unknown[]): unknown, run(...values: unknown[]): unknown }, transaction<T>(operation: () => T): () => T }
   const sqlite = new Database(':memory:')
   t.after(() => sqlite.close())
-  sqlite.exec(readFileSync(new URL('../server/db/migrations/sqlite/0000_majestic_lightspeed.sql', import.meta.url), 'utf8'))
+  const checkpointSql = (name: string) => execFileSync('git', ['show', `ec1001951d6df22f1e77f68ecd3ab678f0a49208:server/db/migrations/sqlite/${name}.sql`], { encoding: 'utf8' })
+  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk']) sqlite.exec(checkpointSql(name))
   sqlite.exec('PRAGMA foreign_keys = ON')
   const executions = new WeakMap<NotificationStatement, () => unknown>()
   const database: NotificationDatabase = { prepare(sql) {
@@ -177,13 +160,10 @@ test('native push HTTP activation, challenge retry, pending reactivation and dev
   const vapid = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
   const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
   const contact = { endpoint: 'https://push.example.test/device', expirationTime: null, keys: { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } }
-  runtimeConfig = { notificationRootKey: Buffer.alloc(32, 4).toString('base64url'), notificationCommunitySlugs: 'brno', notificationConsentVersion: '2026-09', notificationTurnstileSecret: 'synthetic-turnstile', notificationTurnstileExpectedHostname: 'example.test',
-    notificationWebPushEnabled: true, notificationWebPushFirstMessageReady: true, notificationWebPushEventDeliveryReady: true,
+  runtimeConfig = { notificationRootKey: Buffer.alloc(32, 4).toString('base64url'), notificationTurnstileSecret: 'synthetic-turnstile', notificationTurnstileExpectedHostname: 'example.test',
     notificationVapidPrivateKey: (await crypto.subtle.exportKey('jwk', vapid.privateKey)).d, public: { notificationVapidPublicKey: Buffer.from(await crypto.subtle.exportKey('raw', vapid.publicKey)).toString('base64url') }, notificationVapidSubject: 'mailto:test@example.test',
-    notificationExpectedTargetIdentity: '1'.repeat(64), notificationExpectedBundleHash: '2'.repeat(64), notificationExpectedMigrationHash: '3'.repeat(64), notificationExpectedConfigHash: '4'.repeat(64), notificationExpectedDeploymentId: '11111111-1111-1111-1111-111111111111' }
+  }
   const now = Date.now()
-  runtimeConfig.notificationWebPushEvidence = JSON.stringify({ channel: 'web-push', evidenceKind: 'production-observation', mode: 'readiness', manualSwitch: true, targetIdentity: runtimeConfig.notificationExpectedTargetIdentity, bundleHash: runtimeConfig.notificationExpectedBundleHash, migrationHash: runtimeConfig.notificationExpectedMigrationHash, configHash: runtimeConfig.notificationExpectedConfigHash, deploymentId: runtimeConfig.notificationExpectedDeploymentId, verifiedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 60_000).toISOString(), interoperability: ['chromium'],
-    keyHash: createHash('sha256').update(JSON.stringify([runtimeConfig.notificationRootKey, runtimeConfig.notificationVapidPrivateKey, (runtimeConfig.public as Record<string, unknown>).notificationVapidPublicKey, runtimeConfig.notificationVapidSubject])).digest('hex'), gates: Object.fromEntries(['artifacts', 'deployment', 'bindings', 'migration', 'vapid', 'protocol', 'interoperability', 'browser:chromium', 'sharedManagementStop', 'liveCanary', 'firstMessage', 'eventDelivery'].map(gate => [gate, 'passed'])) })
   const config = await notificationConfig(runtimeConfig)
   const ip = '192.0.2.7'
   const requesterHash = Buffer.from(await crypto.subtle.sign('HMAC', config.abuseHashKey, new TextEncoder().encode(ip))).toString('base64url')
@@ -200,14 +180,14 @@ test('native push HTTP activation, challenge retry, pending reactivation and dev
   }
   try {
     await withRoutes(async base => {
-      const post = (path: string, body: unknown, address = ip) => originalFetch(`${base}/${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Connecting-IP': address }, body: JSON.stringify(body) })
+      const post = (path: string, body: unknown, address = ip) => originalFetch(`${base}/${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Connecting-IP': address, origin: base }, body: JSON.stringify(body) })
       const body = { ...activation, channel: 'web-push', contact }
       // Even otherwise-current synthetic evidence cannot authorize the old D1 schema.
       const oldSchema = await post('activate', body, '198.51.100.7')
       assert.equal(oldSchema.status, 503)
       assert.deepEqual(sqlite.prepare('SELECT id FROM notification_contacts').all(), [])
       assert.deepEqual(sqlite.prepare('SELECT id FROM notification_outbox').all(), [])
-      for (const name of ['0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+      for (const name of ['0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(checkpointSql(name))
       sqlite.exec('PRAGMA foreign_keys = ON')
       assert.equal((await post('activate', body)).status, 403)
       assert.deepEqual(sqlite.prepare('SELECT id FROM notification_contacts').all(), [])
@@ -215,39 +195,79 @@ test('native push HTTP activation, challenge retry, pending reactivation and dev
       const active = await post('activate', { ...body, turnstileToken: 'synthetic-body-token' })
       assert.equal(active.status, 200)
       assert.deepEqual(await active.json(), { state: 'active' })
+      const sessionCookie = active.headers.get('set-cookie')!
+      assert.ok(sessionCookie.startsWith('__Secure-notification-web-push='))
+      for (const attribute of ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/api/notifications', 'Max-Age=7776000']) assert.ok(sessionCookie.includes(attribute), attribute)
+      const cookie = sessionCookie.split(';')[0]!
+      const manageBrowser = () => originalFetch(`${base}/manage/browser`, { headers: { cookie } })
+      assert.deepEqual(await (await originalFetch(`${base}/manage/browser`)).json(), { state: 'unavailable' })
+      assert.deepEqual(await (await originalFetch(`${base}/manage/browser`, { headers: { cookie: '__Secure-notification-web-push=forged' } })).json(), { state: 'unavailable' })
+      const managed = await (await manageBrowser()).json() as { channel: string, confirmation: string, communities: unknown[] }
+      assert.equal(managed.channel, 'web-push')
+      assert.equal(managed.confirmation, 'pending')
+      assert.ok(!JSON.stringify(managed).includes(cookie.split('=')[1]!))
+      const mutateBrowser = (origin?: string) => originalFetch(`${base}/manage/browser`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', ...(origin ? { origin } : {}) }, body: JSON.stringify({ action: 'update-frequencies', communitySlug: 'brno', frequencies: ['day-before'] }) })
+      assert.equal((await mutateBrowser()).status, 403)
+      assert.equal((await mutateBrowser('https://other.example.test')).status, 403)
+      assert.equal((await (await mutateBrowser(base)).json() as { outcome: string }).outcome, 'saved')
+      assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_outbox').all()[0]!.n, 1, 'opening and editing management never sends a notification')
+      for (const [status, confirmation] of [['consumed', 'submitted'], ['invalidated', 'unavailable'], ['queued', 'pending']] as const) {
+        sqlite.prepare('UPDATE notification_outbox SET status = ?').run(status)
+        assert.equal((await (await manageBrowser()).json() as { confirmation: string }).confirmation, confirmation)
+      }
+      sqlite.prepare("UPDATE notification_outbox SET status = 'pending'").run()
       assert.equal(challengeCalls, 1)
       assert.equal((await post('activate', body)).status, 429)
       const [before] = sqlite.prepare('SELECT id, capability_generation, management_token_digest, destination FROM notification_contacts').all()
       assert.equal(JSON.parse(before!.destination as string).expirationTime, undefined, 'native metadata is not part of device identity')
-      assert.equal((await post('activate', body, '192.0.2.8')).status, 200)
+      const updated = await post('activate', body, '192.0.2.8')
+      assert.equal(updated.status, 200)
+      assert.equal(updated.headers.get('set-cookie'), null, 'knowing an existing subscription does not mint management authority')
       const recovery = await post('recover', { channel: 'web-push', contact }, '192.0.2.9')
       assert.equal(recovery.status, 202)
       const text = await recovery.text()
       assert.ok(!text.includes(contact.endpoint))
       assert.equal(sqlite.prepare('SELECT capability_generation FROM notification_contacts').all()[0]!.capability_generation, 2)
+      assert.deepEqual(await (await manageBrowser()).json(), { state: 'unavailable' }, 'recovery invalidates the old browser session')
       const absent = await post('recover', { channel: 'web-push', contact: { ...contact, endpoint: 'https://push.example.test/absent' } }, '192.0.2.10')
       assert.equal(await absent.text(), text)
       const [outbox] = sqlite.prepare("SELECT payload_ciphertext, payload_iv FROM notification_outbox WHERE status = 'pending'").all()
       const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: Buffer.from(outbox!.payload_iv as string, 'base64url') }, config.outboxTransportKey, Buffer.from(outbox!.payload_ciphertext as string, 'base64url'))
       const token = JSON.parse(new TextDecoder().decode(plaintext)).capability
-      const stopped = await post(`manage/${token}`, { action: 'stop-channel' }, '192.0.2.11')
+      const restored = await originalFetch(`${base}/manage/${token}`)
+      const restoredCookie = restored.headers.get('set-cookie')!.split(';')[0]!
+      assert.notEqual(restoredCookie, cookie)
+      assert.equal((await (await originalFetch(`${base}/manage/browser`, { headers: { cookie: restoredCookie } })).json() as { channel: string }).channel, 'web-push')
+      const stopped = await originalFetch(`${base}/manage/browser`, { method: 'POST', headers: { cookie: restoredCookie, origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ action: 'stop-channel' }) })
       assert.equal(stopped.status, 200)
+      assert.ok(stopped.headers.get('set-cookie')?.includes('Max-Age=0'))
+      assert.deepEqual(await (await originalFetch(`${base}/manage/browser`, { headers: { cookie: restoredCookie } })).json(), { state: 'unavailable' })
       const pending = await post('activate', body, '192.0.2.12')
       assert.equal(pending.status, 200)
       assert.deepEqual(await pending.json(), { state: 'pending-reactivation' })
+      assert.equal(pending.headers.get('set-cookie'), null, 'reactivation still requires its confirmation link')
       assert.deepEqual(sqlite.prepare('SELECT channel, reason FROM notification_suppressions').all(), [{ channel: 'web-push', reason: 'user-stop' }])
     }, database)
   } finally { runtimeConfig = previousRuntime; globalThis.fetch = originalFetch }
 })
 
-test('recovery keeps its JSON contact contract independent from activation fields', async () => {
-  await withRoutes(async baseUrl => {
-    const challenge = await fetch(`${baseUrl}/recover`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'email', contact: 'guide@example.test' }) })
-    assert.equal(challenge.status, 403)
-    const success = await fetch(`${baseUrl}/recover`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ channel: 'email', contact: 'guide@example.test', turnstileToken: fixtureToken, email: 'not-an-email', telephone: 'invalid' }) })
-    assert.equal(success.status, 202)
-    assert.match((await success.json() as { message: string }).message, /Pokud pro tento kontakt/)
-  })
+test('browser session authority cannot read, adopt or mutate an email subscription', async t => {
+  const storage = managementDatabase()
+  t.after(storage.close)
+  const previous = runtimeConfig
+  runtimeConfig = managementRuntime
+  t.after(() => { runtimeConfig = previous })
+  await seedManagement(storage.database)
+  const before = storage.snapshot()
+  await withRoutes(async base => {
+    const cookie = `__Secure-notification-web-push=${managementToken}`
+    const read = await fetch(`${base}/manage/browser`, { headers: { cookie } })
+    assert.deepEqual(await read.json(), { state: 'unavailable' })
+    const mutation = await fetch(`${base}/manage/browser`, { method: 'POST', headers: { cookie, origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ action: 'stop-channel' }) })
+    assert.deepEqual(await mutation.json(), { outcome: 'unavailable' })
+    assert.equal((await fetch(`${base}/manage/${managementToken}`)).headers.get('set-cookie'), null)
+    assert.deepEqual(storage.snapshot(), before)
+  }, storage.database)
 })
 
 for (const channel of ['email', 'sms'] as const) {
@@ -351,7 +371,7 @@ for (const channel of ['email', 'sms'] as const) {
       const accepted = await post('single-use')
       assert.equal(accepted.status, 202)
       const generic = await accepted.text()
-      assert.ok(generic.includes('Pokud pro tento kontakt'))
+      assert.ok(generic.includes('Pokud máš na tomto kontaktu odběr'))
       const callsBeforeRateLimit = calls
       assert.equal((await post('new-token')).status, 429)
       assert.equal(calls, callsBeforeRateLimit, 'a token does not bypass the minute limit')
@@ -362,107 +382,6 @@ for (const channel of ['email', 'sms'] as const) {
     }, storage.database)
   })
 }
-
-test('development fixture projects many collapsed-management communities and scopes row mutations', async () => {
-  await withRoutes(async baseUrl => {
-    const active = await fetch(`${baseUrl}/manage/notification-ui-management-active`)
-    const result = await active.json() as { state: string, channel: string, maskedContact: string, communities: Array<{ slug: string, title: string, frequencies: string[] }> }
-    assert.equal(result.state, 'active')
-    assert.equal(result.channel, 'email')
-    assert.equal(result.maskedContact, 'u•••@example.test')
-    assert.equal(result.communities.length, 6)
-    assert.match(result.communities[0]!.title, /mimořádně dlouhým/)
-    assert.deepEqual(result.communities[0]!.frequencies, ['created', 'week-before'])
-    assert.deepEqual(result.communities[5]!.frequencies, ['day-before'])
-
-    const saved = await fetch(`${baseUrl}/manage/notification-ui-management-active`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'update-frequencies', communitySlug: 'brno', frequencies: ['day-before'] }),
-    })
-    const savedResult = (await saved.json() as { outcome: string, management: typeof result }).management
-    assert.deepEqual(savedResult.communities.find(community => community.slug === 'brno')?.frequencies, ['day-before'])
-    assert.deepEqual(savedResult.communities.find(community => community.slug === 'praha')?.frequencies, ['created', 'day-before'])
-
-    const removed = await fetch(`${baseUrl}/manage/notification-ui-management-active`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'remove-community', communitySlug: 'praha' }),
-    })
-    const removedResult = (await removed.json() as { outcome: string, management: typeof result }).management
-    assert.equal(removedResult.communities.some(community => community.slug === 'praha'), false)
-    assert.deepEqual(removedResult.communities.find(community => community.slug === 'brno')?.frequencies, ['created', 'week-before'])
-
-    const stopped = await fetch(`${baseUrl}/manage/notification-ui-management-active`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'stop-channel' }),
-    })
-    assert.deepEqual(await stopped.json(), { outcome: 'stopped' })
-  })
-})
-
-test('development fixture keeps pending scope read-only and neutralizes terminal or unknown links', async () => {
-  await withRoutes(async baseUrl => {
-    const pending = await fetch(`${baseUrl}/manage/notification-ui-management-pending-reactivation`)
-    assert.deepEqual(await pending.json(), {
-      state: 'pending-reactivation',
-      channel: 'sms',
-      maskedContact: '+1555 ••• ••••',
-      communities: [{
-        slug: 'brno',
-        title: 'Brno s mimořádně dlouhým názvem pro ověření zalamování',
-        frequencies: ['created'],
-      }],
-    })
-    for (const token of ['notification-ui-management-stopped', 'notification-ui-management-old', 'notification-ui-management-unavailable', 'notification-ui-management-unknown-token']) {
-      const response = await fetch(`${baseUrl}/manage/${token}`)
-      assert.deepEqual(await response.json(), { state: 'unavailable' })
-    }
-  })
-})
-
-test('reserved management tokens are inert when the development fixture guard is absent', async () => {
-  process.env.NODE_ENV = 'production'
-  runtimeConfig = { notificationUiVerificationFixture: true }
-  try {
-    await withRoutes(async baseUrl => {
-      const response = await fetch(`${baseUrl}/manage/notification-ui-management-active`)
-      assert.deepEqual(await response.json(), { state: 'unavailable' })
-    })
-  } finally {
-    process.env.NODE_ENV = 'development'
-    runtimeConfig = { notificationUiVerificationFixture: true }
-  }
-})
-
-test('production fixture opt-in cannot activate SMS or native push and keeps recovery private', async () => {
-  const receiver = await crypto.subtle.generateKey({ name: 'ECDH', namedCurve: 'P-256' }, true, ['deriveBits'])
-  const contact = { endpoint: 'https://push.example.test/private-device', expirationTime: null, keys: { p256dh: Buffer.from(await crypto.subtle.exportKey('raw', receiver.publicKey)).toString('base64url'), auth: Buffer.alloc(16, 2).toString('base64url') } }
-  const previous = runtimeConfig
-  process.env.NODE_ENV = 'production'
-  runtimeConfig = { notificationUiVerificationFixture: true }
-  try {
-    await withRoutes(async base => {
-      for (const [channel, destination] of [['sms', '+420777123456'], ['web-push', contact]]) {
-        const post = (path: string, body: unknown) => fetch(`${base}/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-        assert.equal((await post('activate', { ...activation, channel, contact: destination, turnstileToken: fixtureToken })).status, 503)
-        const bodies: string[] = []
-        for (const token of [undefined, fixtureToken]) {
-          const response = await post('recover', { channel, contact: destination, turnstileToken: token })
-          assert.equal(response.status, 202)
-          const text = await response.text()
-          assert.ok(!text.includes('+420777123456') && !text.includes(contact.endpoint) && !text.includes(contact.keys.auth))
-          bodies.push(text)
-        }
-        assert.equal(bodies[0], bodies[1])
-      }
-      for (const token of ['malformed', 'A'.repeat(43)]) {
-        assert.deepEqual(await (await fetch(`${base}/manage/${token}`)).json(), { state: 'unavailable' })
-      }
-    })
-  } finally { runtimeConfig = previous; process.env.NODE_ENV = 'development' }
-})
 
 test('management POST reports missing D1 as a sanitized infrastructure failure', async () => {
   const token = 'A'.repeat(32)
@@ -558,8 +477,8 @@ for (const count of [1, 2, 3]) {
     await seedManagement(storage.database)
     const selected = ['created', 'day-before', 'week-before'].slice(0, count)
     const projection = (communities: unknown[]) => ({ state: 'active', channel: 'email', maskedContact: 'A•••@example.com', communities })
-    const brno = { slug: 'brno', title: 'brno', frequencies: selected }
-    const praha = { slug: 'praha', title: 'praha', frequencies: ['created', 'day-before'] }
+    const brno = { slug: 'brno', title: 'Brno', frequencies: selected }
+    const praha = { slug: 'praha', title: 'Praha', frequencies: ['created', 'day-before'] }
     await withRoutes(async base => {
       const post = async (body: unknown) => {
         const response = await fetch(`${base}/manage/${managementToken}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
@@ -594,7 +513,7 @@ test('real management confirmation and explicit stop return their committed disc
     const confirmed = await post('confirm-reactivation')
     assert.equal(confirmed.status, 200)
     assert.deepEqual(await confirmed.json(), {
-      outcome: 'reactivated', management: { state: 'active', channel: 'email', maskedContact: 'A•••@example.com', communities: ['brno', 'praha'].map(slug => ({ slug, title: slug, frequencies: ['created', 'day-before'] })) },
+      outcome: 'reactivated', management: { state: 'active', channel: 'email', maskedContact: 'A•••@example.com', communities: [{ slug: 'brno', title: 'Brno', frequencies: ['created', 'day-before'] }, { slug: 'praha', title: 'Praha', frequencies: ['created', 'day-before'] }] },
     })
     assert.deepEqual(storage.snapshot()[2], [])
     const stopped = await post('stop-channel')
@@ -743,18 +662,13 @@ test('allowed real recovery registers identical generic wake for eligible, absen
   assert.ok(bodies.every(body => !body.includes('Alice') && !body.includes('Queue')))
 })
 
-test('HTTP recovery with disabled or expired delivery preserves the old management link and generic response', async t => {
+test('HTTP recovery with disabled or invalid provider configuration preserves the old management link and generic response', async t => {
   const previous = runtimeConfig
   t.after(() => { runtimeConfig = previous })
-  for (const scenario of ['disabled', 'expired'] as const) await t.test(scenario, async () => {
+  for (const scenario of ['disabled', 'provider-invalid'] as const) await t.test(scenario, async () => {
     runtimeConfig = readyEmailRuntime()
     if (scenario === 'disabled') runtimeConfig.notificationEmailManualEnabled = false
-    else {
-      const evidence = JSON.parse(String(runtimeConfig.notificationEmailEvidence))
-      evidence.verifiedAt = new Date(Date.now() - 3600000).toISOString()
-      evidence.expiresAt = new Date(Date.now() - 1000).toISOString()
-      runtimeConfig.notificationEmailEvidence = JSON.stringify(evidence)
-    }
+    else runtimeConfig.brevoApiKey = ''
     const storage = managementDatabase()
     try {
       await seedManagement(storage.database)
@@ -810,7 +724,7 @@ test('absent real recovery without Queue distinguishes an empty outbox from unre
         const response = await fetch(`${base}/recover`, { method: 'POST', headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '192.0.2.65' }, body: JSON.stringify({ channel: 'email', contact: 'absent@example.test' }) })
         assert.equal(response.status, 202)
         bodies.push(await response.text())
-        assert.deepEqual(JSON.parse(bodies.at(-1)!), { message: 'Pokud pro tento kontakt existuje správa notifikací, pošleme ti odkaz. Zkus to prosím později, pokud ti už odkaz přišel.' })
+        assert.deepEqual(JSON.parse(bodies.at(-1)!), { message: 'Pokud máš na tomto kontaktu odběr, pošleme ti nový odkaz pro správu. Zkontroluj i spam a použij nejnovější odkaz. Pokud zpráva nepřijde, počkej alespoň minutu a zkus to znovu.' })
         assert.equal(promises.length, 1)
         assert.deepEqual(events[0]!.context.nitro._waitUntilPromises, promises)
         await promises[0]
@@ -904,7 +818,7 @@ test('real H3 registration rejection awaits the exact promise and cannot erase a
         const result = await response.json() as { state?: string, outcome?: string, message?: string }
         if (operation === 'activate') assert.equal(result.state, 'active')
         if (operation === 'confirm-reactivation') assert.equal(result.outcome, 'reactivated')
-        if (operation === 'recover') assert.ok(result.message?.includes('Pokud pro tento kontakt'))
+        if (operation === 'recover') assert.ok(result.message?.includes('Pokud máš na tomto kontaktu odběr'))
         assert.equal(completed, true)
         assert.equal(promises.length, 0)
         assert.equal(events[0]!.context.nitro._waitUntilPromises!.length, 1)

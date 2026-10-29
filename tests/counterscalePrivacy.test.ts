@@ -198,16 +198,16 @@ test('public explicit URLs ignore unsafe canonical and preserve ordinary query r
   }
 })
 
-test('five zero-argument guide counters retain fixed public URLs and no capability referrer', async (t) => {
+test('guide and calendar-copy counters retain fixed public URLs and no capability referrer', async (t) => {
   const client = await fixture('/kalendar?ref=' + encodeURIComponent(origin + privateA), privateB)
   try {
     await client.mount()
     const before = client.pageviews().length
-    assert.deepEqual(Object.keys(client.provided), ['trackSubscriptionGuide', 'trackSmsIntent', 'trackEmailIntent', 'trackWebIntent', 'trackICalendarCopy'])
+    assert.deepEqual(Object.keys(client.provided), ['trackSubscriptionGuide', 'trackICalendarCopy'])
     for (const counter of Object.values(client.provided)) { assert.equal(counter.length, 0); counter() }
     await client.settle()
     assert.deepEqual(client.pageviews().slice(before).map(url => url.searchParams.get('p')), [
-      '/kalendar/subscription-guide', '/kalendar/signin-sms', '/kalendar/signin-mail', '/kalendar/signin-web', '/kalendar/copy-ical',
+      '/kalendar/subscription-guide', '/kalendar/copy-ical',
     ])
     assert.ok(client.requests.every(url => !decodeURIComponent(url.href).includes('SYNTH_')))
     t.diagnostic(JSON.stringify({ guidePageviews: client.pageviews().slice(before).map(url => url.href) }))

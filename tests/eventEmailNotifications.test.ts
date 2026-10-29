@@ -4,16 +4,19 @@ import { readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 
 import { dueEventEmailReasons, planEventNotifications } from '../server/utils/eventEmailNotifications.ts'
+import { composeBrevoEventSms } from '../server/utils/brevoSms.ts'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
+
+Object.assign(globalThis, { __NOTIFICATION_COMMUNITIES__: [{ slug: 'brno', title: 'Brno' }, { slug: 'praha', title: 'Praha' }] })
 import { activateNotificationChannel, readNotificationManagement, requestNotificationManagementRecovery, stopNotificationChannel, type NotificationDatabase, type NotificationStatement } from '../server/utils/notifications.ts'
 import type { PortalCalendarEvent } from '../server/utils/portalEvents.ts'
 
 const config = { ...await notificationConfig({
-  notificationCommunitySlugs: 'brno,praha', notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''),
-  notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09',
+  notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''),
+  notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org',
   notificationEmailSmsEnabled: true, notificationEmailSmsFirstMessageReady: true, notificationEmailSmsEventDeliveryReady: true,
 }), emailDeliveryReady: true }
-const schema = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
+const schema = ['0000_majestic_lightspeed'].map(name => readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')).join('\n')
 const fixture = (fail?: (sql: string) => boolean) => {
   const sqlite = new Database(':memory:')
   sqlite.exec(schema)
@@ -41,7 +44,7 @@ const fixture = (fail?: (sql: string) => boolean) => {
   const dependencies = { database, config, now: () => now }
   return { sqlite, database, dependencies, setNow: (value: string) => { now = new Date(value) } }
 }
-const signup = (dependencies: Parameters<typeof activateNotificationChannel>[1], frequencies = ['created'], contact = 'alice@example.test', community = 'brno') => activateNotificationChannel({ channel: 'email', contact, communitySlugs: [community], frequencies, consentAt: '2026-01-01T00:00:00.000Z', consentVersion: '2026-09' }, dependencies)
+const signup = (dependencies: Parameters<typeof activateNotificationChannel>[1], frequencies = ['created'], contact = 'alice@example.test', community = 'brno') => activateNotificationChannel({ channel: 'email', contact, communitySlugs: [community], frequencies, consentAt: '2026-01-01T00:00:00.000Z' }, dependencies)
 const item = (overrides: Partial<PortalCalendarEvent> = {}): PortalCalendarEvent => ({
   event: { id: '12', title: 'Meetup', start: '2026-01-12T12:00:00.000Z', end: null, location: 'Venue', tags: [] },
   community: { id: 'brno', title: 'Brno', path: '/brno' }, sequence: 72, changedAt: '2026-01-01T00:00:00.000Z', cancelled: false, ...overrides,
@@ -51,16 +54,22 @@ const payloads = async (sqlite: Database.Database) => Promise.all((sqlite.prepar
 
 test('one shared traversal plans three independently deduped channels with exact selected scope', async () => {
   const { sqlite, dependencies } = fixture()
-  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushEnabled: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
+  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
   await signup(ready)
   for (const channel of ['sms', 'web-push']) {
     sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)
     sqlite.prepare("INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) SELECT id, 'brno', 'created', 'created', 'updated' FROM notification_contacts WHERE channel = ?").run(channel)
   }
-  const results = await Promise.all([planEventNotifications([item()], ready), planEventNotifications([item()], ready)])
+  const source = item({ event: { ...item().event, osm_name: 'Bar', osm_address: 'Ulice 1, Brno', location: 'Zadní salonek' } })
+  const results = await Promise.all([planEventNotifications([source], ready), planEventNotifications([source], ready)])
   assert.equal(results.reduce((sum, result) => sum + result.planned, 0), 3)
   assert.deepEqual(sqlite.prepare('SELECT channel, community_slug, eligibility_frequency FROM notification_event_deliveries ORDER BY channel').all(), ['email', 'sms', 'web-push'].map(channel => ({ channel, community_slug: 'brno', eligibility_frequency: 'created' })))
   assert.deepEqual(sqlite.prepare("SELECT kind FROM notification_outbox WHERE kind LIKE 'event-%' ORDER BY kind").all(), [{ kind: 'event-email' }, { kind: 'event-sms' }, { kind: 'event-web-push' }])
+  const smsRow = sqlite.prepare("SELECT payload_ciphertext, payload_iv FROM notification_outbox WHERE kind = 'event-sms'").get() as { payload_ciphertext: string, payload_iv: string }
+  const smsPayload = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(smsRow.payload_iv) }, config.outboxTransportKey, decode(smsRow.payload_ciphertext))))
+  assert.equal(smsPayload.event.location, 'Bar, Ulice 1, Brno, Zadní salonek')
+  assert.equal(smsPayload.event.communityUrl, 'https://jednadvacet.org/brno')
+  assert.equal(composeBrevoEventSms({ ...smsPayload, recipient: smsPayload.destination }), 'Meetup\n12. 1. 2026 13:00\nBar, Ulice 1, Brno, Zadni salonek\n\nhttps://jednadvacet.org/brno')
   const updated = item({ event: { ...item().event, location: 'New venue' }, changedAt: '2026-01-02T00:00:00Z' })
   sqlite.prepare("UPDATE notification_event_deliveries SET status = 'submitted'").run()
   assert.equal((await planEventNotifications([updated], ready)).planned, 3)
@@ -74,7 +83,7 @@ test('a disabled channel consumes discovery without sendable backlog and leaves 
     sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)
     sqlite.prepare("INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) SELECT id, 'brno', 'created', 'created', 'updated' FROM notification_contacts WHERE channel = ?").run(channel)
   }
-  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: false, eventSmsOutboxSupported: true, webPushEnabled: true, webPushEventDeliveryReady: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
+  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: false, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
   assert.deepEqual((await planEventNotifications([item()], ready)).plannedByChannel, { email: 1, sms: 0, 'web-push': 1 })
   assert.deepEqual(sqlite.prepare('SELECT channel, status FROM notification_event_deliveries ORDER BY channel').all(), [{ channel: 'email', status: 'pending' }, { channel: 'sms', status: 'failed' }, { channel: 'web-push', status: 'pending' }])
   assert.equal((await planEventNotifications([item()], { ...ready, config: { ...ready.config, smsDeliveryReady: true } })).planned, 0)
@@ -102,7 +111,47 @@ const event = (start: string) => ({ event: { start }, cancelled: false })
 test('Prague 09:00 reminder projection handles CET and CEST boundaries', () => {
   assert.deepEqual(dueEventEmailReasons(event('2026-01-08T12:00:00.000Z'), new Date('2026-01-01T08:00:00.000Z')), ['week-before'])
   assert.deepEqual(dueEventEmailReasons(event('2026-04-01T12:00:00.000Z'), new Date('2026-03-31T07:00:00.000Z')), ['day-before'])
-  assert.deepEqual(dueEventEmailReasons(event('2026-04-01T12:00:00.000Z'), new Date('2026-03-31T08:00:00.000Z')), [])
+  assert.deepEqual(dueEventEmailReasons(event('2026-04-01T12:00:00.000Z'), new Date('2026-03-31T08:00:00.000Z')), ['day-before'])
+})
+
+test('an already-known event recovers one selected reminder after a missed Prague 09:00 hour', async () => {
+  const { sqlite, dependencies, setNow } = fixture()
+  await signup(dependencies, ['day-before'])
+  const source = item()
+  await planEventNotifications([source], dependencies)
+  setNow('2026-01-11T09:15:00.000Z')
+  assert.deepEqual(await planEventNotifications([source], dependencies), { planned: 1, plannedByChannel: { email: 1, sms: 0, 'web-push': 0 } })
+  assert.equal((await payloads(sqlite)).find(payload => payload.reason === 'day-before')?.reason, 'day-before')
+  assert.equal((await planEventNotifications([source], dependencies)).planned, 0)
+})
+
+test('Prague reminder recovery is bounded by local day, start, and DST calendar dates', () => {
+  for (const { start, now, expected } of [
+    { start: '2026-01-08T12:00:00.000Z', now: '2026-01-01T07:59:59.000Z', expected: [] },
+    { start: '2026-01-08T12:00:00.000Z', now: '2026-01-01T08:00:00.000Z', expected: ['week-before'] },
+    { start: '2026-01-08T12:00:00.000Z', now: '2026-01-07T22:59:59.000Z', expected: ['day-before'] },
+    { start: '2026-01-08T12:00:00.000Z', now: '2026-01-07T23:00:00.000Z', expected: [] },
+    { start: '2026-04-05T12:00:00.000Z', now: '2026-03-29T07:00:00.000Z', expected: ['week-before'] },
+    { start: '2026-11-01T12:00:00.000Z', now: '2026-10-25T08:00:00.000Z', expected: ['week-before'] },
+    { start: '2026-04-01T07:00:00.000Z', now: '2026-04-01T07:00:00.000Z', expected: [] },
+  ]) assert.deepEqual(dueEventEmailReasons(event(start), new Date(now)), expected)
+})
+
+test('a due reminder revision collides with carry-forward once and never revives terminal work', async () => {
+  const { sqlite, dependencies, setNow } = fixture()
+  await signup(dependencies, ['day-before'])
+  const source = item()
+  await planEventNotifications([source], dependencies)
+  setNow('2026-01-11T08:00:00.000Z')
+  assert.equal((await planEventNotifications([source], dependencies)).planned, 1)
+  setNow('2026-01-11T09:15:00.000Z')
+  const edited = item({ changedAt: '2026-01-02T00:00:00.000Z', event: { ...source.event, location: 'Revised venue' } })
+  assert.equal((await planEventNotifications([edited], dependencies)).planned, 1)
+  assert.deepEqual(sqlite.prepare("SELECT reason, event_revision, status FROM notification_event_deliveries WHERE event_revision = 1").all(), [{ reason: 'day-before', event_revision: 1, status: 'pending' }])
+  for (const [status, submittedAt] of [['submitted', null], ['delivered', null], ['failed', null], ['pending', '2026-01-11T09:15:00.000Z']] as const) {
+    sqlite.prepare('UPDATE notification_event_deliveries SET status = ?, submitted_at = ? WHERE event_revision = 1').run(status, submittedAt)
+    assert.equal((await planEventNotifications([edited], dependencies)).planned, 0)
+  }
 })
 
 test('cancelled and elapsed events never produce due reminders', () => {
@@ -251,7 +300,7 @@ test('minor refresh updates source watermark without sequence bump and later rem
   assert.equal(reminder.event.description, 'Minor text')
 })
 
-test('time/end/venue/cancellation revisions target only still-eligible prior submitted or delivered recipients', async () => {
+test('time/end/venue revisions carry pending announcements while notifying only prior recipients of changes', async () => {
   for (const change of [
     { start: '2026-01-13T12:00:00Z' }, { end: '2026-01-12T14:00:00Z' }, { location: 'Other venue' }, { cancelled: true },
   ]) {
@@ -265,8 +314,11 @@ test('time/end/venue/cancellation revisions target only still-eligible prior sub
     sqlite.exec("INSERT INTO notification_suppressions (channel, destination_hash, reason, suppressed_at) SELECT channel, destination_hash, 'provider-bounce', '2026-01-01' FROM notification_contacts WHERE id = 3; DELETE FROM notification_subscriptions WHERE contact_id = 4")
     const updated = item({ changedAt: '2026-01-02T00:00:00Z', sequence: 1, cancelled: change.cancelled ?? false, event: { ...item().event, ...('cancelled' in change ? {} : change) } })
     const results = await Promise.all([planEventNotifications([updated], dependencies), planEventNotifications([updated], dependencies)])
-    assert.equal(results.reduce((total, result) => total + result.planned, 0), 1)
-    assert.deepEqual(sqlite.prepare('SELECT contact_id, reason, event_revision FROM notification_event_deliveries WHERE event_revision = 1').all(), [{ contact_id: 1, reason: change.cancelled ? 'cancelled' : 'updated', event_revision: 1 }])
+    assert.equal(results.reduce((total, result) => total + result.planned, 0), change.cancelled ? 1 : 2)
+    assert.deepEqual(sqlite.prepare('SELECT contact_id, reason, event_revision FROM notification_event_deliveries WHERE event_revision = 1 ORDER BY contact_id, reason').all(), [
+      { contact_id: 1, reason: change.cancelled ? 'cancelled' : 'updated', event_revision: 1 },
+      ...(change.cancelled ? [] : [{ contact_id: 2, reason: 'created', event_revision: 1 }]),
+    ])
     const revision = (await payloads(sqlite)).find(payload => payload.event.sequence === 1)
     assert.equal(revision.event.uid, 'brno-12@jednadvacet.org')
     assert.equal(revision.event.cancelled, Boolean(change.cancelled))
@@ -274,6 +326,56 @@ test('time/end/venue/cancellation revisions target only still-eligible prior sub
     assert.equal((await planEventNotifications([item()], dependencies)).planned, 0)
     assert.equal(sqlite.prepare('SELECT notification_revision FROM notification_event_state').get().notification_revision, 1)
   }
+})
+
+test('a replacement revalidates queued work for every enabled channel and preserves the current event payload', async () => {
+  const { sqlite, dependencies } = fixture()
+  const ready = { ...dependencies, config: { ...config, smsEnabled: true, smsEventDeliveryReady: true, smsDeliveryReady: true, eventSmsOutboxSupported: true, webPushDeliveryReady: true, eventWebPushOutboxSupported: true } }
+  await signup(ready)
+  for (const channel of ['sms', 'web-push']) {
+    sqlite.prepare("INSERT INTO notification_contacts (channel, destination, destination_hash, management_token_digest, capability_generation, state, consent_at, consent_version, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', 'consent', '2026-09', 'created', 'updated')").run(channel, `${channel}-destination`, `${channel}-hash`, `${channel}-digest`)
+    sqlite.prepare("INSERT INTO notification_subscriptions (contact_id, community_slug, frequency, created_at, updated_at) SELECT id, 'brno', 'created', 'created', 'updated' FROM notification_contacts WHERE channel = ?").run(channel)
+  }
+  await planEventNotifications([item({ event: { ...item().event, osm_name: 'Old bar', osm_address: 'Old address' } })], ready)
+  sqlite.prepare("UPDATE notification_outbox SET status = 'queued' WHERE kind LIKE 'event-%'").run()
+  const edited = item({ changedAt: '2026-01-02T00:00:00Z', event: { ...item().event, location: 'New venue', osm_name: 'New bar', osm_address: 'New address' } })
+  assert.equal((await planEventNotifications([edited], ready)).planned, 3)
+  const rows = sqlite.prepare("SELECT kind, payload_ciphertext, payload_iv FROM notification_outbox WHERE kind LIKE 'event-%' AND status = 'pending' ORDER BY kind").all() as { kind: string, payload_ciphertext: string, payload_iv: string }[]
+  assert.equal(rows.length, 3)
+  const replacements = await Promise.all(rows.map(async row => ({ kind: row.kind, payload: JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: decode(row.payload_iv) }, config.outboxTransportKey, decode(row.payload_ciphertext)))) })))
+  assert.deepEqual(replacements.map(({ kind, payload }) => [kind, payload.event.location, payload.event.sequence]), [
+    ['event-email', 'New bar, New address', 1], ['event-sms', 'New bar, New address, New venue', 1], ['event-web-push', 'New bar, New address', 1],
+  ])
+  assert.ok(replacements.every(({ payload }) => payload.event.uid === 'brno-12@jednadvacet.org'))
+})
+
+test('a reservation prevents carry-forward while a late batch failure preserves the predecessor for retry', async () => {
+  const { sqlite, dependencies, database } = fixture()
+  await signup(dependencies)
+  await planEventNotifications([item()], dependencies)
+  const edited = item({ changedAt: '2026-01-02T00:00:00Z', event: { ...item().event, location: 'New venue' } })
+  let entered!: () => void
+  let release!: () => void
+  const ready = new Promise<void>(resolve => { entered = resolve })
+  const paused = new Promise<void>(resolve => { release = resolve })
+  const delayed = planEventNotifications([edited], { ...dependencies, database: { ...database, batch: async statements => { entered(); await paused; return database.batch(statements) } } })
+  await ready
+  sqlite.prepare("UPDATE notification_event_deliveries SET submitted_at = '2026-01-01T10:00:00.000Z'").run()
+  release()
+  assert.equal((await delayed).planned, 0)
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_event_deliveries WHERE event_revision = 1').get().n, 0)
+  let failState = false
+  const retry = fixture(sql => failState && sql.startsWith('UPDATE notification_event_state'))
+  await signup(retry.dependencies)
+  await planEventNotifications([item()], retry.dependencies)
+  const original = retry.sqlite.prepare("SELECT payload_ciphertext, status FROM notification_outbox WHERE kind = 'event-email'").get() as { payload_ciphertext: string, status: string }
+  failState = true
+  await assert.rejects(planEventNotifications([edited], retry.dependencies), /Injected D1 failure/)
+  const previous = retry.sqlite.prepare("SELECT payload_ciphertext, status FROM notification_outbox WHERE kind = 'event-email'").get() as { payload_ciphertext: string, status: string }
+  assert.equal(previous.payload_ciphertext, original.payload_ciphertext)
+  assert.equal(previous.status, 'pending')
+  failState = false
+  assert.equal((await planEventNotifications([edited], retry.dependencies)).planned, 1)
 })
 
 test('moving earlier gives no catchup to never-notified contacts, but preserves future selected reminders', async () => {

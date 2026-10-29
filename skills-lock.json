@@ -25,12 +25,6 @@
       "skillPath": "skills/nuxt-seo/SKILL.md",
       "computedHash": "2c95519ef88aa9e307af520ce3daa38fa37602823703513d2841436c133dca98"
     },
-    "nuxt-studio": {
-      "source": "onmax/nuxt-skills",
-      "sourceType": "github",
-      "skillPath": "skills/nuxt-studio/SKILL.md",
-      "computedHash": "194a8acbc2a368992ec12a183fc12786c68b9fe6520c893726853ed17e4460f3"
-    },
     "nuxt-ui": {
       "source": "onmax/nuxt-skills",
       "sourceType": "github",

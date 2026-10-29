@@ -58,7 +58,7 @@ if (process.env.NOTIFICATION_CONFIG_ISOLATION === 'true') test('generated notifi
   withProductionDatabase.d1_databases = structuredClone(production.d1_databases)
   assert.throws(() => operations.validateNotificationDeploymentConfiguration(withProductionDatabase, 'preview'), /preview-d1/)
   for (const field of ['queues', 'kv_namespaces', 'r2_buckets', 'triggers']) {
-    assert.throws(() => operations.validateNotificationDeploymentConfiguration({ ...preview, [field]: structuredClone(production[field]) }, 'preview'), /preview-production-binding/, field)
+    assert.throws(() => operations.validateNotificationDeploymentConfiguration({ ...preview, [field]: structuredClone(production[field]) }, 'preview'), field === 'kv_namespaces' ? /preview-kv/ : /preview-production-binding/, field)
   }
   const withRemoteDatabase = structuredClone(production)
   withRemoteDatabase.d1_databases[0].remote = true
@@ -83,9 +83,9 @@ const fixture = async (t: TestContext, contract: {
     triggers: { crons: ['13 * * * *'] }, observability: { logs: { enabled: true, persist: true, invocation_logs: true } },
   }
   const configBytes = JSON.stringify(config)
-  const migrationNames = ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']
+  const migrationNames = ['0000_majestic_lightspeed']
   const migrationBytes = await Promise.all(migrationNames.map(name => readFile(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8')))
-  const migrationPaths = ['migration.sql', 'columns.sql', 'detach.sql', 'constraints.sql', 'restore.sql', 'lifecycle-columns.sql', 'lifecycle-constraints.sql']
+  const migrationPaths = ['migration.sql']
   const moduleBytes = 'import "./chunk.mjs"; export default {}'
   const chunkBytes = 'export const message = "candidate"'
   const manifestBytes = '{"/asset.css":{"hash":"asset-byte-hash","size":12}}'
@@ -259,7 +259,7 @@ test('SMS operations probe submits once with private management link and never c
   const observation = { ...identity, channel: 'sms', manualSwitch: false, evidenceKind: 'local-candidate', gates: Object.fromEntries(['account', 'credits', 'country', 'compliance', 'sender', 'sharedManagementStop'].map(gate => [gate, 'passed'])) }
   await f.save('probe.json', observation)
   let calls = 0
-  const dependencies = { ...f.dependencies, environment: { NUXT_BREVO_API_KEY: 'private-api-key', NUXT_BREVO_SENDER_NAME: 'Jednadvacet', NOTIFICATION_VERIFY_RECIPIENT: '+420777123456', NOTIFICATION_VERIFY_MANAGEMENT_TOKEN: 'A'.repeat(43) }, command: async () => { throw Error('unexpected command') }, fetch: (async (url, init) => {
+  const dependencies = { ...f.dependencies, environment: { NUXT_BREVO_API_KEY: 'private-api-key', NUXT_BREVO_SMS_SENDER: 'Jednadvacet', NOTIFICATION_VERIFY_RECIPIENT: '+420777123456', NOTIFICATION_VERIFY_MANAGEMENT_TOKEN: 'A'.repeat(43) }, command: async () => { throw Error('unexpected command') }, fetch: (async (url, init) => {
     calls++
     assert.equal(String(url), 'https://api.brevo.com/v3/transactionalSMS/send')
     const body = JSON.parse(String(init?.body))
@@ -335,21 +335,21 @@ test('native push operations probe uses matching VAPID and one encrypted request
   assert.equal(calls, 0)
 })
 
-test('multichannel observation review reuses runtime gates, joint switches and oldest expiry without promoting evidence', async t => {
+test('multichannel observation review reuses runtime gates without expiry or promoting evidence', async t => {
   const f = await fixture(t)
   const local = { ...f.options, mode: 'local-preflight' as const, target: 'local' as const, channels: ['email', 'sms', 'web-push'] as const }
   const options = { ...local, channels: [...local.channels] }
   const identity = await operations.runEmailVerification(options, f.dependencies)
   const runtime: Record<string, unknown> = {
-    notificationSmsEnabled: true, notificationWebPushEnabled: true,
-    notificationRootKey: 'private-root-material', brevoApiKey: 'private-api-key', brevoCallbackSecret: 'private-callback-bearer', brevoSenderName: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org',
+    notificationSmsEnabled: true,
+    notificationRootKey: 'private-root-material', brevoApiKey: 'private-api-key', brevoCallbackSecret: 'private-callback-bearer', brevoSenderName: 'Jednadvacet.org', brevoSmsSender: 'Jednadvacet', brevoSenderEmail: 'noreply@jednadvacet.org',
     notificationVapidPrivateKey: 'private-vapid-material', notificationVapidPublicKey: 'public-vapid', notificationVapidSubject: 'mailto:synthetic@example.test',
   }
   for (const field of ['targetIdentity', 'deploymentId', 'bundleHash', 'migrationHash', 'configHash'] as const) runtime[`notificationExpected${field[0]!.toUpperCase()}${field.slice(1)}`] = identity[field]
   const allGates = ['artifacts', 'deployment', 'bindings', 'migration', 'sender', 'dns', 'callbackMetadata', 'https', 'sandbox', 'callback', 'liveCanary', 'humanInbox', 'humanCalendar', 'humanLink', 'humanLogs', 'account', 'credits', 'country', 'compliance', 'sharedManagementStop', 'vapid', 'protocol', 'interoperability', 'browser:chromium', 'firstMessage', 'eventDelivery']
   for (const [channel, name, material] of [
     ['email', 'Email', [runtime.notificationRootKey, runtime.brevoApiKey, runtime.brevoCallbackSecret, runtime.brevoSenderName, runtime.brevoSenderEmail]],
-    ['sms', 'Sms', [runtime.notificationRootKey, runtime.brevoApiKey, runtime.brevoSenderName]],
+    ['sms', 'Sms', [runtime.notificationRootKey, runtime.brevoApiKey, runtime.brevoSmsSender]],
     ['web-push', 'WebPush', [runtime.notificationRootKey, runtime.notificationVapidPrivateKey, runtime.notificationVapidPublicKey, runtime.notificationVapidSubject]],
   ] as const) runtime[`notification${name}Evidence`] = JSON.stringify({ ...identity, channel, evidenceKind: 'production-observation', mode: 'readiness', manualSwitch: true, verifiedAt: new Date(now - 1000).toISOString(), expiresAt: new Date(now + 60_000).toISOString(), keyHash: sha(JSON.stringify(material)), interoperability: ['chromium'], gates: Object.fromEntries(allGates.map(gate => [gate, 'passed'])) })
   const review = { ...options, mode: 'readiness' as const, target: 'production' as const, expectedSwitch: true, approveReadiness: true, evidencePath: join(f.directory, 'observations.json') }
@@ -358,14 +358,15 @@ test('multichannel observation review reuses runtime gates, joint switches and o
   const result = await run(runtime)
   assert.deepEqual(result.channelReadiness, { email: true, sms: true, 'web-push': true })
   assert.equal(result.evidenceKind, 'local-candidate')
-  assert.equal(result.expiresAt, new Date(now + 60_000).toISOString())
+  assert.equal(result.expiresAt, undefined)
   assert.equal(result.gates.liveCanary, 'pending', 'review does not perform live probes')
   safe(result)
-  for (const field of ['notificationSmsEnabled', 'notificationWebPushEnabled']) await assert.rejects(run({ ...runtime, [field]: false }), /evidence/)
+  await assert.rejects(run({ ...runtime, notificationSmsEnabled: false }), /evidence/)
   for (const name of ['Email', 'Sms', 'WebPush']) {
     const field = `notification${name}Evidence`
     const original = JSON.parse(runtime[field] as string)
-    for (const mutation of [{ evidenceKind: 'local-candidate' }, { targetIdentity: 'f'.repeat(64) }, { bundleHash: 'f'.repeat(64) }, { migrationHash: 'f'.repeat(64) }, { configHash: 'f'.repeat(64) }, { keyHash: 'f'.repeat(64) }, { expiresAt: new Date(now).toISOString() }, { verifiedAt: new Date(now + 1).toISOString() }, { gates: { ...original.gates, sharedManagementStop: 'pending', callbackMetadata: 'pending' } }]) await assert.rejects(run({ ...runtime, [field]: JSON.stringify({ ...original, ...mutation }) }), /evidence/)
+    await run({ ...runtime, [field]: JSON.stringify({ ...original, verifiedAt: new Date(now - 90 * 86400000).toISOString(), expiresAt: new Date(now - 1000).toISOString() }) })
+    for (const mutation of [{ evidenceKind: 'local-candidate' }, { targetIdentity: 'f'.repeat(64) }, { bundleHash: 'f'.repeat(64) }, { migrationHash: 'f'.repeat(64) }, { configHash: 'f'.repeat(64) }, { keyHash: 'f'.repeat(64) }, { verifiedAt: new Date(now + 1).toISOString() }, { gates: { ...original.gates, sharedManagementStop: 'pending', callbackMetadata: 'pending' } }]) await assert.rejects(run({ ...runtime, [field]: JSON.stringify({ ...original, ...mutation }) }), /evidence/)
   }
   await assert.rejects(run({ ...runtime, notificationSmsDeliveryCallbacksConfigured: true }), /evidence/)
   const sms = JSON.parse(runtime.notificationSmsEvidence as string)
@@ -707,12 +708,12 @@ test('provider timeout attempts once and cannot turn into accepted evidence', as
   assert.equal(attempts, 1)
 })
 
-test('readiness cannot extend the oldest source expiry', async t => {
+test('readiness records deployment verification without a delivery expiry', async t => {
   const f = await readinessFixture(t)
   f.evidence[0]!.verifiedAt = new Date(now - 1000).toISOString()
   f.evidence[0]!.expiresAt = new Date(now + 5000).toISOString()
   await f.save('evidence.json', f.evidence)
-  assert.equal((await f.verify()).expiresAt, new Date(now + 5000).toISOString())
+  assert.equal((await f.verify()).expiresAt, undefined)
 })
 
 test('readiness accepts an explicitly pinned switch-off deployment only with authenticated same-artifact history', async t => {

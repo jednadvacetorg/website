@@ -11,14 +11,17 @@ import type { NotificationDatabase, NotificationStatement } from '../server/util
 import { requestNotificationManagementRecovery } from '../server/utils/notifications.ts'
 import { notificationConfig } from '../server/utils/notificationConfig.ts'
 
+Object.assign(globalThis, { __NOTIFICATION_COMMUNITIES__: [{ slug: 'brno', title: 'Brno' }] })
+
 let runtimeConfig: Record<string, unknown> = { brevoCallbackSecret: 'callback-secret-for-tests' }
 ;(globalThis as typeof globalThis & { useRuntimeConfig: () => Record<string, unknown> }).useRuntimeConfig = () => runtimeConfig
 
 const callbackRoute = (await import('../server/api/notifications/brevo-events.post.ts')).default
+const smsCallbackRoute = (await import('../server/api/notifications/brevo-events-sms.post.ts')).default
 
 const createDatabase = () => {
   const sqlite = new Database(':memory:')
-  for (const name of ['0000_majestic_lightspeed', '0001_phase_7_columns', '0002_detach_event_callback_fk', '0003_restore_event_ledger_checks', '0004_restore_event_callback_fk', '0005_lifecycle_email_columns', '0006_lifecycle_email_constraints']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
+  for (const name of ['0000_majestic_lightspeed']) sqlite.exec(readFileSync(new URL(`../server/db/migrations/sqlite/${name}.sql`, import.meta.url), 'utf8'))
   sqlite.exec('PRAGMA foreign_keys = ON')
   const executions = new WeakMap<NotificationStatement, () => unknown>()
   const database: NotificationDatabase = {
@@ -44,11 +47,11 @@ const createDatabase = () => {
   return { sqlite, database }
 }
 
-const withCallbackRoute = async (database: NotificationDatabase, run: (baseUrl: string) => Promise<void>) => {
+const withCallbackRoute = async (database: NotificationDatabase, run: (baseUrl: string) => Promise<void>, channel: 'email' | 'sms' = 'email') => {
   const app = createApp()
   app.use('/brevo', eventHandler(event => {
     event.context._platform = { cloudflare: { env: { DB: database } } }
-    return callbackRoute(event)
+    return (channel === 'sms' ? smsCallbackRoute : callbackRoute)(event)
   }))
   const server = createServer(toNodeListener(app))
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -98,18 +101,83 @@ const postCallback = (baseUrl: string, body: string, authorization?: string) => 
   body,
 })
 
+test('SMS route authenticates and bounds payloads without mutating state', async t => {
+  const { sqlite, database } = createDatabase()
+  t.after(() => sqlite.close())
+  await withCallbackRoute(database, async baseUrl => {
+    assert.equal((await postCallback(baseUrl, '{}')).status, 401)
+    assert.equal((await postCallback(baseUrl, '{}', 'Bearer wrong')).status, 401)
+    assert.equal((await postCallback(baseUrl, 'x'.repeat(65537), 'Bearer callback-secret-for-tests')).status, 413)
+    assert.equal((await postCallback(baseUrl, 'invalid json', 'Bearer callback-secret-for-tests')).status, 400)
+    assert.equal((await postCallback(baseUrl, JSON.stringify(Array(51).fill({})), 'Bearer callback-secret-for-tests')).status, 400)
+    assert.equal((await postCallback(baseUrl, '{}', 'Bearer callback-secret-for-tests')).status, 202)
+  }, 'sms')
+  assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_delivery_callbacks').get().n, 0)
+})
+
+const smsBody = (msg_status: string, extra: Record<string, unknown> = {}) => JSON.stringify({
+  id: 26527, msg_status, messageId: 123, ts_event: 1728459617, type: 'transactional',
+  to: 'not-authority', tag: ['not-authority'], reference: { 1: 'not-authority' }, ...extra,
+})
+
+test('SMS callback matches stored provider ID, deduplicates retries and applies monotonic delivery/stop state', async t => {
+  for (const [wireStatus, expected, reason] of [
+    ['delivered', 'delivered', undefined], ['soft_bounce', 'soft-bounce', undefined],
+    ['hard_bounce', 'hard-bounce', 'provider-bounce'], ['rejected', 'blocked', undefined],
+    ['unsubscribed', 'unsubscribed', 'provider-opt-out'],
+  ] as const) await t.test(wireStatus, async () => {
+    const { sqlite, database } = createDatabase()
+    t.after(() => sqlite.close())
+    seedDelivery(sqlite, 'submitted', '123')
+    sqlite.exec("UPDATE notification_contacts SET channel = 'sms'; UPDATE notification_event_deliveries SET channel = 'sms'; UPDATE notification_outbox SET kind = 'event-sms'")
+    await withCallbackRoute(database, async baseUrl => {
+      for (const body of [smsBody(wireStatus), smsBody(wireStatus, { messageId: '123' }), smsBody('delivered')]) assert.equal((await postCallback(baseUrl, body, 'Bearer callback-secret-for-tests')).status, 202)
+    }, 'sms')
+    assert.equal(sqlite.prepare('SELECT status FROM notification_event_deliveries').get().status, expected)
+    assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_delivery_callbacks').get().n, wireStatus === 'delivered' ? 1 : 2)
+    assert.deepEqual(sqlite.prepare('SELECT channel, reason FROM notification_suppressions').all(), reason ? [{ channel: 'sms', reason }] : [])
+    assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_contacts').get().n, reason ? 0 : 1)
+    if (reason) assert.deepEqual(sqlite.prepare('SELECT status, payload_ciphertext, claim_token FROM notification_outbox').get(), { status: 'invalidated', payload_ciphertext: null, claim_token: null })
+  })
+})
+
+test('SMS webhook ignores malformed, uncorrelated, pre-submit, other-channel and ambiguous messages', async t => {
+  for (const scenario of ['email', 'web-push', 'pending', 'missing-provider', 'ambiguous', 'invalid'] as const) await t.test(scenario, async () => {
+    const { sqlite, database } = createDatabase()
+    t.after(() => sqlite.close())
+    seedDelivery(sqlite, scenario === 'pending' ? 'pending' : 'submitted', scenario === 'missing-provider' ? null : '123')
+    const channel = ['email', 'web-push'].includes(scenario) ? scenario : 'sms'
+    sqlite.prepare('UPDATE notification_contacts SET channel = ?').run(channel)
+    sqlite.prepare('UPDATE notification_event_deliveries SET channel = ?').run(channel)
+    if (scenario === 'ambiguous') sqlite.exec("INSERT INTO notification_event_deliveries (id, channel, contact_id, expected_capability_generation, destination_hash, event_uid, event_revision, reason, status, provider_message_id, created_at, updated_at) VALUES ('delivery_other_123', 'sms', 1, 7, 'hash_123456789', 'other@jednadvacet.org', 0, 'created', 'submitted', '123', '2026-09-21', '2026-09-21')")
+    await withCallbackRoute(database, async baseUrl => {
+      const values = scenario === 'invalid' ? [
+        smsBody('delivered', { messageId: 0 }), smsBody('delivered', { messageId: Number.MAX_SAFE_INTEGER + 1 }),
+        smsBody('delivered', { ts_event: '1728459617' }), smsBody('delivered', { id: 0 }),
+        smsBody('delivered', { type: 'marketing' }), smsBody('sent'), smsBody('subscribe'), smsBody('constructor'),
+        callbackBody('hard_bounce'), smsBody('delivered', { messageId: 999 }),
+      ] : [smsBody('unsubscribed')]
+      for (const body of values) assert.equal((await postCallback(baseUrl, body, 'Bearer callback-secret-for-tests')).status, 202)
+    }, 'sms')
+    assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_delivery_callbacks').get().n, 0)
+    assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_suppressions').get().n, 0)
+    assert.equal(sqlite.prepare('SELECT count(*) n FROM notification_contacts').get().n, 1)
+  })
+})
+
 test('callback authentication and byte limits stop streamed bodies before full consumption', async t => {
   const limit = 64 * 1024
-  for (const scenario of ['unauthorized', 'declared-oversize', 'chunked-oversize', 'multibyte-oversize', 'exact-limit'] as const) await t.test(scenario, async () => {
+  for (const channel of ['email', 'sms'] as const) for (const scenario of ['unauthorized', 'declared-oversize', 'chunked-oversize', 'multibyte-oversize', 'exact-limit'] as const) await t.test(`${channel}: ${scenario}`, async () => {
     const { sqlite, database } = createDatabase()
     t.after(() => sqlite.close())
     seedDelivery(sqlite, 'submitted', '201798300811.5787683@relay.domain.com')
+    if (channel === 'sms') sqlite.exec("UPDATE notification_contacts SET channel = 'sms'; UPDATE notification_event_deliveries SET channel = 'sms', provider_message_id = '123'")
     const app = createApp()
     app.use('/brevo', eventHandler(event => {
       event.context._platform = { cloudflare: { env: { DB: database } } }
-      return callbackRoute(event)
+      return (channel === 'sms' ? smsCallbackRoute : callbackRoute)(event)
     }))
-    const valid = callbackBody('delivered')
+    const valid = channel === 'sms' ? smsBody('delivered') : callbackBody('delivered')
     const text = scenario === 'exact-limit' ? valid.padEnd(limit, ' ')
       : scenario === 'multibyte-oversize' ? JSON.stringify({ padding: 'ž'.repeat(40000) })
       : 'x'.repeat(limit * 2)
@@ -456,7 +524,7 @@ test('callback racing generation recovery cannot delete or invalidate replacemen
   const paused = new Promise<void>(resolve => { release = resolve })
   const raced = applyBrevoCallback(callback('hard-bounce'), { ...database, batch: async statements => { entered(); await paused; return database.batch(statements) } })
   await ready
-  const config = await notificationConfig({ notificationCommunitySlugs: 'brno', notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''), notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org', notificationConsentVersion: '2026-09' })
+  const config = await notificationConfig({ notificationRootKey: btoa('01234567890123456789012345678901').replace(/=+$/g, ''), notificationTurnstileSecret: 'synthetic', notificationTurnstileExpectedHostname: 'jednadvacet.org' })
   await requestNotificationManagementRecovery({ channel: 'email', contact: 'synthetic@example.test' }, { database, config: { ...config, emailSmsEnabled: true, emailSmsFirstMessageReady: true, emailSmsEventDeliveryReady: true, emailDeliveryReady: true } })
   release()
   await raced

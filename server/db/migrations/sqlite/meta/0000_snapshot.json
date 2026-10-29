@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "150d4577-54e7-4b82-8598-c11109e9c6e3",
+  "id": "89a0dc98-cc8a-4fcb-a584-3b12983084cf",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "notification_abuse_attempts": {
@@ -255,6 +255,28 @@
           "notNull": false,
           "autoincrement": false
         },
+        "channel": {
+          "name": "channel",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'email'"
+        },
+        "community_slug": {
+          "name": "community_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "eligibility_frequency": {
+          "name": "eligibility_frequency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "expected_capability_generation": {
           "name": "expected_capability_generation",
           "type": "integer",
@@ -343,6 +365,16 @@
             "status"
           ],
           "isUnique": false
+        },
+        "notification_event_deliveries_authority_idx": {
+          "name": "notification_event_deliveries_authority_idx",
+          "columns": [
+            "contact_id",
+            "channel",
+            "community_slug",
+            "eligibility_frequency"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -363,6 +395,18 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {
+        "notification_event_deliveries_channel_check": {
+          "name": "notification_event_deliveries_channel_check",
+          "value": "\"notification_event_deliveries\".\"channel\" IN ('email', 'sms', 'web-push')"
+        },
+        "notification_event_deliveries_frequency_check": {
+          "name": "notification_event_deliveries_frequency_check",
+          "value": "\"notification_event_deliveries\".\"eligibility_frequency\" IN ('created', 'week-before', 'day-before')"
+        },
+        "notification_event_deliveries_reason_check": {
+          "name": "notification_event_deliveries_reason_check",
+          "value": "\"notification_event_deliveries\".\"reason\" IN ('created', 'week-before', 'day-before', 'updated', 'cancelled')"
+        },
         "notification_event_deliveries_status_check": {
           "name": "notification_event_deliveries_status_check",
           "value": "\"notification_event_deliveries\".\"status\" IN ('pending', 'submitted', 'delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed', 'failed')"
@@ -434,6 +478,101 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
+    },
+    "notification_lifecycle_email_callbacks": {
+      "name": "notification_lifecycle_email_callbacks",
+      "columns": {
+        "receipt_key": {
+          "name": "receipt_key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outbox_id": {
+          "name": "outbox_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "attempt_version": {
+          "name": "attempt_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "event": {
+          "name": "event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "received_at": {
+          "name": "received_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "notification_lifecycle_email_callbacks_outbox_idx": {
+          "name": "notification_lifecycle_email_callbacks_outbox_idx",
+          "columns": [
+            "outbox_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "notification_lifecycle_email_callbacks_outbox_id_notification_outbox_id_fk": {
+          "name": "notification_lifecycle_email_callbacks_outbox_id_notification_outbox_id_fk",
+          "tableFrom": "notification_lifecycle_email_callbacks",
+          "tableTo": "notification_outbox",
+          "columnsFrom": [
+            "outbox_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "notification_lifecycle_email_callbacks_receipt_key_check": {
+          "name": "notification_lifecycle_email_callbacks_receipt_key_check",
+          "value": "length(\"notification_lifecycle_email_callbacks\".\"receipt_key\") = 64 AND \"notification_lifecycle_email_callbacks\".\"receipt_key\" NOT GLOB '*[^0-9a-f]*'"
+        },
+        "notification_lifecycle_email_callbacks_attempt_version_check": {
+          "name": "notification_lifecycle_email_callbacks_attempt_version_check",
+          "value": "typeof(\"notification_lifecycle_email_callbacks\".\"attempt_version\") = 'integer' AND \"notification_lifecycle_email_callbacks\".\"attempt_version\" > 0"
+        },
+        "notification_lifecycle_email_callbacks_event_check": {
+          "name": "notification_lifecycle_email_callbacks_event_check",
+          "value": "\"notification_lifecycle_email_callbacks\".\"event\" IN ('delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed')"
+        },
+        "notification_lifecycle_email_callbacks_provider_message_id_check": {
+          "name": "notification_lifecycle_email_callbacks_provider_message_id_check",
+          "value": "length(CAST(\"notification_lifecycle_email_callbacks\".\"provider_message_id\" AS BLOB)) BETWEEN 1 AND 256 AND instr(\"notification_lifecycle_email_callbacks\".\"provider_message_id\", char(0)) = 0 AND \"notification_lifecycle_email_callbacks\".\"provider_message_id\" NOT GLOB ('*[' || char(1) || '-' || char(31) || char(127) || '-' || char(159) || ']*') AND substr(\"notification_lifecycle_email_callbacks\".\"provider_message_id\", 1, 1) <> '<' AND substr(\"notification_lifecycle_email_callbacks\".\"provider_message_id\", -1) <> '>'"
+        },
+        "notification_lifecycle_email_callbacks_received_at_check": {
+          "name": "notification_lifecycle_email_callbacks_received_at_check",
+          "value": "length(\"notification_lifecycle_email_callbacks\".\"received_at\") = 24 AND \"notification_lifecycle_email_callbacks\".\"received_at\" GLOB '????-??-??T??:??:??.???Z'"
+        }
+      }
     },
     "notification_management_capabilities": {
       "name": "notification_management_capabilities",
@@ -596,6 +735,41 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
+        },
+        "email_destination_hash": {
+          "name": "email_destination_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "email_provider_message_id": {
+          "name": "email_provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "email_delivery_status": {
+          "name": "email_delivery_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "email_attempted_at": {
+          "name": "email_attempted_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "email_attempt_version": {
+          "name": "email_attempt_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         }
       },
       "indexes": {
@@ -618,7 +792,31 @@
         },
         "notification_outbox_kind_check": {
           "name": "notification_outbox_kind_check",
-          "value": "\"notification_outbox\".\"kind\" IN ('first-activation', 'reactivation', 'management-recovery', 'event-email')"
+          "value": "\"notification_outbox\".\"kind\" IN ('first-activation', 'reactivation', 'management-recovery', 'event-email', 'event-sms', 'event-web-push')"
+        },
+        "notification_outbox_email_destination_hash_check": {
+          "name": "notification_outbox_email_destination_hash_check",
+          "value": "\"notification_outbox\".\"email_destination_hash\" IS NULL OR (length(\"notification_outbox\".\"email_destination_hash\") = 43 AND \"notification_outbox\".\"email_destination_hash\" NOT GLOB '*[^A-Za-z0-9_-]*')"
+        },
+        "notification_outbox_email_provider_message_id_check": {
+          "name": "notification_outbox_email_provider_message_id_check",
+          "value": "\"notification_outbox\".\"email_provider_message_id\" IS NULL OR (length(CAST(\"notification_outbox\".\"email_provider_message_id\" AS BLOB)) BETWEEN 1 AND 256 AND instr(\"notification_outbox\".\"email_provider_message_id\", char(0)) = 0 AND \"notification_outbox\".\"email_provider_message_id\" NOT GLOB ('*[' || char(1) || '-' || char(31) || char(127) || '-' || char(159) || ']*') AND substr(\"notification_outbox\".\"email_provider_message_id\", 1, 1) <> '<' AND substr(\"notification_outbox\".\"email_provider_message_id\", -1) <> '>')"
+        },
+        "notification_outbox_email_delivery_status_check": {
+          "name": "notification_outbox_email_delivery_status_check",
+          "value": "\"notification_outbox\".\"email_delivery_status\" IN ('pending', 'submitted', 'delivered', 'soft-bounce', 'blocked', 'hard-bounce', 'complaint', 'unsubscribed', 'failed')"
+        },
+        "notification_outbox_email_attempt_version_check": {
+          "name": "notification_outbox_email_attempt_version_check",
+          "value": "\"notification_outbox\".\"email_attempt_version\" IS NULL OR (typeof(\"notification_outbox\".\"email_attempt_version\") = 'integer' AND \"notification_outbox\".\"email_attempt_version\" > 0 AND \"notification_outbox\".\"email_attempt_version\" <= \"notification_outbox\".\"version\")"
+        },
+        "notification_outbox_email_attempted_at_check": {
+          "name": "notification_outbox_email_attempted_at_check",
+          "value": "\"notification_outbox\".\"email_attempted_at\" IS NULL OR (length(\"notification_outbox\".\"email_attempted_at\") = 24 AND \"notification_outbox\".\"email_attempted_at\" GLOB '????-??-??T??:??:??.???Z')"
+        },
+        "notification_outbox_lifecycle_email_evidence_check": {
+          "name": "notification_outbox_lifecycle_email_evidence_check",
+          "value": "\"notification_outbox\".\"kind\" IN ('first-activation', 'reactivation', 'management-recovery') OR (\"notification_outbox\".\"email_destination_hash\" IS NULL AND \"notification_outbox\".\"email_provider_message_id\" IS NULL AND \"notification_outbox\".\"email_delivery_status\" IS NULL AND \"notification_outbox\".\"email_attempted_at\" IS NULL AND \"notification_outbox\".\"email_attempt_version\" IS NULL)"
         }
       }
     },

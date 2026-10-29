@@ -1,12 +1,13 @@
 export interface BrevoSmsConfig {
   apiKey: string
   sender: string
+  managementOrigin?: string
 }
 
 export interface BrevoSmsEvent {
   deliveryId: string
   recipient: string
-  event: { title: string, start: string, url?: string }
+  event: { title: string, start: string, location?: string, url?: string, communityUrl?: string }
   reason?: 'created' | 'week-before' | 'day-before' | 'updated' | 'cancelled'
 }
 
@@ -24,7 +25,7 @@ export type BrevoSmsAttemptResult = {
 }
 
 const pragueTime = (value: string) => new Intl.DateTimeFormat('cs-CZ', {
-  dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Prague',
+  day: 'numeric', month: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: 'Europe/Prague',
 }).format(new Date(value))
 
 const isRecipient = (value: string) => /^\+[1-9]\d{7,14}$/.test(value)
@@ -119,17 +120,33 @@ export const gsm7OneSegment = (value: string) => {
 
 /** Creates one application-owned Czech transactional segment, or fails instead of sending multipart SMS. */
 export const composeBrevoEventSms = (message: BrevoSmsEvent) => {
-  const lead = message.reason === 'cancelled' ? 'Akce zrušena' : message.reason === 'updated' ? 'Změna akce' : 'Jednadvacet'
-  const text = `${lead}: ${message.event.title}, ${pragueTime(message.event.start)}${message.event.url ? ` ${message.event.url}` : ''}`
-  return gsm7OneSegment(text)
+  const singleLine = (value: string) => value.replace(/\s+/g, ' ').trim()
+  const lead = message.reason === 'cancelled' ? 'Akce zrušena:' : message.reason === 'updated' ? 'Změna akce:' : null
+  const lines = [
+    ...(lead ? [lead] : []),
+    singleLine(message.event.title),
+    pragueTime(message.event.start),
+    ...(message.event.location?.trim() ? [singleLine(message.event.location)] : []),
+    ...(message.event.url ? [message.event.url] : []),
+    ...(message.event.communityUrl ? ['', message.event.communityUrl] : []),
+  ]
+  // Keep title and date (and change/cancellation notice) together; never send a partial line.
+  const requiredLines = lead ? 3 : 2
+  while (true) {
+    try { return gsm7OneSegment(lines.join('\n')) } catch (error) {
+      if (lines.length <= requiredLines) throw error
+      lines.pop()
+      while (lines.at(-1) === '') lines.pop()
+    }
+  }
 }
 
 /** First and recovery messages carry only the generation-bound management capability. */
-export const composeBrevoLifecycleSms = (message: BrevoSmsLifecycle) => {
+export const composeBrevoLifecycleSms = (message: BrevoSmsLifecycle, managementOrigin = 'https://jednadvacet.org') => {
   const lead = message.kind === 'reactivation'
-    ? 'Jednadvacet: pro obnovení upozornění potvrď nastavení: '
-    : 'Jednadvacet: nastavení nebo zrušení upozornění: '
-  const text = `${lead}https://jednadvacet.org/notifications/manage/${message.capability}`
+    ? 'Jednadvacet: potvrď obnovení odběru: '
+    : 'Přihlášeno k odběru kalendáře 21.\n\nNotifikace můžeš nastavit zde: '
+  const text = `${lead}${managementOrigin}/notifications/manage/${message.capability}`
   return gsm7OneSegment(text)
 }
 
@@ -148,7 +165,7 @@ export const sendBrevoEventSms = async (config: BrevoSmsConfig, message: BrevoSm
 export const sendBrevoLifecycleSms = async (config: BrevoSmsConfig, message: BrevoSmsLifecycle, fetcher: typeof fetch = fetch): Promise<BrevoSmsAttemptResult> => {
   if (!config.apiKey.trim() || !isSender(config.sender) || !isRecipient(message.recipient)) return { attempted: false, status: 'invalid-request' }
   try {
-    const content = composeBrevoLifecycleSms(message)
+    const content = composeBrevoLifecycleSms(message, config.managementOrigin)
     const body = JSON.stringify({ recipient: message.recipient, sender: config.sender, content, type: 'transactional' })
     return requestSms(config, body, fetcher)
   } catch { return { attempted: false, status: 'invalid-request' } }

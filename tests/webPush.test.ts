@@ -36,7 +36,7 @@ test('submits exactly one encrypted aes128gcm Web Push request', async () => {
     assert.equal(headers.get('content-encoding'), 'aes128gcm')
     assert.equal(headers.get('content-type'), 'application/octet-stream')
     assert.equal(headers.get('ttl'), '60')
-    assert.equal(request.redirect, 'error')
+    assert.equal(request.redirect, 'manual')
     assert.ok(request.signal instanceof AbortSignal)
     const authorization = headers.get('authorization')!
     const [jwt, key] = authorization.slice('vapid t='.length).split(', k=')
@@ -97,7 +97,21 @@ test('local validation never fetches; transport errors and every status are fixe
   for (const error of [new TypeError('private'), new Error('private'), new DOMException('private', 'AbortError')]) assert.deepEqual(await sendWebPush(rfcSubscription, message, config, async () => { throw error }), { attempted: true, status: 'transport' })
 })
 
+test('push transport diagnostics distinguish provider rejection from timeout without logging private material', async t => {
+  const warning = t.mock.method(console, 'warn', () => {})
+  const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
+  const config = { privateKey: pair.privateKey, publicKey: Buffer.from(await crypto.subtle.exportKey('raw', pair.publicKey)).toString('base64url'), subject: 'https://jednadvacet.org' }
+  const message = { title: 'Test', body: 'Test', url: '/' }
+  await sendWebPush(rfcSubscription, message, config, async () => new Response('private response', { status: 503 }))
+  await sendWebPush(rfcSubscription, message, config, async () => { throw new TypeError('private transport detail') })
+  assert.deepEqual(warning.mock.calls.map(call => call.arguments), [
+    ['[notifications] Web Push provider rejected a request', { httpStatus: 503 }],
+    ['[notifications] Web Push transport failed', { timedOut: false, errorType: 'TypeError' }],
+  ])
+})
+
 test('send aborts a stalled transport after its bounded timeout', async (t) => {
+  const warning = t.mock.method(console, 'warn', () => {})
   t.mock.timers.enable({ apis: ['setTimeout'] })
   const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify'])
   let started!: () => void
@@ -109,4 +123,5 @@ test('send aborts a stalled transport after its bounded timeout', async (t) => {
   await ready
   t.mock.timers.tick(10_000)
   assert.deepEqual(await pending, { attempted: true, status: 'transport' })
+  assert.deepEqual(warning.mock.calls.map(call => call.arguments), [['[notifications] Web Push transport failed', { timedOut: true, errorType: 'AbortError' }]])
 })

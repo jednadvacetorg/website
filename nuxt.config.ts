@@ -1,4 +1,22 @@
 import { navigationItems } from './shared/data/navigation'
+import { globSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { parse } from 'yaml'
+import { deriveContentPath, routedContentSources } from './shared/data/contentRouteSources'
+
+// Content is deployed with the bundle. Keep notification scopes and titles in
+// that same build, rather than maintaining a second registry in environment vars.
+const communitySource = routedContentSources.communities
+const communityDirectory = join(import.meta.dirname, 'content', communitySource.directory)
+const notificationCommunities = [...globSync('**/*.{md,mdc}', { cwd: communityDirectory })]
+  .filter(file => !file.endsWith('README.md'))
+  .map(file => {
+    const body = readFileSync(join(communityDirectory, file), 'utf8')
+    const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(body)
+    if (!frontmatter) throw new Error(`Community frontmatter is missing: ${file}`)
+    const community = parse(frontmatter[1]!) as { path?: string, title: string }
+    return { slug: (community.path ?? deriveContentPath(file, communitySource.prefix)).replace(/^\/+|\/+$/g, ''), title: community.title }
+  })
 
 const isPreviewDeploy = Boolean(process.env.PREVIEW_DEPLOY)
 const isDevelopment = process.env.NODE_ENV === 'development'
@@ -83,23 +101,10 @@ export default defineNuxtConfig({
     mapboxAccessToken: '',
     mapboxStyle: 'mapbox/dark-v10',
     // Keep notification activation private and fail closed until Phases 6–7 provide both message types.
-    notificationCommunitySlugs: '',
     // One root derives separated outbox, suppression, and abuse subkeys internally.
     notificationRootKey: '',
     notificationTurnstileSecret: '',
     notificationTurnstileExpectedHostname: '',
-    notificationConsentVersion: '',
-    // Operator-owned production observations, bound to the reviewed deployment and
-    // artifacts. Local-candidate records never authorize runtime delivery.
-    notificationExpectedTargetIdentity: '',
-    notificationExpectedDeploymentId: '',
-    notificationExpectedBundleHash: '',
-    notificationExpectedMigrationHash: '',
-    notificationExpectedConfigHash: '',
-    notificationEmailEvidence: '',
-    notificationSmsEvidence: '',
-    notificationWebPushEvidence: '',
-    notificationSmsDeliveryCallbacksConfigured: false,
     notificationEmailSmsEnabled: false,
     notificationEmailSmsFirstMessageReady: false,
     notificationEmailSmsEventDeliveryReady: false,
@@ -108,21 +113,18 @@ export default defineNuxtConfig({
     notificationSmsEnabled: false,
     notificationSmsFirstMessageReady: false,
     notificationSmsEventDeliveryReady: false,
-    // Bounded observations are required alongside private provider configuration.
+    // Provider verification and real-device checks belong to the release checklist.
     brevoApiKey: '',
     brevoCallbackSecret: '',
     brevoSenderName: '',
+    brevoSmsSender: '',
     brevoSenderEmail: '',
     notificationEmailManualEnabled: false,
-    notificationWebPushEnabled: false,
-    notificationWebPushFirstMessageReady: false,
-    notificationWebPushEventDeliveryReady: false,
     // VAPID private material stays server-only; its matching public key is the
     // sole Web Push value serialized to browsers.
     notificationVapidPrivateKey: '',
-    notificationVapidSubject: '',
+    notificationVapidSubject: 'https://jednadvacet.org',
     // Private and inert outside an explicitly-owned development verification process.
-    notificationUiVerificationFixture: false,
     public: {
       // This is the only notification-abuse value intentionally exposed to browsers.
       notificationTurnstileSiteKey: '',
@@ -140,7 +142,9 @@ export default defineNuxtConfig({
     // Preview builds compile Blob support for the protected route but receive
     // no production R2 binding. Their rendered pages read the public CDN.
     blob: isPreviewDeploy
-      ? { driver: 'cloudflare-r2', binding: 'BLOB' }
+      // The protected blob route remains in the Worker bundle, but review apps
+      // deliberately receive no R2 resource or binding.
+      ? { driver: 'fs', dir: '/tmp/jednadvacet-preview-blob' }
       : process.env.NODE_ENV === 'production'
         ? { driver: 'cloudflare-r2', binding: 'BLOB', bucketName: 'files-jednadvacet-org' }
         : { driver: 'fs', dir: '.data/blob' },
@@ -174,12 +178,20 @@ export default defineNuxtConfig({
   },
 
   nitro: {
+    replace: {
+      __PREVIEW_DEPLOY__: JSON.stringify(isPreviewDeploy),
+      __NOTIFICATION_COMMUNITIES__: JSON.stringify(notificationCommunities),
+    },
     experimental: {
       tasks: true,
     },
     // Scheduled runs refresh generated maps and Portal event snapshots.
     scheduledTasks: isPreviewDeploy
-      ? {}
+      ? {
+          [portalEventsCron]: 'portal-events',
+          [notificationMessagesCron]: 'notification-messages',
+          [notificationPublicationCron]: 'notification-publication',
+        }
       : {
           [communityMapsCron]: 'community-maps',
           [portalEventsCron]: 'portal-events',
@@ -202,7 +214,11 @@ export default defineNuxtConfig({
     storage: isPreviewDeploy
       ? {
           miners: { driver: 'memory' },
-          portalEvents: { driver: 'memory' },
+          portalEvents: {
+            driver: 'cloudflare-kv-binding',
+            binding: 'PORTAL_EVENT_SNAPSHOTS',
+            base: 'portal-events:v3',
+          },
         }
       : {
           miners: {
@@ -264,7 +280,11 @@ export default defineNuxtConfig({
         // Temporary PR previews run in an unrelated Cloudflare account and
         // must never receive the production event snapshot namespace.
         kv_namespaces: isPreviewDeploy
-          ? []
+          ? [
+              {
+                binding: 'PORTAL_EVENT_SNAPSHOTS',
+              },
+            ]
           : [
               {
                 binding: 'PORTAL_EVENT_SNAPSHOTS',
@@ -272,7 +292,31 @@ export default defineNuxtConfig({
               },
             ],
         queues: isPreviewDeploy
-          ? undefined
+          ? {
+              producers: [
+                { binding: 'PORTAL_EVENTS_QUEUE', queue: portalEventsQueue },
+                { binding: 'NOTIFICATION_MESSAGES_QUEUE', queue: notificationMessagesQueue },
+              ],
+              consumers: [
+                {
+                  queue: portalEventsQueue,
+                  max_batch_size: 100,
+                  max_batch_timeout: 5,
+                  max_retries: 3,
+                  retry_delay: 60,
+                  max_concurrency: 1,
+                },
+                {
+                  queue: notificationMessagesQueue,
+                  max_batch_size: 10,
+                  max_batch_timeout: 5,
+                  max_retries: 5,
+                  retry_delay: 60,
+                  max_concurrency: 1,
+                  dead_letter_queue: notificationMessagesDeadLetterQueue,
+                },
+              ],
+            }
           : {
               producers: [
                 {
@@ -319,7 +363,9 @@ export default defineNuxtConfig({
               ],
             },
         triggers: isPreviewDeploy
-          ? undefined
+          ? {
+              crons: [portalEventsCron, notificationMessagesCron, notificationPublicationCron],
+            }
           : {
               crons: [communityMapsCron, portalEventsCron, ...(isDevelopment ? [] : [notificationMessagesCron, notificationPublicationCron])],
             },

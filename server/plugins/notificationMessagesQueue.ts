@@ -47,24 +47,32 @@ export const dispatchNotificationQueueMessage = (message: NotificationQueueEnvel
         }, dependencies.config.webPushDelivery, authorizedFetch)
       }
       if (!('capability' in payload)) throw new Error('Notification channel is invalid')
+      const { results: subscriptions } = await dependencies.database.prepare('SELECT DISTINCT community_slug FROM notification_subscriptions WHERE contact_id = ? ORDER BY community_slug')
+        .bind(authorization.contact_id).all<{ community_slug: string }>()
+      const scope = subscriptions.length === dependencies.config.communitySlugs.length
+        ? 'celé Česko'
+        : subscriptions.map(({ community_slug: slug }) => dependencies.config.communityTitles?.[slug] ?? slug.replace(/-/g, ' ').replace(/^./, letter => letter.toLocaleUpperCase('cs'))).join(', ')
+      const confirmation = `Odebíráš upozornění pro ${scope}.`
       return sendWebPush(parseWebPushSubscription(JSON.parse(payload.destination)), {
         title: 'Jednadvacet.org',
-        body: payload.kind === 'reactivation' ? 'Potvrď obnovení upozornění.' : payload.kind === 'management-recovery' ? 'Otevři nové nastavení upozornění.' : 'Odběr upozornění je aktivní.',
+        body: payload.kind === 'reactivation' ? 'Potvrď obnovení upozornění.' : payload.kind === 'management-recovery' ? 'Otevři nové nastavení upozornění.' : Array.from(confirmation).length <= 240 ? confirmation : `${Array.from(confirmation).slice(0, 239).join('').trimEnd()}…`,
         url: `/notifications/manage/${payload.capability}`,
       }, dependencies.config.webPushDelivery, authorizedFetch)
     }
-    if (typeof runtime.brevoApiKey !== 'string' || !runtime.brevoApiKey.trim() || typeof runtime.brevoSenderName !== 'string' || !runtime.brevoSenderName.trim()) throw new Error('Brevo delivery is not configured')
+    const sender = authorization.channel === 'sms' ? runtime.brevoSmsSender : runtime.brevoSenderName
+    const managementOrigin = dependencies.config.managementOrigin ?? 'https://jednadvacet.org'
+    if (typeof runtime.brevoApiKey !== 'string' || !runtime.brevoApiKey.trim() || typeof sender !== 'string' || !sender.trim()) throw new Error('Brevo delivery is not configured')
     if (payload.kind === 'event-web-push') throw new Error('Notification channel is invalid')
     if ('capability' in payload) {
-      if (authorization.channel === 'sms') return sendBrevoLifecycleSms({ apiKey: runtime.brevoApiKey, sender: runtime.brevoSenderName }, { recipient: payload.destination, capability: payload.capability, kind: payload.kind }, authorizedFetch)
+      if (authorization.channel === 'sms') return sendBrevoLifecycleSms({ apiKey: runtime.brevoApiKey, sender, managementOrigin }, { recipient: payload.destination, capability: payload.capability, kind: payload.kind }, authorizedFetch)
       if (authorization.channel !== 'email') throw new Error('Notification channel is invalid')
       if (!authorization.lifecycleAttempt) throw new Error('Lifecycle email attempt is unavailable')
-      return sendBrevoLifecycleEmail({ apiKey: runtime.brevoApiKey, senderName: runtime.brevoSenderName, senderEmail: 'noreply@jednadvacet.org', sandbox: runtime.brevoSandbox === true }, { destination: payload.destination, capability: payload.capability, kind: payload.kind, attempt: authorization.lifecycleAttempt }, authorizedFetch)
+      return sendBrevoLifecycleEmail({ apiKey: runtime.brevoApiKey, senderName: sender, senderEmail: 'noreply@jednadvacet.org', sandbox: runtime.brevoSandbox === true, managementOrigin }, { destination: payload.destination, capability: payload.capability, kind: payload.kind, attempt: authorization.lifecycleAttempt }, authorizedFetch)
     }
-    if (payload.kind === 'event-sms') return sendBrevoEventSms({ apiKey: runtime.brevoApiKey, sender: runtime.brevoSenderName }, { deliveryId: payload.deliveryId, recipient: payload.destination, event: payload.event, reason: payload.reason }, authorizedFetch)
-    return sendBrevoEventEmail({ apiKey: runtime.brevoApiKey, senderName: runtime.brevoSenderName, senderEmail: 'noreply@jednadvacet.org', sandbox: runtime.brevoSandbox === true }, {
+    if (payload.kind === 'event-sms') return sendBrevoEventSms({ apiKey: runtime.brevoApiKey, sender }, { deliveryId: payload.deliveryId, recipient: payload.destination, event: payload.event, reason: payload.reason }, authorizedFetch)
+    return sendBrevoEventEmail({ apiKey: runtime.brevoApiKey, senderName: sender, senderEmail: 'noreply@jednadvacet.org', sandbox: runtime.brevoSandbox === true }, {
       deliveryId: payload.deliveryId, recipient: payload.destination,
-      managementUrl: `https://jednadvacet.org/notifications/manage/${payload.managementCapability}`,
+      managementUrl: `${managementOrigin}/notifications/manage/${payload.managementCapability}`,
       event: payload.event, uid: payload.event.uid, sequence: payload.event.sequence, cancelled: payload.event.cancelled,
     }, authorizedFetch)
   })
