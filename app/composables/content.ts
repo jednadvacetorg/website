@@ -26,7 +26,7 @@ export const useDataCommunities = () => {
 export interface CommunitySummary {
   path: string
   title: string
-  region: string
+  region: string | string[]
   priority?: number | string | null
 }
 
@@ -57,9 +57,11 @@ export const projectCommunities = (items: readonly CommunitySummary[]): Communit
       || a.path.localeCompare(b.path))
 
   const grouped = items.reduce<Map<string, CommunitySummary[]>>((groups, item) => {
-    const communities = groups.get(item.region) ?? []
-    communities.push(item)
-    groups.set(item.region, communities)
+    for (const region of new Set([item.region].flat())) {
+      const communities = groups.get(region) ?? []
+      communities.push(item)
+      groups.set(region, communities)
+    }
     return groups
   }, new Map())
 

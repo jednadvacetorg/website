@@ -16,7 +16,7 @@ export default defineEventHandler(async (event) => {
   const queue = platform?.cloudflare?.env?.PORTAL_EVENTS_QUEUE as PortalEventsQueue | undefined
   if (import.meta.dev && !queue?.send) {
     const communities = await getPortalCommunities(event)
-    await refreshPortalMeetups(communities, useStorage('portalEvents'), $fetch)
+    await refreshPortalMeetups(communities, useStorage('portalEvents'), $fetch, new Date(), [], true)
     return { ok: true, refreshed: communities.length }
   }
   const task = await runTask<{ queued: number }>('portal-events', {

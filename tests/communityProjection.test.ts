@@ -27,6 +27,22 @@ test('community projection orders priorities and keeps prioritized cities in reg
   )
 })
 
+test('community with multiple regions is listed in each region once', () => {
+  const projection = projectCommunities([
+    { path: '/hradubice', title: 'Hradec Králové a Pardubice', region: ['Královéhradecký', 'Pardubický'], priority: 3 },
+    { path: '/svitavy', title: 'Svitavy', region: 'Pardubický' },
+  ])
+
+  assert.deepEqual(projection.prioritized.map(community => community.path), ['/hradubice'])
+  assert.deepEqual(
+    projection.regions.map(group => [group.region, group.communities.map(community => community.path)]),
+    [
+      ['Královéhradecký', ['/hradubice']],
+      ['Pardubický', ['/hradubice', '/svitavy']],
+    ],
+  )
+})
+
 test('community projection orders cities using Czech collation', () => {
   const projection = projectCommunities([
     { path: '/zatec', title: 'Žatec', region: 'Ústecký' },

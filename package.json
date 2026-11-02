@@ -2,10 +2,15 @@
   "name": "jednadvacet-org",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.13.0",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "skills:install": "skills experimental_install -y",
     "build": "node --experimental-strip-types scripts/validate-content-routes.ts && NODE_OPTIONS=--max-old-space-size=4096 nuxt build",
     "build:cloudflare": "CLOUDFLARE_DEPLOY=1 npm run build",
+    "deploy:cloudflare": "wrangler d1 migrations apply DB --remote --config .output/server/wrangler.json && wrangler deploy --config .output/server/wrangler.json --keep-vars",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "nuxt typecheck",
     "dev": "CHOKIDAR_USEPOLLING=1 CHOKIDAR_INTERVAL=500 nuxt dev --port 2103",
@@ -19,12 +24,11 @@
     "@nuxt/image": "^2.0.0",
     "@nuxt/ui": "^4.4.0",
     "@nuxthub/core": "^0.10.7",
-    "@nuxtjs/sitemap": "^8.2.1",
+    "@nuxtjs/sitemap": "^9.1.0",
     "drizzle-kit": "^0.31.9",
     "drizzle-orm": "^0.45.1",
     "ical.js": "^2.2.1",
     "nuxt": "^4.3.0",
-    "nuxt-studio": "^1.5.1",
     "qrcode": "^1.5.4",
     "tailwindcss": "^4.1.18"
   },
@@ -40,12 +44,13 @@
     "@types/node": "^24.12.0",
     "@types/qrcode": "^1.5.6",
     "@vue/language-core": "^3.2.6",
-    "@vueuse/core": "^14.2.1",
-    "@vueuse/nuxt": "^14.2.1",
+    "@vueuse/core": "^15.0.0",
+    "@vueuse/nuxt": "^15.0.0",
     "better-sqlite3": "^13.0.3",
     "nuxt-og-image": "^6.10.3",
     "typescript": "^6.0.3",
     "vue-tsc": "^3.3.9",
-    "wrangler": "^4.144.0"
+    "wrangler": "^4.144.0",
+    "yaml": "^2.9.1"
   }
 }
