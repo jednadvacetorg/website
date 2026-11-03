@@ -9,15 +9,22 @@
 }
 
 @theme static {
-  --color-orange-50: #fef3e6;
-  --color-orange-100: #fde8ce;
-  --color-orange-200: #fbd19d;
-  --color-orange-300: #faba6b;
-  --color-orange-400: #f8a23a;
-  --color-orange-500: #f68b09;
-  --color-orange-600: #c56f07;
-  --color-orange-700: #945405;
-  --color-orange-800: #623804;
-  --color-orange-900: #311c02;
-  --color-orange-950: #221401;
+  --color-orange: #f7931a;
+  --color-orange-50: color-mix(in srgb, var(--color-orange), white 95%);
+  --color-orange-100: color-mix(in srgb, var(--color-orange), white 90%);
+  --color-orange-200: color-mix(in srgb, var(--color-orange), white 75%);
+  --color-orange-300: color-mix(in srgb, var(--color-orange), white 55%);
+  --color-orange-400: color-mix(in srgb, var(--color-orange), white 25%);
+  --color-orange-500: var(--color-orange);
+  --color-orange-600: color-mix(in srgb, var(--color-orange), black 20%);
+  --color-orange-700: color-mix(in srgb, var(--color-orange), black 40%);
+  --color-orange-800: color-mix(in srgb, var(--color-orange), black 60%);
+  --color-orange-900: color-mix(in srgb, var(--color-orange), black 80%);
+  --color-orange-950: color-mix(in srgb, var(--color-orange), black 86%);
+}
+
+/* Keep the brand accent identical in light and dark mode. */
+:root,
+.dark {
+  --ui-primary: var(--color-orange);
 }

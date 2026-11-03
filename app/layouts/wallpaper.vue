@@ -1,6 +1,6 @@
 <template>
   <Head>
-    <Body class="bg-cover bg-fixed bg-center bg-orange-800" :style="{ 'background-image': `url(${bgSrc})` }" />
+    <Body class="bg-cover bg-fixed bg-center bg-primary-800" :style="{ 'background-image': `url(${bgSrc})` }" />
   </Head>
 
   <AppNavBar />

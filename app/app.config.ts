@@ -2,7 +2,7 @@ export default defineAppConfig({
   ui: {
     colors: {
       primary: 'orange',
-      gray: 'zinc',
+      neutral: 'zinc',
     },
 
     prose: {
