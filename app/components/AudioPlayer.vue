@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import { podcast } from '#shared/data/social'
-
 const { src, title, cover } = defineProps<{
   src: string
   title: string
@@ -138,26 +136,7 @@ onMounted(updateDuration)
         class="flex w-full flex-wrap items-center justify-center gap-1 sm:ms-auto sm:w-auto sm:justify-end"
         :class="{ 'sm:translate-y-2': hasStarted }"
       >
-        <span class="text-sm text-muted">Sleduj jako podcast:</span>
-        <UTooltip v-for="(platform, key) in podcast.platforms" :key="key" :text="platform.label" arrow>
-          <span :tabindex="platform.to ? undefined : 0">
-            <UButton
-              :icon="'icon' in platform ? platform.icon : undefined"
-              :to="platform.to"
-              external
-              :target="platform.to?.startsWith('https://') ? '_blank' : undefined"
-              :disabled="!platform.to"
-              :aria-label="platform.label"
-              color="neutral"
-              variant="ghost"
-              size="xs"
-            >
-              <template v-if="'image' in platform" #leading>
-                <img :src="platform.image" alt="" class="size-4" width="16" height="16">
-              </template>
-            </UButton>
-          </span>
-        </UTooltip>
+        <PodcastFollowLinks />
       </div>
     </div>
   </UCard>

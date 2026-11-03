@@ -44,7 +44,7 @@ useHead({
     </Head>
     <UPageHeader title="Podcast">
       <template #links>
-        <UButton to="/podcast.xml" color="neutral" variant="outline" external>Odebírat podcast</UButton>
+        <PodcastFollowLinks />
       </template>
     </UPageHeader>
     <UPageBody>

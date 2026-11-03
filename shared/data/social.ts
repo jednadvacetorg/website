@@ -3,6 +3,7 @@ export const socialLinks = [
   'https://x.com/jednadvacetorg',
   'https://www.facebook.com/profile.php?id=61573496275870',
   'https://www.instagram.com/jednadvacetorg',
+  'https://www.youtube.com/@Jednadvacet',
   'https://chat.whatsapp.com/B8fQowgJLf2Bo1DCXOId0n',
 ]
 
@@ -15,5 +16,6 @@ export const podcast = {
     applePodcasts: { label: 'Sleduj na Apple Podcasts', icon: 'i-simple-icons-applepodcasts', to: undefined as string | undefined },
     spotify: { label: 'Sleduj na Spotify', icon: 'i-simple-icons-spotify', to: undefined as string | undefined },
     fountain: { label: 'Sleduj na Fountain', image: '/icons/fountain.svg', to: undefined as string | undefined },
+    youtube: { label: 'Sleduj na YouTube', icon: 'i-simple-icons-youtube', to: 'https://www.youtube.com/@Jednadvacet' },
   },
 }
