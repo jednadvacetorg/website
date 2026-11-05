@@ -5,6 +5,8 @@ const props = defineProps<{
   item: BlogArticlesCollectionItem | PodcastCollectionItem
 }>()
 
+const tocTitle = computed(() => props.item.path.startsWith('/podcast/') ? 'Kapitoly podcastu' : 'Kapitoly článku')
+
 const ogImage = buildOgImageCall({
   title: props.item.title,
   image: props.item.thumbnail,
@@ -31,16 +33,18 @@ const cover = computed(() => props.item.cover || getOgImagePath(props.item.path,
     <Meta property="og:type" content="article" />
   </Head>
 
-  <NuxtImg :src="item.thumbnail" :alt="item.title"
-    sizes="xs:100vw sm:100vw md:100vw lg:100vw xl:100vw xxl:100vw" width="1280" height="720" format="webp" :quality="80"
-    class="mt-[calc(-1*var(--ui-header-height))] -mb-10 w-full aspect-video max-h-[60vh] object-cover" />
-  <div class="bg-default rounded-t-4xl h-20 -mb-18 z-40 relative" />
+  <slot name="hero">
+    <NuxtImg :src="item.thumbnail" :alt="item.title"
+      sizes="xs:100vw sm:100vw md:100vw lg:100vw xl:100vw xxl:100vw" width="1280" height="720" format="webp" :quality="80"
+      class="mt-[calc(-1*var(--ui-header-height))] -mb-10 w-full aspect-video max-h-[60vh] object-cover" />
+    <div class="bg-default rounded-t-4xl h-20 -mb-18 z-40 relative" />
+  </slot>
 
   <UContainer class="relative z-40">
     <UPage>
       <slot name="header" :cover="cover" />
 
-      <UContentToc :links="item.body?.toc?.links" :ui="{ root: 'lg:hidden' }" />
+      <UContentToc :title="tocTitle" :links="item.body?.toc?.links" :ui="{ root: 'lg:hidden' }" />
 
       <UPageBody>
         <ContentRenderer :value="item" class="prose dark:prose-invert" />
@@ -52,7 +56,7 @@ const cover = computed(() => props.item.cover || getOgImagePath(props.item.path,
       </UPageBody>
 
       <template #right>
-        <UContentToc :links="item.body?.toc?.links" :ui="{ root: 'max-lg:hidden' }" />
+        <UContentToc :title="tocTitle" :links="item.body?.toc?.links" :ui="{ root: 'max-lg:hidden' }" />
       </template>
       <template #left>
         <div />

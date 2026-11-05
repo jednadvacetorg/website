@@ -2,56 +2,109 @@
 const props = defineProps<{
   url: string
   title: string
+  hero?: boolean
 }>()
 
-const playing = ref(false)
-const loaded = ref(false)
+const state = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const iframe = useTemplateRef<HTMLIFrameElement>('iframe')
 const embedUrl = ref('')
 
 interface YoutubeApi {
   ready: (callback: () => void) => void
   Player: new (element: HTMLIFrameElement, options: {
-    events: { onReady: (event: { target: { playVideo: () => void } }) => void }
+    events: {
+      onReady: (event: { target: { playVideo: () => void } }) => void
+      onError: () => void
+      onAutoplayBlocked: () => void
+    }
   }) => { destroy: () => void }
 }
 
-let player: { destroy: () => void } | undefined
+let dispose = () => {}
 
 async function startPlayback() {
-  if (!videoId.value || playing.value) return
+  if (!videoId.value || state.value !== 'idle') return
 
+  const externalUrl = youtubeUrl.value
   embedUrl.value = `https://www.youtube-nocookie.com/embed/${videoId.value}?autoplay=1&playsinline=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`
-  playing.value = true
-  await nextTick()
+  state.value = 'loading'
+  let active = true
+  let player: { destroy: () => void } | undefined
+  let script: HTMLScriptElement | undefined
+  const timeout = window.setTimeout(failPlayback, 15_000)
 
-  // The iframe load event precedes player readiness. Start playback only once
-  // YouTube can accept commands, keeping the thumbnail visible until then.
-  const youtubeWindow = window as Window & { YT?: YoutubeApi }
-  try {
-    if (!youtubeWindow.YT?.ready) {
-      await new Promise<void>((resolve, reject) => {
-        const script = document.createElement('script')
-        script.src = 'https://www.youtube.com/iframe_api'
-        script.onload = () => resolve()
-        script.onerror = () => { script.remove(); reject(new Error('YouTube API failed to load')) }
-        document.head.append(script)
-      })
+  dispose = () => {
+    active = false
+    window.clearTimeout(timeout)
+    if (script) {
+      script.onload = null
+      script.onerror = null
+      script.remove()
     }
-    youtubeWindow.YT?.ready(() => {
-      if (!playing.value || !iframe.value || !youtubeWindow.YT) return
-      player = new youtubeWindow.YT.Player(iframe.value, {
-        events: {
-          onReady: (event) => {
-            event.target.playVideo()
-            loaded.value = true
-          },
-        },
+    player?.destroy()
+    player = undefined
+  }
+
+  function failPlayback() {
+    if (!active) return
+    dispose()
+    state.value = 'error'
+    // Async errors may outlive the user activation. Keep a real link available
+    // as well: browsers can block this automatic new tab.
+    window.open(externalUrl, '_blank', 'noopener,noreferrer')
+  }
+
+  function showPlayer() {
+    if (!active) return
+    window.clearTimeout(timeout)
+    state.value = 'ready'
+  }
+
+  await nextTick()
+  if (!active) return
+
+  const youtubeWindow = window as Window & { YT?: YoutubeApi }
+  function connectPlayer() {
+    if (!active) return
+    try {
+      if (!youtubeWindow.YT?.ready) return failPlayback()
+      youtubeWindow.YT.ready(() => {
+        if (!active || !iframe.value || !youtubeWindow.YT) return
+        try {
+          player = new youtubeWindow.YT.Player(iframe.value, {
+            events: {
+              onReady: (event) => {
+                if (!active) return
+                showPlayer()
+                try {
+                  event.target.playVideo()
+                } catch {
+                  failPlayback()
+                }
+              },
+              onError: failPlayback,
+              // A blocked autoplay isn't a broken video: expose native controls.
+              onAutoplayBlocked: showPlayer,
+            },
+          })
+        } catch {
+          failPlayback()
+        }
       })
-    })
-  } catch {
-    // Leave the native player accessible if the API script is blocked.
-    loaded.value = true
+    } catch {
+      failPlayback()
+    }
+  }
+
+  if (youtubeWindow.YT?.ready) {
+    connectPlayer()
+  } else {
+    script = document.createElement('script')
+    script.src = 'https://www.youtube.com/iframe_api'
+    script.async = true
+    script.onload = connectPlayer
+    script.onerror = failPlayback
+    document.head.append(script)
   }
 }
 const videoId = computed(() => {
@@ -70,36 +123,41 @@ const videoId = computed(() => {
     return null
   }
 })
+const youtubeUrl = computed(() => videoId.value ? `https://www.youtube.com/watch?v=${videoId.value}?autoplay=1` : props.url)
 
 watch(() => props.url, () => {
-  player?.destroy()
-  player = undefined
-  playing.value = false
-  loaded.value = false
+  dispose()
+  state.value = 'idle'
 })
 
-onBeforeUnmount(() => player?.destroy())
+onBeforeUnmount(() => dispose())
 </script>
 
 <template>
-  <div v-if="videoId" class="group/youtube relative aspect-video overflow-hidden rounded-lg bg-black">
-    <iframe v-if="playing" ref="iframe" :src="embedUrl" :title="title"
+  <div v-if="videoId && state !== 'error'" class="group/youtube relative aspect-video overflow-hidden bg-black"
+    :class="{ 'rounded-lg': !hero }">
+    <iframe v-if="state !== 'idle'" ref="iframe" :src="embedUrl" :title="title"
       allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen
       class="absolute inset-0 size-full border-0" />
-    <img v-if="!loaded" :src="`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`" alt=""
+    <img v-if="state !== 'ready'" :src="`https://img.youtube.com/vi/${videoId}/hqdefault.jpg`" alt=""
       width="480" height="360" class="absolute inset-0 size-full object-cover transform transition-transform ease-out motion-reduce:transition-none"
-      :class="{ 'group-hover/youtube:scale-110': !playing }" />
-    <div v-if="!loaded" class="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/80 to-transparent p-4 pb-8">
-      <p class="line-clamp-2 text-xl font-medium text-white">{{ title }}</p>
+      :class="{ 'group-hover/youtube:scale-110': state === 'idle' }" />
+    <div v-if="!hero && state !== 'ready'" class="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/80 to-transparent p-4 pb-8">
+      <p class="line-clamp-2 text-3xl font-medium text-white">{{ title }}</p>
     </div>
-    <UButton v-if="!playing" color="neutral" variant="ghost" :aria-label="`Přehrát video: ${title}`"
-      class="absolute inset-0 block size-full p-0 hover:bg-transparent active:bg-transparent" @click="startPlayback">
+    <UButton v-if="state === 'idle'" :to="youtubeUrl" target="_blank" rel="noopener noreferrer"
+      color="neutral" variant="ghost" :aria-label="`Přehrát video: ${title}`"
+      class="absolute inset-0 block size-full p-0 hover:bg-transparent active:bg-transparent" @click.prevent="startPlayback">
       <UIcon name="i-simple-icons-youtube" class="absolute top-1/2 left-1/2 size-16 -translate-x-1/2 -translate-y-1/2 text-primary" />
     </UButton>
-    <div v-if="playing && !loaded" role="status" class="absolute inset-0 flex items-center justify-center bg-black/60">
+    <div v-if="state === 'loading'" role="status" class="absolute inset-0 flex items-center justify-center bg-black/60">
       <UIcon name="i-lucide-loader-circle" class="size-16 animate-spin text-primary" aria-hidden="true" />
       <span class="sr-only">Načítám video…</span>
     </div>
   </div>
-  <UButton v-else :to="url" target="_blank" color="neutral" variant="link">Přehrát video na YouTube</UButton>
+  <div v-else>
+    <p v-if="state === 'error'" role="alert">Video se tu nepodařilo načíst. Zkus ho otevřít přímo na YouTube.</p>
+    <UButton :to="youtubeUrl" target="_blank" rel="noopener noreferrer"
+      color="neutral" variant="link">Přehrát video na YouTube (nová karta)</UButton>
+  </div>
 </template>

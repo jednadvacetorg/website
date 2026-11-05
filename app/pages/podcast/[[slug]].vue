@@ -21,17 +21,20 @@ useHead({
 
 <template>
   <ArticleLayout v-if="episode" :item="episode">
+    <template #hero>
+      <YoutubePlayer :url="episode.video" :title="episode.title" hero />
+    </template>
     <template #header="{ cover }">
-      <h1 class="sr-only">{{ episode.title }}</h1>
-      <div class="space-y-6 pt-8">
-        <YoutubePlayer :url="episode.video" :title="episode.title" />
-        <AudioPlayer :src="episode.audio" :title="episode.title" :cover="cover" />
-        <div v-if="episode.categories?.length || episode.published" class="flex flex-wrap items-center gap-2">
-          <CategoriesBadges v-if="episode.categories?.length" :categories-stems="episode.categories" />
-          <NuxtTime v-if="episode.published" :datetime="episode.published" />
-        </div>
-        <p class="text-lg text-muted">{{ episode.description }}</p>
-      </div>
+      <UPageHeader :title="episode.title">
+        <template #description>
+          <div v-if="episode.categories?.length || episode.published" class="flex flex-wrap items-center gap-2 mb-5">
+            <CategoriesBadges v-if="episode.categories?.length" :categories-stems="episode.categories" />
+            <NuxtTime v-if="episode.published" :datetime="episode.published" />
+          </div>
+          {{ episode.description }}
+        </template>
+      </UPageHeader>
+      <AudioPlayer :src="episode.audio" :title="episode.title" :cover="cover" />
     </template>
   </ArticleLayout>
 
