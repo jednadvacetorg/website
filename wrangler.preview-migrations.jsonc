@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // The D1 migration CLI targets top-level bindings, not the previews block.
+  // Keep this target aligned with previews.d1_databases in nuxt.config.ts.
+  "d1_databases": [
+    {
+      "binding": "PREVIEW_DB",
+      "database_name": "web-preview",
+      "database_id": "b36b3fe7-a1f5-4c09-b874-36de416053c4",
+      "migrations_dir": ".output/server/db/migrations/sqlite/",
+      "migrations_table": "_hub_migrations"
+    }
+  ]
+}
