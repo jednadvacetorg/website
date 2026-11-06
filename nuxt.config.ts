@@ -38,6 +38,12 @@ const notificationPublicationCron = '* * * * *'
 const notificationMessagesQueue = 'notification-messages'
 const notificationMessagesDeadLetterQueue = 'notification-messages-dlq'
 
+const workerPreviewDatabase = {
+  binding: 'DB',
+  database_name: 'web-preview',
+  database_id: 'b36b3fe7-a1f5-4c09-b874-36de416053c4',
+}
+
 const iconLibraries = ['bitcoin-icons', 'lucide', 'pinhead', 'simple-icons', 'streamline']
 
 // Nitro 2's bundled Wrangler type predates traces, but it emits this object unchanged.
@@ -283,11 +289,7 @@ export default defineNuxtConfig({
         // in temporary-account builds, which must provision their own resources.
         ...(!isPreviewDeploy ? {
           previews: {
-            d1_databases: [{
-              binding: 'DB',
-              database_name: 'web-preview',
-              database_id: 'b36b3fe7-a1f5-4c09-b874-36de416053c4',
-            }],
+            d1_databases: [workerPreviewDatabase],
             kv_namespaces: [
               { binding: 'OG_IMAGE_CACHE', id: '072fb3b3ed6f40738d513eef1fc107a5' },
               { binding: 'PORTAL_EVENT_SNAPSHOTS', id: '8d544b1ecf2e46838eea8ae4fe5fcfad' },
@@ -332,7 +334,15 @@ export default defineNuxtConfig({
                 binding: 'DB',
                 database_name: 'web',
                 database_id: '76d271b2-5335-40ba-81dd-bf7e1ef79522'
-              }
+              },
+              // D1 migrations use top-level bindings, not previews. This alias
+              // is absent in production builds so deploy:preview fails closed.
+              ...(isWorkerPreview ? [{
+                ...workerPreviewDatabase,
+                binding: 'PREVIEW_DB',
+                migrations_dir: 'db/migrations/sqlite/',
+                migrations_table: '_hub_migrations',
+              }] : []),
             ],
         // Temporary PR previews run in an unrelated Cloudflare account and
         // must never receive the production namespaces.
