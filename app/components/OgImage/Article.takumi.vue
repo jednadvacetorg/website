@@ -22,11 +22,11 @@ interface FormatStyle {
 
 const formatStyles: Record<OgImageFormat, FormatStyle> = {
   landscape: { padding: 64, titleSize: 64, titleMaxWidth: 760, logoHeight: 56 },
-  square: { padding: 48, titleSize: 48, titleMaxWidth: 640, logoHeight: 48 },
+  square: { padding: 48, titleSize: 76.8, titleMaxWidth: 640, logoHeight: 48 },
   // Podcast covers are the 800 px square scaled to 1400 px (×1.75), so text
   // and logo keep the same proportions.
-  podcast: { padding: 84, titleSize: 84, titleMaxWidth: 1120, logoHeight: 84 },
-  portrait: { padding: 56, titleSize: 56, titleMaxWidth: 880, logoHeight: 52 },
+  podcast: { padding: 84, titleSize: 134.4, titleMaxWidth: 1120, logoHeight: 84 },
+  portrait: { padding: 56, titleSize: 89.6, titleMaxWidth: 880, logoHeight: 52 },
   // Stories display fullscreen on phones, so the title is doubled for legibility.
   story: { padding: 56, titleSize: 112, titleMaxWidth: 880, logoHeight: 52 },
   // YouTube thumbnails are mostly seen at search-result size, so the title
@@ -41,7 +41,7 @@ const style = computed<FormatStyle>(() => {
     padding: base.padding,
     titleSize: base.titleSize * (props.layout === 'host' ? 1.15 : 1),
     titleMaxWidth: base.titleMaxWidth,
-    logoHeight: base.logoHeight,
+    logoHeight: base.logoHeight * 0.7,
   }
 })
 

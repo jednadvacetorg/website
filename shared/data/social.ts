@@ -8,8 +8,7 @@ export const socialLinks = [
 ]
 
 export const podcast = {
-  // Přidej čtvercový obal 3000 × 3000 px do public/images/podcast/cover.jpg a nastav '/images/podcast/cover.jpg'.
-  cover: undefined as string | undefined,
+  cover: '/images/podcast/channel-cover.jpeg',
   platforms: {
     rss: { label: 'Sleduj přes RSS', icon: 'i-lucide-rss', to: '/podcast.xml' },
     // TODO: Doplň adresy pořadu po zveřejnění v podcastových aplikacích.

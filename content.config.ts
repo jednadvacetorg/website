@@ -25,6 +25,7 @@ const articleSchema = {
   published: property(z.string().optional()).editor({ hidden: true }),
   thumbnail: z.string(),
   audio: z.string().url().optional(),
+  subtitles: property(z.string().url().optional()).editor({ description: 'URL titulků ve formátu SRT pro podcastový feed. Časování musí odpovídat audiu.' }),
   audioDuration: property(z.number().int().positive().optional()).editor({ description: 'Délka audia v sekundách.' }),
   audioLength: property(z.number().int().positive().optional()).editor({ description: 'Velikost audio souboru v bajtech.' }),
   cover: property(z.string().optional()).editor({ description: 'Volitelný čtvercový obal podcastu. Bez něj se obal vygeneruje z náhledového obrázku.' }),

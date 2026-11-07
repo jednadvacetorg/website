@@ -22,12 +22,10 @@ export default defineEventHandler(async (event) => {
     .sort((a, b) => (b.published ?? '').localeCompare(a.published ?? '') || b.id.localeCompare(a.id))
 
   const coverUrl = (path: string, title: string, image: string) => getOgImageUrl(event, path, {
-    component: 'Article', width: 1400, height: 1400, extension: 'png',
-    props: { title, image, format: 'podcast', podcast: path === '/podcast' || path.startsWith('/podcast/') },
+    component: 'Article', key: 'podcast', width: 1400, height: 1400, extension: 'png',
+    props: { title, image, layout: 'default', format: 'podcast', podcast: path.startsWith('/podcast/') },
   })
-  const channelImage = episodes[0]?.thumbnail ?? items[0]?.thumbnail
-  const channelCover = podcast.cover ? absoluteUrl(podcast.cover)
-    : channelImage ? coverUrl('/podcast', 'Jednadvacet podcast', channelImage) : undefined
+  const channelCover = absoluteUrl(podcast.cover)
 
   const xmlItems = items.map(item => {
     const link = absoluteUrl(item.path)
@@ -41,10 +39,11 @@ export default defineEventHandler(async (event) => {
       <description>${escapeXml(item.description)}</description>
       ${item.published ? `<pubDate>${new Date(`${item.published}T00:00:00Z`).toUTCString()}</pubDate>` : ''}
       <enclosure url="${escapeXml(item.audio!)}"${item.audioLength ? ` length="${item.audioLength}"` : ''} type="${mimeType}" />
+      ${item.subtitles ? `<podcast:transcript url="${escapeXml(item.subtitles)}" type="application/x-subrip" language="cs" rel="captions" />` : ''}
       ${item.audioDuration ? `<itunes:duration>${item.audioDuration}</itunes:duration>` : ''}
       ${author ? `<itunes:author>${escapeXml(author)}</itunes:author>` : ''}
       <itunes:explicit>false</itunes:explicit>
-      <itunes:image href="${escapeXml(item.cover ? absoluteUrl(item.cover) : coverUrl(item.path, item.title, item.thumbnail))}" />
+      <itunes:image href="${escapeXml(coverUrl(item.path, item.title, item.thumbnail))}" />
       ${(item.categories ?? []).map(slug => `<category>${escapeXml(categoryNames.get(slug) ?? slug)}</category>`).join('\n')}
     </item>`
   }).join('\n')
@@ -56,7 +55,7 @@ export default defineEventHandler(async (event) => {
   })
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom">
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:podcast="https://podcastindex.org/namespace/1.0">
   <channel>
     <title>Jednadvacet podcast</title>
     <link>${escapeXml(absoluteUrl('/podcast'))}</link>
@@ -67,7 +66,7 @@ export default defineEventHandler(async (event) => {
     <itunes:owner><itunes:name>Jednadvacet</itunes:name><itunes:email>info@jednadvacet.org</itunes:email></itunes:owner>
     <itunes:explicit>false</itunes:explicit>
     <itunes:category text="Technology" />
-    ${channelCover ? `<itunes:image href="${escapeXml(channelCover)}" />` : ''}
+    <itunes:image href="${escapeXml(channelCover)}" />
     ${xmlItems}
   </channel>
 </rss>`
