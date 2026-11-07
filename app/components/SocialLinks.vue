@@ -24,6 +24,7 @@ const socialPatterns: Array<{ pattern: RegExp, icon: string | (() => VNode), lab
   { pattern: /^https?:\/\/(www\.)?x\.com\//, icon: 'i-simple-icons-x', label: 'X' },
   { pattern: /^https?:\/\/(www\.)?facebook\.com\//, icon: 'i-simple-icons-facebook', label: 'Facebook' },
   { pattern: /^https?:\/\/(www\.)?instagram\.com\//, icon: 'i-simple-icons-instagram', label: 'Instagram' },
+  { pattern: /^https?:\/\/(www\.)?linkedin\.com\//, icon: 'i-simple-icons-linkedin', label: 'LinkedIn' },
   { pattern: /^https?:\/\/(www\.)?youtube\.com\//, icon: 'i-simple-icons-youtube', label: 'YouTube' },
   { pattern: /^https?:\/\/github\.com\//, icon: 'i-simple-icons-github', label: 'GitHub' },
   { pattern: /^https?:\/\/chat\.whatsapp\.com\//, icon: 'i-simple-icons-whatsapp', label: 'WhatsApp' },
