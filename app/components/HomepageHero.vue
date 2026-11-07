@@ -54,7 +54,7 @@ useHead({ title: 'Najdi svou bitcoinovou komunitu' })
           class="absolute inset-0 w-full h-full object-cover object-[30%] -z-20"
           aria-hidden="true"
         />
-        <div class="absolute inset-0 -z-10 bg-linear-to-b from-black/40 via-black/60 to-neutral-900" aria-hidden="true" />
+        <div class="absolute inset-0 -z-10 bg-linear-to-b from-black/40 via-black/60 to-[var(--homepage-bg)]" aria-hidden="true" />
       </template>
 
       <template #headline>
@@ -85,7 +85,8 @@ useHead({ title: 'Najdi svou bitcoinovou komunitu' })
 
 <style scoped>
 .homepage-discovery {
-  background-color: #111827;
+  --homepage-bg: var(--ui-color-neutral-900);
+  background-color: var(--homepage-bg);
   --ui-text-inverted: #fff;
 }
 </style>

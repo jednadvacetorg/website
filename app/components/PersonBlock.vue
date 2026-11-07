@@ -6,16 +6,18 @@ const { slug } = defineProps<{
 }>()
 
 const { data } = await useAsyncData(`person-${slug}`, async () => {
-  const [person, articles, communities] = await Promise.all([
+  const [person, articles, communities, episodes] = await Promise.all([
     queryCollection('people').path(`/people/${slug}`).first(),
     queryCollection('blogArticles').order('id', 'DESC').select('path', 'title', 'authors').all(),
     queryCollection('communities').order('title', 'ASC').select('path', 'title', 'organizers').all(),
+    queryCollection('podcast').order('id', 'DESC').select('path', 'title', 'authors').all(),
   ])
 
   return {
     person,
     articles: articles.filter(article => article.authors?.includes(slug)),
     communities: communities.filter(community => community.organizers?.includes(slug)),
+    episodes: episodes.filter(episode => episode.authors?.includes(slug)),
   }
 })
 
@@ -24,9 +26,11 @@ if (!data.value?.person) throw createError(`/content/people/${slug}.md nenalezen
 const person = computed(() => data.value?.person)
 const articles = computed(() => data.value?.articles || [])
 const communities = computed(() => data.value?.communities || [])
+const episodes = computed(() => data.value?.episodes || [])
 
 const isDonateOpen = ref(false)
 const isArticlesOpen = ref(false)
+const isEpisodesOpen = ref(false)
 
 const lightningUrl = computed(() => {
   if (!person.value?.donateLnAddress) return null
@@ -37,6 +41,7 @@ const lightningUrl = computed(() => {
 <template>
   <div v-if="person" class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-8 py-6">
     <UAvatar :src="person.avatar" :alt="person.title" size="3xl"
+      :width="144" :height="144" sizes="64px sm:80px md:144px"
       :ui="{ root: 'col-start-1 row-start-1 size-16 sm:size-20 md:size-36 sm:row-span-3 md:self-center' }" />
 
     <div class="col-start-2 row-start-1 flex gap-4 flex-wrap items-center min-w-0">
@@ -95,6 +100,21 @@ const lightningUrl = computed(() => {
           <ul class="space-y-2">
             <li v-for="article in articles" :key="article.path">
               <ULink :to="article.path" class="text-default underline decoration-primary underline-offset-2" @click="isArticlesOpen = false">{{ article.title }}</ULink>
+            </li>
+          </ul>
+        </template>
+      </UModal>
+      <p v-if="episodes.length" class="mt-3 text-sm text-muted">
+        Účast v podcastu:
+        <UButton color="primary" variant="link" :label="`Počet dílů: ${episodes.length}`"
+          class="align-baseline" :ui="{ base: 'p-0' }" @click="isEpisodesOpen = true" />
+      </p>
+      <UModal v-if="episodes.length" v-model:open="isEpisodesOpen" title="Díly podcastu">
+        <template #body>
+          <ul class="space-y-2">
+            <li v-for="episode in episodes" :key="episode.path">
+              <ULink :to="episode.path" class="text-default underline decoration-primary underline-offset-2"
+                @click="isEpisodesOpen = false">{{ episode.title }}</ULink>
             </li>
           </ul>
         </template>

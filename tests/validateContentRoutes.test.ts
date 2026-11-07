@@ -15,6 +15,7 @@ test('source validator accepts unique routes with nested indexes', async () => {
     await mkdir(join(fixtureRoot, 'communities'), { recursive: true })
     await mkdir(join(fixtureRoot, 'blog-articles'), { recursive: true })
     await mkdir(join(fixtureRoot, 'blog-categories'), { recursive: true })
+    await mkdir(join(fixtureRoot, 'podcast'), { recursive: true })
     await writeFile(join(fixtureRoot, 'pages', 'mesta', 'index.md'), '---\ntitle: Cities\n---\n')
     await writeFile(join(fixtureRoot, 'communities', 'brno.md'), '---\ntitle: Brno\n---\n')
 
@@ -39,6 +40,7 @@ test('source validator exits non-zero and names every colliding path and collect
     await mkdir(join(fixtureRoot, 'communities', 'shared'), { recursive: true })
     await mkdir(join(fixtureRoot, 'blog-articles'), { recursive: true })
     await mkdir(join(fixtureRoot, 'blog-categories'), { recursive: true })
+    await mkdir(join(fixtureRoot, 'podcast'), { recursive: true })
     await writeFile(join(fixtureRoot, 'pages', 'brno.md'), '---\ntitle: Page\n---\n')
     await writeFile(join(fixtureRoot, 'communities', 'brno.md'), '---\ntitle: Community\n---\n')
     await writeFile(join(fixtureRoot, 'pages', 'shared', 'index.md'), '---\ntitle: Page index\n---\n')
@@ -68,6 +70,7 @@ test('source validator rejects same-collection collisions from ordering prefixes
     await mkdir(join(fixtureRoot, 'communities'), { recursive: true })
     await mkdir(join(fixtureRoot, 'blog-articles'), { recursive: true })
     await mkdir(join(fixtureRoot, 'blog-categories'), { recursive: true })
+    await mkdir(join(fixtureRoot, 'podcast'), { recursive: true })
     await writeFile(join(fixtureRoot, 'pages', 'brno.md'), '---\ntitle: Brno\n---\n')
     await writeFile(join(fixtureRoot, 'pages', '1.brno.md'), '---\ntitle: Ordered Brno\n---\n')
 
@@ -93,6 +96,7 @@ test('source validator rejects article and category collisions under /blog', asy
     await mkdir(join(fixtureRoot, 'communities'), { recursive: true })
     await mkdir(join(fixtureRoot, 'blog-articles'), { recursive: true })
     await mkdir(join(fixtureRoot, 'blog-categories'), { recursive: true })
+    await mkdir(join(fixtureRoot, 'podcast'), { recursive: true })
     await writeFile(join(fixtureRoot, 'blog-articles', '20260101.kalendar.md'), '---\ntitle: Article\nthumbnail: /test.jpg\n---\n')
     await writeFile(join(fixtureRoot, 'blog-categories', 'kalendar.md'), '---\ntitle: Category\n---\n')
 
@@ -110,15 +114,17 @@ test('source validator rejects article and category collisions under /blog', asy
   }
 })
 
-test('source validator rejects root content in the reserved /blog namespace', async () => {
+for (const namespace of ['blog', 'podcast']) {
+test(`source validator rejects root content in the reserved /${namespace} namespace`, async () => {
   const fixtureRoot = await mkdtemp(join(tmpdir(), 'content-routes-reserved-blog-'))
 
   try {
-    await mkdir(join(fixtureRoot, 'pages', 'blog'), { recursive: true })
+    await mkdir(join(fixtureRoot, 'pages', namespace), { recursive: true })
     await mkdir(join(fixtureRoot, 'communities'), { recursive: true })
     await mkdir(join(fixtureRoot, 'blog-articles'), { recursive: true })
     await mkdir(join(fixtureRoot, 'blog-categories'), { recursive: true })
-    await writeFile(join(fixtureRoot, 'pages', 'blog', 'hidden.md'), '---\ntitle: Hidden page\n---\n')
+    await mkdir(join(fixtureRoot, 'podcast'), { recursive: true })
+    await writeFile(join(fixtureRoot, 'pages', namespace, 'hidden.md'), '---\ntitle: Hidden page\n---\n')
 
     const result = spawnSync(process.execPath, [
       '--experimental-strip-types',
@@ -128,11 +134,11 @@ test('source validator rejects root content in the reserved /blog namespace', as
     ], { encoding: 'utf8' })
 
     assert.notEqual(result.status, 0)
-    assert.match(result.stderr, /Root content uses the reserved \/blog route namespace:/)
-    assert.match(result.stderr, /- \/blog\/hidden: pages/)
+    assert.ok(result.stderr.includes(`Root content uses the reserved /${namespace} route namespace:`))
+    assert.ok(result.stderr.includes(`- /${namespace}/hidden: pages`))
 
-    await rm(join(fixtureRoot, 'pages', 'blog'), { recursive: true, force: true })
-    await writeFile(join(fixtureRoot, 'pages', 'blog.md'), '---\ntitle: Hidden blog index\n---\n')
+    await rm(join(fixtureRoot, 'pages', namespace), { recursive: true, force: true })
+    await writeFile(join(fixtureRoot, 'pages', `${namespace}.md`), '---\ntitle: Hidden index\n---\n')
 
     const indexResult = spawnSync(process.execPath, [
       '--experimental-strip-types',
@@ -142,8 +148,9 @@ test('source validator rejects root content in the reserved /blog namespace', as
     ], { encoding: 'utf8' })
 
     assert.notEqual(indexResult.status, 0)
-    assert.match(indexResult.stderr, /- \/blog: pages/)
+    assert.ok(indexResult.stderr.includes(`- /${namespace}: pages`))
   } finally {
     await rm(fixtureRoot, { recursive: true, force: true })
   }
 })
+}
