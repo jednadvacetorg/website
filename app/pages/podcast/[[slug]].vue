@@ -22,7 +22,11 @@ useHead({
 <template>
   <ArticleLayout v-if="episode" :item="episode">
     <template #hero>
-      <YoutubePlayer :url="episode.video" :title="episode.title" hero />
+      <UContainer class="portrait:contents landscape:my-6 landscape:sm:my-8">
+        <UPage :ui="{ root: 'portrait:block', center: 'landscape:lg:col-span-6 landscape:lg:col-start-3' }">
+          <YoutubePlayer :url="episode.video" :title="episode.title" hero class="landscape:rounded-lg" />
+        </UPage>
+      </UContainer>
     </template>
     <template #header="{ cover }">
       <UPageHeader :title="episode.title">

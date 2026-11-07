@@ -1,11 +1,20 @@
 <script setup lang="ts">
 import type { BlogArticlesCollectionItem, PodcastCollectionItem } from '@nuxt/content'
+import { useElementBounding } from '@vueuse/core'
 
 const props = defineProps<{
   item: BlogArticlesCollectionItem | PodcastCollectionItem
 }>()
 
 const tocTitle = computed(() => props.item.path.startsWith('/podcast/') ? 'Kapitoly podcastu' : 'Kapitoly článku')
+const tocStart = useTemplateRef<HTMLDivElement>('tocStart')
+const { top: tocStartTop, width: tocStartWidth } = useElementBounding(tocStart)
+const tocStuck = computed(() => {
+  const toc = tocStart.value?.nextElementSibling
+  return !!toc && tocStartWidth.value > 0 && tocStartTop.value <= parseFloat(getComputedStyle(toc).top)
+})
+const tocOpen = ref(true)
+watch(tocStuck, stuck => { tocOpen.value = !stuck })
 
 const ogImage = buildOgImageCall({
   title: props.item.title,
@@ -44,7 +53,10 @@ const cover = computed(() => props.item.cover || getOgImagePath(props.item.path,
     <UPage>
       <slot name="header" :cover="cover" />
 
-      <UContentToc :title="tocTitle" :links="item.body?.toc?.links" :ui="{ root: 'lg:hidden' }" />
+      <div ref="tocStart" aria-hidden="true" class="lg:hidden mt-6" />
+      <UContentToc :title="tocTitle" :links="item.body?.toc?.links" :open="tocOpen"
+        :disabled="!tocStuck" @update:open="tocOpen = $event" @move="tocOpen = false"
+        :ui="{ root: 'lg:hidden', trailing: !tocStuck ? 'hidden' : undefined }" />
 
       <UPageBody>
         <ContentRenderer :value="item" class="prose dark:prose-invert" />
