@@ -1,6 +1,7 @@
 import { queryCollection } from '@nuxt/content/server'
 import { defineEventHandler, setResponseHeaders } from 'h3'
 import { podcast } from '#shared/data/social'
+import { renderPodcastBody } from '../utils/podcastBody'
 
 const escapeXml = (value: string | number) => String(value).replace(/[<>&"']/g, character => ({
   '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;',
@@ -36,7 +37,8 @@ export default defineEventHandler(async (event) => {
       <title>${escapeXml(item.title)}</title>
       <link>${escapeXml(link)}</link>
       <guid isPermaLink="true">${escapeXml(link)}</guid>
-      <description>${escapeXml(item.description)}</description>
+      <description>${escapeXml(`${item.description}\n\n${link}`)}</description>
+      <content:encoded>${escapeXml(renderPodcastBody(item.body, link))}</content:encoded>
       ${item.published ? `<pubDate>${new Date(`${item.published}T00:00:00Z`).toUTCString()}</pubDate>` : ''}
       <enclosure url="${escapeXml(item.audio!)}"${item.audioLength ? ` length="${item.audioLength}"` : ''} type="${mimeType}" />
       ${item.subtitles ? `<podcast:transcript url="${escapeXml(item.subtitles)}" type="application/x-subrip" language="cs" rel="captions" />` : ''}
@@ -55,7 +57,7 @@ export default defineEventHandler(async (event) => {
   })
 
   return `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:podcast="https://podcastindex.org/namespace/1.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">
   <channel>
     <title>Jednadvacet podcast</title>
     <link>${escapeXml(absoluteUrl('/podcast'))}</link>
