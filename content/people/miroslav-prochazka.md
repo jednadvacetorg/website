@@ -8,4 +8,4 @@ links:
   - miroslav.prochazka@satoshilabs.com
 ---
 
-Vedoucí vývoje Trezor Suite a organizátor meetupů Jednadvacet Praha.
+Miroslav vede vývoj Trezor Suite a dohlíží na to, aby byl bezpečný, moderní a uživatelsky přívětivý. Kromě Trezoru organizuje v Praze bitcoinové meetupy a workshopy v rámci iniciativy Jednadvacet.
