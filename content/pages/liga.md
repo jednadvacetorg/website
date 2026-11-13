@@ -79,22 +79,23 @@ description: Body ze všech potvrzených kol se sčítají do společného žeb�
 | 2 | NO A CO | Praha | 20 |
 | 2 | Bratrství nápadů | Liberec | 20 |
 | 4 | MFF Fuckboyz | Praha | 19 |
-| 5 | Nový nováčci | Liberec | 15 |
+| 5 | Noví nováčci | Liberec | 15 |
 
 ### Pokročilí
 
 | Pořadí | Tým | Město | Body |
 | --- | --- | --- | --- |
-| 1 | Eddiesons | Praha | 21 |
+| 1 | Eddiesons | Liberec | 21 |
 | 2 | TBD | Praha | 19 |
 | 3 | BEZE JMÉNA | Praha | 18 |
-| 4 | Highlenders | Jihlava | 17 |
-| 5 | Twentyone.world | Praha | 16 |
-| 6 | NOBRAINERS | Liberec | 14 |
-| 7 | Krakonoš | Trutnov | 13 |
-| 8 | Kotíci | Šumperk | 11 |
-| 8 | North Stars | Liberec | 11 |
-| 10 | Šumperští CRYPTOJEZEVCI | Šumperk | 7 |
+| 4 | Hradubice | Hradec Králové | 18 |
+| 5 | Highlenders | Jihlava | 17 |
+| 6 | Twentyone.world | Praha | 16 |
+| 7 | NOBRAINERS | Liberec | 14 |
+| 8 | Krakonoš | Trutnov | 13 |
+| 9 | Kotíci | Šumperk | 11 |
+| 9 | North Stars | Liberec | 11 |
+| 11 | Šumperští CRYPTOJEZEVCI | Šumperk | 7 |
 
 Výsledky průběžně aktualizujeme po odehrání ligového kola v daných městech.
 ::
