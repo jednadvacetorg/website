@@ -27,7 +27,7 @@
     "drizzle-kit": "^0.31.9",
     "drizzle-orm": "^0.45.1",
     "ical.js": "^2.2.1",
-    "nuxt": "^4.3.0",
+    "nuxt": "^4.6.4",
     "qrcode": "^1.5.4",
     "tailwindcss": "^4.1.18"
   },
