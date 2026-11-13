@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { navigationItems } from './shared/data/navigation'
 import { globSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -19,6 +20,14 @@ const notificationCommunities = [...globSync('**/*.{md,mdc}', { cwd: communityDi
   })
 
 const isPreviewDeploy = Boolean(process.env.PREVIEW_DEPLOY)
+// Workers Builds uses master for production; local preview builds can opt in explicitly.
+// Keep the temporary-account PREVIEW_DEPLOY profile independent of Worker Previews.
+const isWorkerPreview = !isPreviewDeploy && (
+  process.env.WORKER_PREVIEW === '1' || Boolean(
+    process.env.WORKERS_CI === '1' && process.env.WORKERS_CI_BRANCH && process.env.WORKERS_CI_BRANCH !== 'master',
+  )
+)
+const isAnyPreview = isPreviewDeploy || isWorkerPreview
 const isDevelopment = process.env.NODE_ENV === 'development'
 const communityMapsCron = '17 3 * * *'
 const communityMapsQueue = 'community-maps'
@@ -28,6 +37,12 @@ const notificationMessagesCron = '13 * * * *'
 const notificationPublicationCron = '* * * * *'
 const notificationMessagesQueue = 'notification-messages'
 const notificationMessagesDeadLetterQueue = 'notification-messages-dlq'
+
+const workerPreviewDatabase = {
+  binding: 'DB',
+  database_name: 'web-preview',
+  database_id: 'b36b3fe7-a1f5-4c09-b874-36de416053c4',
+}
 
 const iconLibraries = ['bitcoin-icons', 'lucide', 'pinhead', 'simple-icons', 'streamline']
 
@@ -74,17 +89,55 @@ export default defineNuxtConfig({
 
   css: ['~/assets/css/main.css'],
 
+  alias: {
+    // Redirects only the nuxt-og-image Tailwind theme resolution to a
+    // dedicated stylesheet (see app/assets/css/og-image.css). Nothing else
+    // imports this specifier, so the site build is unaffected.
+    '#tailwindcss': fileURLToPath(new URL('./app/assets/css/og-image.css', import.meta.url)),
+  },
+
   devtools: { enabled: true },
 
   modules: [
     '@nuxt/content',
     '@nuxt/ui',
     '@nuxt/image',
+    '@nuxt/fonts',
+    'nuxt-og-image',
     '@nuxthub/core',
     '@nuxtjs/sitemap',
     '@vueuse/nuxt',
     './shared/contentRedirectsModule',
   ],
+
+  fonts: {
+    families: [
+      { name: 'Ubuntu Sans', weights: [400, 800], styles: ['normal', 'italic'], global: true },
+      // Article OG image titles; the family has a single weight.
+      { name: 'Ubuntu Condensed', weights: [400], styles: ['normal'], global: true },
+    ],
+  },
+
+  ogImage: {
+    defaults: {
+      extension: 'png',
+      // Cache keys and URLs are content-addressed (props + component hash +
+      // module version), so entries never go stale and can live in KV
+      // indefinitely. The same value also controls `cache-control` for
+      // `/_og/d/*`, which already carries `immutable`.
+      cacheMaxAgeSeconds: 60 * 60 * 24 * 365 * 10,
+    },
+    // Czech titles need latin-ext glyphs (ě, š, č, ř, ž, ý, á, í, é, ú, ů, ó, ď, ť, ň).
+    fontSubsets: ['latin', 'latin-ext'],
+    // Runtime-rendered images (/_og/d, used by /debug/**) persist in KV.
+    // Temporary-account builds disable this cache; Worker Previews use their own KV.
+    runtimeCacheStorage: isPreviewDeploy
+      ? false
+      : {
+          driver: 'cloudflare-kv-binding',
+          binding: 'OG_IMAGE_CACHE',
+        },
+  },
 
   site: {
     url: 'https://jednadvacet.org',
@@ -130,7 +183,7 @@ export default defineNuxtConfig({
     db: 'sqlite',
     // Preview builds compile Blob support for the protected route but receive
     // no production R2 binding. Their rendered pages read the public CDN.
-    blob: isPreviewDeploy
+    blob: isAnyPreview
       // The protected blob route remains in the Worker bundle, but review apps
       // deliberately receive no R2 resource or binding.
       ? { driver: 'fs', dir: '/tmp/jednadvacet-preview-blob' }
@@ -140,9 +193,9 @@ export default defineNuxtConfig({
   },
 
   image: {
-    // PREVIEW_DEPLOY builds run on *.workers.dev, where the zone-scoped
+    // Preview builds run on *.workers.dev, where the zone-scoped
     // /cdn-cgi/image/ endpoint does not exist — serve original images there.
-    provider: process.env.NUXT_IMAGE_PROVIDER || (process.env.PREVIEW_DEPLOY ? 'none' : process.env.NODE_ENV === 'production' ? 'cloudflare' : 'ipx'),
+    provider: process.env.NUXT_IMAGE_PROVIDER || (isAnyPreview ? 'none' : process.env.NODE_ENV === 'production' ? 'cloudflare' : 'ipx'),
     cloudflare: {
       baseURL: '/',
     },
@@ -158,7 +211,7 @@ export default defineNuxtConfig({
         item.children?.flatMap(child => child.icon ? [child.icon] : []) ?? [],
       ),
       scan: {
-        globInclude: ['app/**/*.{vue,ts}', 'content/**/*.{md,yml,yaml}'],
+        globInclude: ['app/**/*.{vue,ts}', 'shared/data/**/*.ts', 'content/**/*.{md,yml,yaml}'],
         globExclude: ['node_modules'],
         additionalCollections: iconLibraries,
       },
@@ -168,28 +221,30 @@ export default defineNuxtConfig({
 
   nitro: {
     replace: {
-      __PREVIEW_DEPLOY__: JSON.stringify(isPreviewDeploy),
+      __PREVIEW_DEPLOY__: JSON.stringify(isAnyPreview),
       __NOTIFICATION_COMMUNITIES__: JSON.stringify(notificationCommunities),
     },
     experimental: {
       tasks: true,
     },
     // Scheduled runs refresh generated maps and Portal event snapshots.
-    scheduledTasks: isPreviewDeploy
-      ? {
-          [portalEventsCron]: 'portal-events',
-          [notificationMessagesCron]: 'notification-messages',
-          [notificationPublicationCron]: 'notification-publication',
-        }
-      : {
-          [communityMapsCron]: 'community-maps',
-          [portalEventsCron]: 'portal-events',
-          // Automatic notification jobs require the Worker binding context.
-          ...(isDevelopment ? {} : {
+    scheduledTasks: isWorkerPreview
+      ? {}
+      : isPreviewDeploy
+        ? {
+            [portalEventsCron]: 'portal-events',
             [notificationMessagesCron]: 'notification-messages',
             [notificationPublicationCron]: 'notification-publication',
-          }),
-        },
+          }
+        : {
+            [communityMapsCron]: 'community-maps',
+            [portalEventsCron]: 'portal-events',
+            // Automatic notification jobs require the Worker binding context.
+            ...(isDevelopment ? {} : {
+              [notificationMessagesCron]: 'notification-messages',
+              [notificationPublicationCron]: 'notification-publication',
+            }),
+          },
     devStorage: {
       miners: {
         driver: 'fs',
@@ -229,6 +284,20 @@ export default defineNuxtConfig({
       nodeCompat: true,
       wrangler: {
         name: 'jednadvacetorg-web',
+        // Nitro's Wrangler types predate Worker Previews; the emitted configuration
+        // is consumed by the project's current Wrangler. Never include these IDs
+        // in temporary-account builds, which must provision their own resources.
+        ...(!isPreviewDeploy ? {
+          previews: {
+            d1_databases: [workerPreviewDatabase],
+            kv_namespaces: [
+              { binding: 'OG_IMAGE_CACHE', id: '072fb3b3ed6f40738d513eef1fc107a5' },
+              { binding: 'PORTAL_EVENT_SNAPSHOTS', id: '8d544b1ecf2e46838eea8ae4fe5fcfad' },
+            ],
+            // No production variables, secrets, R2 or Queue producers are inherited.
+            vars: {},
+          },
+        } : {}),
         // Keep prerendered pages asset-first while allowing unknown navigations to fall through to Nuxt.
         compatibility_flags: ['assets_navigation_has_no_effect'],
         assets: {
@@ -238,6 +307,7 @@ export default defineNuxtConfig({
             '/api/*',
             '/ical/*',
             '/feed/*',
+            '/podcast.xml',
             '/cntrsclc',
             '!/_nuxt/*',
             '!/images/*',
@@ -264,10 +334,18 @@ export default defineNuxtConfig({
                 binding: 'DB',
                 database_name: 'web',
                 database_id: '76d271b2-5335-40ba-81dd-bf7e1ef79522'
-              }
+              },
+              // D1 migrations use top-level bindings, not previews. This alias
+              // is absent in production builds so deploy:preview fails closed.
+              ...(isWorkerPreview ? [{
+                ...workerPreviewDatabase,
+                binding: 'PREVIEW_DB',
+                migrations_dir: 'db/migrations/sqlite/',
+                migrations_table: '_hub_migrations',
+              }] : []),
             ],
         // Temporary PR previews run in an unrelated Cloudflare account and
-        // must never receive the production event snapshot namespace.
+        // must never receive the production namespaces.
         kv_namespaces: isPreviewDeploy
           ? [
               {
@@ -278,6 +356,10 @@ export default defineNuxtConfig({
               {
                 binding: 'PORTAL_EVENT_SNAPSHOTS',
                 id: 'fc1c8f97503145fd8f6563fd22358ab6',
+              },
+              {
+                binding: 'OG_IMAGE_CACHE',
+                id: '14ec9a559f0c430799b5e7f74d176e57',
               },
             ],
         queues: isPreviewDeploy
@@ -363,6 +445,9 @@ export default defineNuxtConfig({
     },
     prerender: {
       routes: ['/'],
+      // Debug OG previews render on demand; prerendering all variants
+      // for every article would pointlessly slow down the build.
+      ignore: ['/_studio', '/debug/**', '/podcast.xml'],
       crawlLinks: true,
     },
     preset: 'cloudflare_module',

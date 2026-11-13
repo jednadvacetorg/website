@@ -377,7 +377,7 @@ const stopPan = (event: PointerEvent) => {
 }
 
 .country-czechia {
-  fill: rgb(17 24 39 / 0.68);
+  fill: var(--ui-color-neutral-800);
   stroke-width: 2.25;
 }
 

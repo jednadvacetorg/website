@@ -27,6 +27,11 @@ export const navigationItems: NavigationMenuItem[] = [
     to: '/blog',
   },
   {
+    label: 'Podcast',
+    value: 'podcast',
+    to: '/podcast',
+  },
+  {
     label: 'Projekty',
     value: 'projects',
     children: [

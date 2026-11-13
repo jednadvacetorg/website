@@ -1,6 +1,6 @@
 import { defineTransformer } from '@nuxt/content'
 
-const idPattern = /^blogArticles\/blog\/(\d{4})(\d{2})(\d{2})\./
+const idPattern = /^(?:blogArticles\/blog|podcast\/podcast)\/(\d{4})(\d{2})(\d{2})\./
 
 export default defineTransformer({
   name: 'blog-articles',

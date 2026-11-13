@@ -20,6 +20,19 @@ const scheduledArticles = [...globSync('blog-articles/**/*.{md,mdc}', {
   cwd: fileURLToPath(new URL('./content/', import.meta.url)),
 })].filter(file => !isPublishedBlogFile(file))
 
+const articleSchema = {
+  ...commonSchema,
+  published: property(z.string().optional()).editor({ hidden: true }),
+  thumbnail: z.string(),
+  audio: z.string().url().optional(),
+  subtitles: property(z.string().url().optional()).editor({ description: 'URL titulků ve formátu SRT pro podcastový feed. Časování musí odpovídat audiu.' }),
+  audioDuration: property(z.number().int().positive().optional()).editor({ description: 'Délka audia v sekundách.' }),
+  audioLength: property(z.number().int().positive().optional()).editor({ description: 'Velikost audio souboru v bajtech.' }),
+  cover: property(z.string().optional()).editor({ description: 'Volitelný čtvercový obal podcastu. Bez něj se obal vygeneruje z náhledového obrázku.' }),
+  categories: z.array(z.string()).optional(),
+  authors: z.array(z.string()).optional(),
+}
+
 export default defineContentConfig({
   collections: {
     blogArticles: defineCollection({
@@ -31,13 +44,23 @@ export default defineContentConfig({
         prefix: routedContentSources.blogArticles.prefix,
       },
       schema: z.object({
-        ...commonSchema,
-        published: property(z.string().optional()).editor({ hidden: true }),
-        thumbnail: z.string(),
-        audio: z.string().url().optional(),
-        categories: z.array(z.string()).optional(),
-        authors: z.array(z.string()).optional(),
+        ...articleSchema,
       }).passthrough()
+    }),
+
+    podcast: defineCollection({
+      type: 'page',
+      indexes: [{ columns: ['path'] }],
+      source: {
+        include: `${routedContentSources.podcast.directory}/**`,
+        exclude,
+        prefix: routedContentSources.podcast.prefix,
+      },
+      schema: z.object({
+        ...articleSchema,
+        audio: z.string().url(),
+        video: z.string().url(),
+      }).passthrough(),
     }),
 
     blogCategories: defineCollection({

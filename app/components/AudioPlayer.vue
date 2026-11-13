@@ -88,7 +88,7 @@ onMounted(updateDuration)
 <template>
   <UCard variant="soft" class="relative overflow-hidden">
     <UProgress :model-value="currentTime" :max="duration || 1" size="xs" class="absolute inset-x-0 top-0" />
-    <span v-if="hasStarted" class="absolute right-4 top-3 text-xs tabular-nums text-muted" aria-live="off">
+    <span v-if="hasStarted" class="absolute right-4 top-2 text-xs tabular-nums text-muted sm:right-6" aria-live="off">
       {{ formattedCurrentTime }} / {{ formattedDuration }}
     </span>
 
@@ -132,6 +132,12 @@ onMounted(updateDuration)
           />
         </div>
       </Transition>
+      <div
+        class="flex w-full flex-wrap items-center justify-center gap-1 sm:ms-auto sm:w-auto sm:justify-end"
+        :class="{ 'sm:translate-y-2': hasStarted }"
+      >
+        <PodcastFollowLinks />
+      </div>
     </div>
   </UCard>
 </template>
