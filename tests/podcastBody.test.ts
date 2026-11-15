@@ -19,6 +19,8 @@ test('podcast links resolve relative to the article and escape attributes', () =
     '<a href="https://jednadvacet.org/brno?a=1&amp;b=2">Brno</a>')
   assert.equal(render(['a', { href: '#tema' }, 'Téma']),
     '<a href="https://jednadvacet.org/blog/test#tema">Téma</a>')
+  assert.equal(render(['a', { href: '#t=1m53s' }, '01:53']),
+    '<a href="https://jednadvacet.org/blog/test#t=1m53s">01:53</a>')
 })
 
 test('podcast body unwraps components and replaces embeds with links', () => {

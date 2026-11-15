@@ -6,10 +6,14 @@ const { src, title, cover } = defineProps<{
 }>()
 
 const audio = useTemplateRef<HTMLAudioElement>('audio')
+const root = useTemplateRef<{ $el: HTMLElement }>('root')
+const playback = useArticlePlayback()
+const { $counterscale } = useNuxtApp()
 const currentTime = ref(0)
 const duration = ref(0)
 const isPlaying = ref(false)
 const hasStarted = ref(false)
+let hasTrackedPlayback = false
 
 function formatTime(value: number) {
   if (!Number.isFinite(value) || value < 0) return '--:--'
@@ -28,13 +32,19 @@ function seekBy(seconds: number) {
   if (!audio.value || !Number.isFinite(audio.value.duration)) return
 
   audio.value.currentTime = Math.min(Math.max(audio.value.currentTime + seconds, 0), audio.value.duration)
+  playback?.seek(audio.value.currentTime)
 }
 
 async function togglePlayback() {
   if (!audio.value) return
 
   if (audio.value.paused) {
-    await audio.value.play()
+    playback?.prepare('audio')
+    try {
+      await audio.value.play()
+    } catch {
+      if (playback) playback.error.value = 'Audio se nepodařilo spustit. Zkus přehrávání znovu.'
+    }
     return
   }
 
@@ -50,7 +60,7 @@ function setMediaSession() {
     artwork: [{ src: new URL(cover, window.location.origin).href }],
   })
 
-  navigator.mediaSession.setActionHandler('play', () => audio.value?.play())
+  navigator.mediaSession.setActionHandler('play', () => { if (audio.value?.paused) return togglePlayback() })
   navigator.mediaSession.setActionHandler('pause', () => audio.value?.pause())
   navigator.mediaSession.setActionHandler('seekbackward', details => seekBy(-(details.seekOffset ?? 15)))
   navigator.mediaSession.setActionHandler('seekforward', details => seekBy(details.seekOffset ?? 30))
@@ -58,13 +68,23 @@ function setMediaSession() {
 
 function updateTime() {
   currentTime.value = audio.value?.currentTime ?? 0
+  if (!audio.value?.paused) playback?.report('audio', currentTime.value)
+}
+
+function seekTo(time: number) {
+  if (!audio.value || audio.value.readyState === 0) return
+  const max = Number.isFinite(audio.value.duration) ? audio.value.duration : Infinity
+  audio.value.currentTime = Math.min(Math.max(time, 0), max)
+  currentTime.value = audio.value.currentTime
 }
 
 function updateDuration() {
   duration.value = audio.value?.duration ?? 0
+  if (playback && !isPlaying.value) seekTo(playback.time.value)
 }
 
 function handlePlay() {
+  playback?.started('audio')
   isPlaying.value = true
   hasStarted.value = true
   setMediaSession()
@@ -74,7 +94,15 @@ function handlePlay() {
   }
 }
 
+function handlePlaying() {
+  if (hasTrackedPlayback) return
+  hasTrackedPlayback = true
+  $counterscale.trackAudioStart()
+}
+
 function handlePause() {
+  if (isPlaying.value) playback?.report('audio', audio.value?.currentTime ?? 0)
+  playback?.paused('audio')
   isPlaying.value = false
 
   if ('mediaSession' in navigator) {
@@ -82,11 +110,28 @@ function handlePause() {
   }
 }
 
-onMounted(updateDuration)
+let unregister: (() => void) | undefined
+onMounted(() => {
+  updateDuration()
+  unregister = playback?.register('audio', {
+    seek: seekTo,
+    play: () => audio.value?.play(),
+    pause: () => audio.value?.pause(),
+    time: () => audio.value?.currentTime ?? currentTime.value,
+    scroll: () => root.value?.$el.scrollIntoView({ block: 'center', behavior: 'smooth' }),
+  })
+})
+onBeforeUnmount(() => {
+  audio.value?.pause()
+  unregister?.()
+  if ('mediaSession' in navigator && hasStarted.value) {
+    for (const action of ['play', 'pause', 'seekbackward', 'seekforward'] as const) navigator.mediaSession.setActionHandler(action, null)
+  }
+})
 </script>
 
 <template>
-  <UCard variant="soft" class="relative overflow-hidden">
+  <UCard ref="root" variant="soft" class="relative overflow-hidden scroll-mt-24">
     <UProgress :model-value="currentTime" :max="duration || 1" size="xs" class="absolute inset-x-0 top-0" />
     <span v-if="hasStarted" class="absolute right-4 top-2 text-xs tabular-nums text-muted sm:right-6" aria-live="off">
       {{ formattedCurrentTime }} / {{ formattedDuration }}
@@ -97,8 +142,10 @@ onMounted(updateDuration)
       :src
       preload="metadata"
       @durationchange="updateDuration"
+      @loadedmetadata="() => { if (playback) seekTo(playback.time.value) }"
       @timeupdate="updateTime"
       @play="handlePlay"
+      @playing="handlePlaying"
       @pause="handlePause"
       @ended="handlePause"
     />

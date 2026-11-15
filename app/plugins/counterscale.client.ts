@@ -1,4 +1,5 @@
 import * as Counterscale from '@counterscale/tracker'
+import { parsePlaybackTime } from '../utils/playbackTime.ts'
 
 export default defineNuxtPlugin((nuxtApp) => {
   const router = useRouter()
@@ -39,8 +40,12 @@ export default defineNuxtPlugin((nuxtApp) => {
   const removeMounted = nuxtApp.hook('app:mounted', () => {
     // Initial router resolution has finished: count it once, then successful SPA
     // transitions (including replace and back/forward), never aborted navigation.
-    removeNavigation = router.afterEach((to, _from, failure) => {
-      if (!failure) track(to.fullPath)
+    removeNavigation = router.afterEach((to, from, failure) => {
+      // Playback replaces #t=… continuously. Skip only those same-document updates;
+      // ordinary anchors, query changes and visits to another page still count.
+      const playbackUpdate = to.fullPath.split('#')[0] === from.fullPath.split('#')[0]
+        && parsePlaybackTime(new URLSearchParams(to.hash.slice(1)).get('t')) !== null
+      if (!failure && !playbackUpdate) track(to.fullPath)
     })
     track(router.currentRoute.value.fullPath)
   })
@@ -56,12 +61,16 @@ export default defineNuxtPlugin((nuxtApp) => {
 
   const trackSubscriptionGuide = () => track('/kalendar/subscription-guide')
   const trackICalendarCopy = () => track('/kalendar/copy-ical')
+  const trackAudioStart = () => track(`${router.currentRoute.value.path}/play-audio`)
+  const trackVideoStart = () => track(`${router.currentRoute.value.path}/play-video`)
 
   return {
     provide: {
       counterscale: {
         trackSubscriptionGuide,
         trackICalendarCopy,
+        trackAudioStart,
+        trackVideoStart,
       },
     },
   }

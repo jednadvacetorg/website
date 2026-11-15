@@ -6,6 +6,8 @@ const props = defineProps<{
   item: BlogArticlesCollectionItem | PodcastCollectionItem
 }>()
 
+const playback = provideArticlePlayback(() => 'video' in props.item && typeof props.item.video === 'string' ? props.item.video : undefined)
+
 const tocTitle = computed(() => props.item.path.startsWith('/podcast/') ? 'Kapitoly podcastu' : 'Kapitoly článku')
 const tocStart = useTemplateRef<HTMLDivElement>('tocStart')
 const { top: tocStartTop, width: tocStartWidth } = useElementBounding(tocStart)
@@ -59,6 +61,7 @@ const cover = computed(() => props.item.cover || getOgImagePath(props.item.path,
         :ui="{ root: 'lg:hidden', trailing: !tocStuck ? 'hidden' : undefined }" />
 
       <UPageBody>
+        <p v-if="playback.error.value" role="alert">{{ playback.error.value }}</p>
         <ContentRenderer :value="item" class="prose dark:prose-invert" />
 
         <USeparator v-if="item.authors?.length" class="my-6" />

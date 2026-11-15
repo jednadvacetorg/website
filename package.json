@@ -26,6 +26,7 @@
     "@nuxt/ui": "^4.4.0",
     "@nuxthub/core": "^0.10.7",
     "@nuxtjs/sitemap": "^9.1.0",
+    "@vueuse/router": "^15.0.0",
     "drizzle-kit": "^0.31.9",
     "drizzle-orm": "^0.45.1",
     "ical.js": "^2.2.1",

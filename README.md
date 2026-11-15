@@ -24,6 +24,14 @@ Většina obsahu webu je uložená jako Markdown v adresáři `content/`. Strukt
 - Články s budoucím datem se při sestavení vynechají z obsahové databáze, blogu, kategorií, seznamů autorů i sitemapy a jejich stránky vracejí 404. Zveřejní je první úspěšný build a nasazení v den vydání nebo později podle časové zóny `Europe/Prague`. Pro plánované vydávání proto spouštěj build a nasazení automaticky každý den. Blog zůstává předgenerovaný; zdrojové soubory a obrázky jsou veřejné i před vydáním. Po změně data při lokálním vývoji restartuj server.
 - Povinná metadata článku jsou `title` a `thumbnail`. Pomocí `categories` a `authors` lze článek propojit s kategoriemi a lidmi.
 
+### Podcast
+
+- Články k jednotlivým dílům jsou v `content/podcast/` s názvy ve formátu `YYYYMMDD.nazev-dilu.md`.
+- Audio a titulky nahraj na souborové úložiště, ne do repozitáře. Jejich veřejné HTTPS adresy vlož do pole `audio` a `subtitles`.
+- Audio připrav jako **AAC-LC v kontejneru `.m4a`, 96 kb/s, mono, se vzorkováním 44,1 nebo 48 kHz**.
+- Titulky ukládej ve formátu `.srt`. Jejich časování musí odpovídat publikovanému audiu.
+- Do `audioDuration` zapiš délku výsledného audia v celých sekundách (zaokrouhlenou na nejbližší sekundu). Volitelné `audioLength` udává velikost souboru v bajtech.
+
 ### Kategorie blogu
 
 - Kategorie se ukládají do `content/blog-categories/` jako Markdown soubory.

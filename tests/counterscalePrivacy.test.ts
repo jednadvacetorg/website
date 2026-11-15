@@ -8,7 +8,7 @@ import * as Counterscale from '@counterscale/tracker'
 const origin = 'https://privacy.example.test'
 const privateA = '/notifications/manage/SYNTH_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 const privateB = '/notifications/manage/SYNTH_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB'
-type Route = { path: string, fullPath: string }
+type Route = { path: string, fullPath: string, hash: string }
 type AfterEach = (to: Route, from: Route, failure?: Error) => void
 
 async function fixture(initial: string, canonical: string | null = null, referrer = '') {
@@ -23,7 +23,7 @@ async function fixture(initial: string, canonical: string | null = null, referre
   const unmount = new Set<() => void>()
   const afterEach = new Set<AfterEach>()
   const location = new URL(initial, origin)
-  const route = () => ({ path: location.pathname, fullPath: location.pathname + location.search + location.hash })
+  const route = () => ({ path: location.pathname, fullPath: location.pathname + location.search + location.hash, hash: location.hash })
   const currentRoute = { value: route() }
   const listen = (name: string, callback: () => void) => {
     if (!events.has(name)) events.set(name, new Set())
@@ -90,7 +90,7 @@ async function fixture(initial: string, canonical: string | null = null, referre
     const navigate = async (path: string, mode: 'push' | 'replace' | 'pop' = 'push', failure?: Error) => {
       const from = currentRoute.value
       const target = new URL(path, origin)
-      const to = { path: target.pathname, fullPath: target.pathname + target.search + target.hash }
+      const to = { path: target.pathname, fullPath: target.pathname + target.search + target.hash, hash: target.hash }
       if (!failure) {
         if (mode === 'pop') {
           location.href = target.href
@@ -155,6 +155,9 @@ test('public navigation reports once, skips private push/replace/back-forward an
     assert.equal(first.searchParams.get('h'), origin)
     assert.equal(first.searchParams.get('sid'), 'privacy.example.test')
     const count = client.requests.length
+    await client.navigate('/kalendar?utm_source=community&utm_medium=email&utm_campaign=meetup#t=1m53s', 'replace')
+    await client.navigate('/kalendar?utm_source=community&utm_medium=email&utm_campaign=meetup#t=1m54s', 'replace')
+    assert.equal(client.requests.length, count, 'playback hash updates must not count as pageviews')
     await client.navigate(privateA)
     await client.navigate(privateB, 'replace')
     await client.navigate(privateA, 'pop')
@@ -186,6 +189,26 @@ test('management entry can leave for public pages without forwarding document re
   }
 })
 
+test('only playback hash updates skip reporting; other anchors and page/query changes still count', async () => {
+  const client = await fixture('/podcast/episode')
+  try {
+    await client.mount()
+    await client.navigate('/podcast/episode#t=1m53s', 'replace')
+    await client.navigate('/podcast/episode#t=1m54s', 'replace')
+    assert.equal(client.pageviews().length, 1)
+    await client.navigate('/podcast/episode#chapter')
+    assert.equal(client.pageviews().length, 2, 'ordinary anchors still report after a timestamp')
+    await client.navigate('/podcast/episode#another-chapter')
+    assert.equal(client.pageviews().length, 3, 'ordinary anchor-to-anchor navigation still reports')
+    await client.navigate('/podcast/episode#t=invalid')
+    assert.equal(client.pageviews().length, 4, 'an invalid timestamp is not a playback update')
+    await client.navigate('/podcast/episode?source=community#t=1m53s')
+    assert.equal(client.pageviews().length, 5, 'query changes still report even with a timestamp')
+    await client.navigate('/podcast/other#t=1m53s')
+    assert.equal(client.pageviews().length, 6, 'another page still reports even with a timestamp')
+  } finally { await client.close() }
+})
+
 test('public explicit URLs ignore unsafe canonical and preserve ordinary query referrers without a canonical', async () => {
   for (const canonical of [null, origin + privateA]) {
     const client = await fixture('/blog?ref=community&utm_source=newsletter', canonical)
@@ -203,14 +226,38 @@ test('guide and calendar-copy counters retain fixed public URLs and no capabilit
   try {
     await client.mount()
     const before = client.pageviews().length
-    assert.deepEqual(Object.keys(client.provided), ['trackSubscriptionGuide', 'trackICalendarCopy'])
-    for (const counter of Object.values(client.provided)) { assert.equal(counter.length, 0); counter() }
+    assert.deepEqual(Object.keys(client.provided), ['trackSubscriptionGuide', 'trackICalendarCopy', 'trackAudioStart', 'trackVideoStart'])
+    for (const name of ['trackSubscriptionGuide', 'trackICalendarCopy']) {
+      const counter = client.provided[name]!
+      assert.equal(counter.length, 0)
+      counter()
+    }
     await client.settle()
     assert.deepEqual(client.pageviews().slice(before).map(url => url.searchParams.get('p')), [
       '/kalendar/subscription-guide', '/kalendar/copy-ical',
     ])
     assert.ok(client.requests.every(url => !decodeURIComponent(url.href).includes('SYNTH_')))
     t.diagnostic(JSON.stringify({ guidePageviews: client.pageviews().slice(before).map(url => url.href) }))
+  } finally { await client.close() }
+})
+
+test('playback counters identify the current episode without its timestamp and never expose private routes', async () => {
+  const path = '/podcast/episode'
+  const client = await fixture(`${path}#t=1m53s`)
+  try {
+    await client.mount()
+    client.provided.trackAudioStart!()
+    client.provided.trackVideoStart!()
+    await client.settle()
+    assert.deepEqual(client.pageviews().map(url => url.searchParams.get('p')), [path, `${path}/play-audio`, `${path}/play-video`])
+    const count = client.requests.length
+    await client.navigate(`${path}#t=1m54s`, 'replace')
+    assert.equal(client.requests.length, count)
+    await client.navigate(privateA)
+    client.provided.trackAudioStart!()
+    client.provided.trackVideoStart!()
+    await client.settle()
+    assert.equal(client.requests.length, count)
   } finally { await client.close() }
 })
 

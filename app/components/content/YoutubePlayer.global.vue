@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useIntervalFn } from '@vueuse/core'
+import { youtubeVideoId } from '~/utils/playbackTime'
+
 const props = defineProps<{
   url: string
   title: string
@@ -8,28 +11,66 @@ const props = defineProps<{
 const state = ref<'idle' | 'loading' | 'ready' | 'error'>('idle')
 const iframe = useTemplateRef<HTMLIFrameElement>('iframe')
 const embedUrl = ref('')
+const root = useTemplateRef<HTMLElement>('root')
+const articlePlayback = useArticlePlayback()
+const playback = articlePlayback?.video.value && youtubeVideoId(props.url) === youtubeVideoId(articlePlayback.video.value) ? articlePlayback : null
+const { $counterscale } = useNuxtApp()
+let hasStarted = false
+interface YoutubePlayer {
+  destroy: () => void
+  playVideo: () => void
+  pauseVideo: () => void
+  seekTo: (time: number, allowSeekAhead: boolean) => void
+  getCurrentTime: () => number
+  getDuration: () => number
+}
+let player: YoutubePlayer | undefined
+let pendingTime = 0
+let videoPlaying = false
+let playbackRequested = false
+
+function seekTo(time: number) {
+  pendingTime = time
+  // Do not seek a paused iframe on every audio tick: defer until it is used.
+  if (state.value === 'ready' && player && (playback?.selected.value === 'video' || playbackRequested)) {
+    const duration = player.getDuration()
+    player.seekTo(duration > 0 ? Math.min(time, duration) : time, true)
+  }
+}
+
+const polling = useIntervalFn(() => {
+  if (videoPlaying && player) playback?.report('video', player.getCurrentTime())
+}, 1000, { immediate: false })
 
 interface YoutubeApi {
   ready: (callback: () => void) => void
   Player: new (element: HTMLIFrameElement, options: {
     events: {
-      onReady: (event: { target: { playVideo: () => void } }) => void
+      onReady: () => void
+      onStateChange: (event: { data: number }) => void
       onError: () => void
       onAutoplayBlocked: () => void
     }
-  }) => { destroy: () => void }
+  }) => YoutubePlayer
 }
 
 let dispose = () => {}
 
 async function startPlayback() {
+  if (state.value === 'ready' && player) {
+    playbackRequested = true
+    playback?.prepare('video')
+    seekTo(playback?.time.value ?? pendingTime)
+    player.playVideo()
+    return
+  }
   if (!videoId.value || state.value !== 'idle') return
 
-  const externalUrl = youtubeUrl.value
-  embedUrl.value = `https://www.youtube-nocookie.com/embed/${videoId.value}?autoplay=1&playsinline=1&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`
+  playbackRequested = true
+  pendingTime = playback?.time.value ?? pendingTime
+  embedUrl.value = `https://www.youtube-nocookie.com/embed/${videoId.value}?playsinline=1&enablejsapi=1&start=${Math.floor(pendingTime)}&origin=${encodeURIComponent(window.location.origin)}`
   state.value = 'loading'
   let active = true
-  let player: { destroy: () => void } | undefined
   let script: HTMLScriptElement | undefined
   const timeout = window.setTimeout(failPlayback, 15_000)
 
@@ -43,15 +84,18 @@ async function startPlayback() {
     }
     player?.destroy()
     player = undefined
+    videoPlaying = false
+    playbackRequested = false
+    polling.pause()
+    playback?.paused('video')
   }
 
   function failPlayback() {
     if (!active) return
     dispose()
+    unregister?.()
+    unregister = undefined
     state.value = 'error'
-    // Async errors may outlive the user activation. Keep a real link available
-    // as well: browsers can block this automatic new tab.
-    window.open(externalUrl, '_blank', 'noopener,noreferrer')
   }
 
   function showPlayer() {
@@ -73,18 +117,45 @@ async function startPlayback() {
         try {
           player = new youtubeWindow.YT.Player(iframe.value, {
             events: {
-              onReady: (event) => {
+              onReady: () => {
                 if (!active) return
                 showPlayer()
+                if (!playbackRequested) return
                 try {
-                  event.target.playVideo()
+                  playback?.prepare('video')
+                  seekTo(playback?.time.value ?? pendingTime)
+                  player?.playVideo()
                 } catch {
                   failPlayback()
                 }
               },
+              onStateChange: ({ data }) => {
+                if (!active || !player) return
+                if (data === 1) {
+                  if (!hasStarted) {
+                    hasStarted = true
+                    $counterscale.trackVideoStart()
+                  }
+                  // Native iframe controls can start playback after audio took over.
+                  if (playback && playback.selected.value !== 'video') {
+                    playback?.prepare('video')
+                    playbackRequested = true
+                    seekTo(playback?.time.value ?? pendingTime)
+                  }
+                  videoPlaying = true
+                  playbackRequested = false
+                  playback?.started('video')
+                  polling.resume()
+                } else {
+                  if (videoPlaying || data === 2 || data === 0) playback?.report('video', player.getCurrentTime())
+                  videoPlaying = false
+                  polling.pause()
+                  playback?.paused('video')
+                }
+              },
               onError: failPlayback,
               // A blocked autoplay isn't a broken video: expose native controls.
-              onAutoplayBlocked: showPlayer,
+              onAutoplayBlocked: () => { playbackRequested = false; showPlayer() },
             },
           })
         } catch {
@@ -107,34 +178,36 @@ async function startPlayback() {
     document.head.append(script)
   }
 }
-const videoId = computed(() => {
-  try {
-    const url = new URL(props.url)
-    let id: string | null = null
-    if (url.hostname === 'youtu.be') {
-      id = url.pathname.split('/')[1] ?? null
-    } else if (['youtube.com', 'www.youtube.com', 'm.youtube.com', 'www.youtube-nocookie.com'].includes(url.hostname)) {
-      id = url.pathname === '/watch'
-        ? url.searchParams.get('v')
-        : /^\/(?:embed|live|shorts)\/([^/]+)/.exec(url.pathname)?.[1] ?? null
-    }
-    return id && /^[\w-]{11}$/.test(id) ? id : null
-  } catch {
-    return null
-  }
+const videoId = computed(() => youtubeVideoId(props.url))
+const youtubeUrl = computed(() => videoId.value ? `https://www.youtube.com/watch?v=${videoId.value}&t=${Math.floor(playback?.time.value ?? pendingTime)}s` : props.url)
+
+let unregister: (() => void) | undefined
+onMounted(() => {
+  unregister = playback?.register('video', {
+    seek: seekTo,
+    play: startPlayback,
+    pause: () => {
+      playbackRequested = false
+      if (state.value === 'ready') player?.pauseVideo()
+      videoPlaying = false
+      polling.pause()
+    },
+    time: () => state.value === 'ready' ? player?.getCurrentTime() ?? pendingTime : pendingTime,
+    scroll: () => root.value?.scrollIntoView({ block: 'center', behavior: 'smooth' }),
+  })
 })
-const youtubeUrl = computed(() => videoId.value ? `https://www.youtube.com/watch?v=${videoId.value}?autoplay=1` : props.url)
 
 watch(() => props.url, () => {
   dispose()
+  hasStarted = false
   state.value = 'idle'
 })
 
-onBeforeUnmount(() => dispose())
+onBeforeUnmount(() => { unregister?.(); dispose() })
 </script>
 
 <template>
-  <div v-if="videoId && state !== 'error'" class="group/youtube relative aspect-video overflow-hidden bg-black"
+  <div v-if="videoId && state !== 'error'" ref="root" class="group/youtube relative aspect-video overflow-hidden bg-black scroll-mt-24"
     :class="{ 'rounded-lg': !hero }">
     <iframe v-if="state !== 'idle'" ref="iframe" :src="embedUrl" :title="title"
       allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen
@@ -155,7 +228,7 @@ onBeforeUnmount(() => dispose())
       <span class="sr-only">Načítám video…</span>
     </div>
   </div>
-  <div v-else>
+  <div v-else ref="root" class="scroll-mt-24">
     <p v-if="state === 'error'" role="alert">Video se tu nepodařilo načíst. Zkus ho otevřít přímo na YouTube.</p>
     <UButton :to="youtubeUrl" target="_blank" rel="noopener noreferrer"
       color="neutral" variant="link">Přehrát video na YouTube (nová karta)</UButton>

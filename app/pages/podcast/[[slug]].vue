@@ -20,7 +20,7 @@ useHead({
 </script>
 
 <template>
-  <ArticleLayout v-if="episode" :item="episode">
+  <ArticleLayout v-if="episode" :key="episode.path" :item="episode">
     <template #hero>
       <UContainer class="portrait:contents landscape:my-6 landscape:sm:my-8">
         <UPage :ui="{ root: 'portrait:block', center: 'landscape:lg:col-span-6 landscape:lg:col-start-3' }">
