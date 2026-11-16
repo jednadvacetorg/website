@@ -10,7 +10,7 @@ export const socialLinks = [
 export const podcast = {
   cover: '/images/podcast/channel-cover.jpeg',
   platforms: {
-    rss: { label: 'Sleduj přes RSS', icon: 'i-lucide-rss', to: '/podcast.xml' },
+    rss: { label: 'Zkopírovat odkaz na podcast RSS. Slouží pro jakoukoliv standardní aplikaci pro podcasty, bez závislosti na jejím katalogu pořadů.', icon: 'i-lucide-rss', to: '/podcast.xml' },
     // TODO: Doplň adresy pořadu po zveřejnění v podcastových aplikacích.
     applePodcasts: { label: 'Sleduj na Apple Podcasts', icon: 'i-simple-icons-applepodcasts', to: undefined as string | undefined },
     spotify: { label: 'Sleduj na Spotify', icon: 'i-simple-icons-spotify', to: undefined as string | undefined },
