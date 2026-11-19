@@ -65,11 +65,17 @@ export default defineEventHandler(async (event) => {
     <language>cs</language>
     <atom:link href="${escapeXml(absoluteUrl(podcast.platforms.rss.to))}" rel="self" type="application/rss+xml" />
     <itunes:author>Jednadvacet</itunes:author>
-    <itunes:owner><itunes:name>Jednadvacet</itunes:name><itunes:email>info@jednadvacet.org</itunes:email></itunes:owner>
+    <itunes:owner><itunes:name>Jednadvacet</itunes:name><itunes:email>doubrm@gmail.com</itunes:email></itunes:owner>
     <itunes:explicit>false</itunes:explicit>
     <itunes:category text="Technology" />
     <itunes:image href="${escapeXml(channelCover)}" />
     ${xmlItems}
+    <podcast:value type="lightning" method="keysend">
+      <podcast:valueRecipient
+        type="lnaddress"
+        address="donate@jednadvacet.org"
+        split="100" />
+    </podcast:value>
   </channel>
 </rss>`
 })
