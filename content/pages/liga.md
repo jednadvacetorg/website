@@ -96,7 +96,7 @@ description: Body ze všech potvrzených kol se sčítají do společného žeb�
 | 5 | Highlenders | Jihlava | 1 | 17 |
 | 5 | We Are All Satoshi | Teplice | 1 | 17 |
 | 7 | Twentyone.world | Praha | 1 | 16 |
-| 8 | BTC…ONO | Kladno | 1 | 15 |
+| 8 | BTC…DNO | Kladno | 1 | 15 |
 | 8 | Olomoučtí tipaři | Olomouc | 1 | 15 |
 | 10 | NOBRAINERS | Liberec | 1 | 14 |
 | 11 | Krakonoš | Trutnov | 1 | 13 |
