@@ -70,10 +70,10 @@ export const navigationItems: NavigationMenuItem[] = [
         target: '_blank',
       },
       {
-        label: 'Payky',
+        label: 'Finito',
         description: 'Jednoduchá a soukromá pokladní aplikace pro obchodníky',
         icon: 'streamline:shopping-cart-1-remix',
-        to: 'https://payky.me/',
+        to: 'https://finito.fit/',
         target: '_blank',
       },
       {
